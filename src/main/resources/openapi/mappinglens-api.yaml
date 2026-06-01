@@ -1,0 +1,789 @@
+openapi: 3.1.0
+info:
+  title: MappingLens API
+  description: Search, index, diff, translate and inspect Minecraft mappings across Yarn, Mojmap and Intermediary namespaces.
+  version: 0.1.0
+servers:
+  - url: http://localhost:8080
+tags:
+  - name: Versions
+  - name: Search
+  - name: Diff
+  - name: Translation
+  - name: Bytecode
+  - name: Docs
+paths:
+  /api/v1/versions:
+    get:
+      tags: [Versions]
+      summary: List all indexed versions
+      responses:
+        "200":
+          description: Indexed versions with aggregate counts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionListResponse"
+  /api/v1/versions/{version}:
+    get:
+      tags: [Versions]
+      summary: Get info about a specific indexed version
+      parameters:
+        - $ref: "#/components/parameters/VersionPath"
+      responses:
+        "200":
+          description: Version metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionInfo"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/search:
+    get:
+      tags: [Search]
+      summary: Search classes, methods and fields by mapping names
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - in: query
+          name: version
+          schema:
+            type: string
+          description: Defaults to the latest indexed release.
+        - in: query
+          name: type
+          schema:
+            $ref: "#/components/schemas/SearchType"
+          description: Element type filter.
+        - in: query
+          name: namespace
+          schema:
+            $ref: "#/components/schemas/SearchNamespace"
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - in: query
+          name: exact
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Search results ordered by FTS rank.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /api/v1/diff:
+    get:
+      tags: [Diff]
+      summary: Diff mappings between two versions
+      parameters:
+        - in: query
+          name: from
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: to
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: namespace
+          schema:
+            $ref: "#/components/schemas/MappingNamespace"
+        - in: query
+          name: type
+          schema:
+            $ref: "#/components/schemas/SearchType"
+        - in: query
+          name: package
+          schema:
+            type: string
+          description: Package/path prefix filter such as `net/minecraft/block`.
+        - in: query
+          name: changeType
+          schema:
+            type: string
+            enum: [added, removed, renamed, all]
+            default: all
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5000
+            default: 100
+      responses:
+        "200":
+          description: Added, removed and renamed mapping elements.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiffResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /api/v1/diff/files:
+    get:
+      tags: [Diff]
+      summary: Diff indexed source files between two versions
+      parameters:
+        - in: query
+          name: from
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: to
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: namespace
+          schema:
+            type: string
+            enum: [yarn, mojmap]
+            default: yarn
+        - in: query
+          name: path
+          schema:
+            type: string
+          description: Relative source path prefix.
+        - in: query
+          name: file
+          schema:
+            type: string
+          description: Exact or prefix source path filter. Takes precedence over `path`.
+        - in: query
+          name: function
+          schema:
+            type: string
+          description: Optional method/function name filter used when `format=patch`.
+        - in: query
+          name: context
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 20
+            default: 3
+          description: Number of context lines per hunk when `format=patch`.
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50000
+            default: 5000
+          description: Maximum files included when `format=patch`.
+        - in: query
+          name: format
+          schema:
+            type: string
+            enum: [json, patch, git]
+            default: json
+          description: Use `patch`/`git` to return a git-like unified diff instead of JSON file summary.
+      responses:
+        "200":
+          description: File additions, removals and hash-based modifications, or a git-like patch when requested.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileDiffResponse"
+            text/x-diff:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /api/v1/diff/patch:
+    get:
+      tags: [Diff]
+      summary: Return a git-like unified source diff between two versions
+      parameters:
+        - in: query
+          name: from
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: to
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: namespace
+          schema:
+            type: string
+            enum: [yarn, mojmap]
+            default: yarn
+        - in: query
+          name: path
+          schema:
+            type: string
+          description: Relative folder or file path prefix.
+        - in: query
+          name: file
+          schema:
+            type: string
+          description: Exact or prefix source path filter. Takes precedence over `path`.
+        - in: query
+          name: function
+          schema:
+            type: string
+          description: Optional method/function name filter, e.g. `Block#getDefaultState` or `getDefaultState`.
+        - in: query
+          name: context
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 20
+            default: 3
+          description: Number of context lines per hunk.
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50000
+            default: 5000
+          description: Maximum files included in the generated patch.
+        - in: query
+          name: format
+          schema:
+            type: string
+            enum: [patch, git, json]
+            default: patch
+          description: Raw patch by default; use `json` to include metadata and the patch string.
+      responses:
+        "200":
+          description: Git-like unified diff generated from real source content.
+          content:
+            text/x-diff:
+              schema:
+                type: string
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PatchDiffResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /api/v1/translate:
+    get:
+      tags: [Translation]
+      summary: Translate a class, method or field name between namespaces
+      parameters:
+        - in: query
+          name: name
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - in: query
+          name: from
+          required: true
+          schema:
+            $ref: "#/components/schemas/LookupNamespace"
+        - in: query
+          name: to
+          required: true
+          schema:
+            $ref: "#/components/schemas/LookupNamespace"
+        - in: query
+          name: version
+          schema:
+            type: string
+          description: Defaults to the latest indexed release.
+        - in: query
+          name: type
+          schema:
+            type: string
+            enum: [class, method, field, auto]
+            default: auto
+      responses:
+        "200":
+          description: Translation result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranslateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/translate/class/{name}:
+    get:
+      tags: [Translation]
+      summary: Translate a class name between namespaces
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+          description: Slash-separated class name. This route also accepts catch-all path segments.
+        - in: query
+          name: from
+          schema:
+            $ref: "#/components/schemas/LookupNamespace"
+        - in: query
+          name: to
+          schema:
+            $ref: "#/components/schemas/LookupNamespace"
+        - in: query
+          name: version
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Class translation result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranslateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/bytecode/{version}/{className}:
+    get:
+      tags: [Bytecode]
+      summary: Disassemble a class from the configured Minecraft jar
+      parameters:
+        - $ref: "#/components/parameters/VersionPath"
+        - in: path
+          name: className
+          required: true
+          schema:
+            type: string
+          description: Slash-separated class name. This route also accepts catch-all path segments.
+        - in: query
+          name: format
+          schema:
+            type: string
+            enum: [text, json]
+            default: text
+        - in: query
+          name: namespace
+          schema:
+            $ref: "#/components/schemas/LookupNamespace"
+      responses:
+        "200":
+          description: ASM Textifier output wrapped in JSON.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BytecodeResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/source/{version}/{className}:
+    get:
+      tags: [Bytecode]
+      summary: Return decompiled source for a class
+      parameters:
+        - $ref: "#/components/parameters/VersionPath"
+        - in: path
+          name: className
+          required: true
+          schema:
+            type: string
+          description: Slash-separated class name. This route also accepts catch-all path segments.
+        - in: query
+          name: namespace
+          schema:
+            type: string
+            enum: [yarn, mojmap]
+            default: yarn
+      responses:
+        "200":
+          description: Source code response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SourceResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /openapi.json:
+    get:
+      tags: [Docs]
+      summary: OpenAPI specification
+      responses:
+        "200":
+          description: OpenAPI 3.1 document.
+          content:
+            application/yaml:
+              schema:
+                type: string
+  /openapi.yaml:
+    get:
+      tags: [Docs]
+      summary: OpenAPI specification
+      responses:
+        "200":
+          description: OpenAPI 3.1 document.
+          content:
+            application/yaml:
+              schema:
+                type: string
+  /docs:
+    get:
+      tags: [Docs]
+      summary: Swagger UI
+      responses:
+        "200":
+          description: Swagger UI HTML.
+
+components:
+  parameters:
+    VersionPath:
+      in: path
+      name: version
+      required: true
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: Invalid request parameters.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    NotFound:
+      description: Requested object was not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+  schemas:
+    SearchType:
+      type: string
+      enum: [class, method, field, all]
+      default: all
+    SearchNamespace:
+      type: string
+      enum: [yarn, mojmap, intermediary, all]
+      default: all
+    MappingNamespace:
+      type: string
+      enum: [yarn, mojmap, intermediary]
+      default: yarn
+    LookupNamespace:
+      type: string
+      enum: [yarn, mojmap, intermediary, obfuscated, obf]
+    ApiError:
+      type: object
+      required: [error, message, status]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        status:
+          type: integer
+    VersionInfo:
+      type: object
+      required: [id, releaseType, hasYarn, hasMojmap, hasIntermediary, classCount, methodCount, fieldCount, indexedAt]
+      properties:
+        id:
+          type: string
+        releaseType:
+          type: string
+        releaseTime:
+          type: [string, "null"]
+        protocolVersion:
+          type: [integer, "null"]
+        hasYarn:
+          type: boolean
+        hasMojmap:
+          type: boolean
+        hasIntermediary:
+          type: boolean
+        classCount:
+          type: integer
+          format: int64
+        methodCount:
+          type: integer
+          format: int64
+        fieldCount:
+          type: integer
+          format: int64
+        indexedAt:
+          type: string
+    VersionListResponse:
+      type: object
+      required: [versions]
+      properties:
+        versions:
+          type: array
+          items:
+            $ref: "#/components/schemas/VersionInfo"
+    ClassRef:
+      type: object
+      properties:
+        intermediary:
+          type: [string, "null"]
+        yarn:
+          type: [string, "null"]
+        mojmap:
+          type: [string, "null"]
+        obfuscated:
+          type: [string, "null"]
+    SearchResultEntry:
+      type: object
+      required: [type, score]
+      properties:
+        type:
+          type: string
+          enum: [class, method, field]
+        intermediary:
+          type: [string, "null"]
+        yarn:
+          type: [string, "null"]
+        mojmap:
+          type: [string, "null"]
+        obfuscated:
+          type: [string, "null"]
+        owner:
+          anyOf:
+            - $ref: "#/components/schemas/ClassRef"
+            - type: "null"
+        descriptor:
+          type: [string, "null"]
+        score:
+          type: number
+    SearchResponse:
+      type: object
+      required: [query, version, totalResults, results]
+      properties:
+        query:
+          type: string
+        version:
+          type: string
+        totalResults:
+          type: integer
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchResultEntry"
+    TranslateInput:
+      type: object
+      required: [name, namespace]
+      properties:
+        name:
+          type: string
+        namespace:
+          type: string
+    TranslateOutput:
+      type: object
+      required: [namespace]
+      properties:
+        name:
+          type: [string, "null"]
+        namespace:
+          type: string
+    TranslateResponse:
+      type: object
+      required: [input, output, version, type]
+      properties:
+        input:
+          $ref: "#/components/schemas/TranslateInput"
+        output:
+          $ref: "#/components/schemas/TranslateOutput"
+        intermediary:
+          type: [string, "null"]
+        obfuscated:
+          type: [string, "null"]
+        version:
+          type: string
+        type:
+          type: string
+          enum: [class, method, field]
+    DiffEntryItem:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [class, method, field]
+        name:
+          type: [string, "null"]
+        intermediary:
+          type: [string, "null"]
+        owner:
+          type: [string, "null"]
+        oldName:
+          type: [string, "null"]
+        newName:
+          type: [string, "null"]
+    DiffChanges:
+      type: object
+      required: [added, removed, renamed]
+      properties:
+        added:
+          type: array
+          items:
+            $ref: "#/components/schemas/DiffEntryItem"
+        removed:
+          type: array
+          items:
+            $ref: "#/components/schemas/DiffEntryItem"
+        renamed:
+          type: array
+          items:
+            $ref: "#/components/schemas/DiffEntryItem"
+    DiffSummary:
+      type: object
+      required:
+        - classesAdded
+        - classesRemoved
+        - classesRenamed
+        - methodsAdded
+        - methodsRemoved
+        - methodsRenamed
+        - fieldsAdded
+        - fieldsRemoved
+        - fieldsRenamed
+      properties:
+        classesAdded: { type: integer }
+        classesRemoved: { type: integer }
+        classesRenamed: { type: integer }
+        methodsAdded: { type: integer }
+        methodsRemoved: { type: integer }
+        methodsRenamed: { type: integer }
+        fieldsAdded: { type: integer }
+        fieldsRemoved: { type: integer }
+        fieldsRenamed: { type: integer }
+    DiffResponse:
+      type: object
+      required: [from, to, namespace, changes, summary]
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+        namespace:
+          type: string
+        changes:
+          $ref: "#/components/schemas/DiffChanges"
+        summary:
+          $ref: "#/components/schemas/DiffSummary"
+    FileChange:
+      type: object
+      required: [path, methodsAdded, methodsRemoved, fieldsAdded, fieldsRemoved]
+      properties:
+        path:
+          type: string
+        methodsAdded:
+          type: integer
+        methodsRemoved:
+          type: integer
+        fieldsAdded:
+          type: integer
+        fieldsRemoved:
+          type: integer
+    FileDiff:
+      type: object
+      required: [added, removed, modified]
+      properties:
+        added:
+          type: array
+          items:
+            type: string
+        removed:
+          type: array
+          items:
+            type: string
+        modified:
+          type: array
+          items:
+            $ref: "#/components/schemas/FileChange"
+    FileDiffResponse:
+      type: object
+      required: [from, to, namespace, files]
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+        namespace:
+          type: string
+        files:
+          $ref: "#/components/schemas/FileDiff"
+    PatchFileChange:
+      type: object
+      required: [path, changeType]
+      properties:
+        path:
+          type: string
+        changeType:
+          type: string
+          enum: [added, removed, modified]
+    PatchDiffResponse:
+      type: object
+      required: [from, to, namespace, files, fileCount, truncated, patch]
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+        namespace:
+          type: string
+          enum: [yarn, mojmap]
+        path:
+          type: [string, "null"]
+        function:
+          type: [string, "null"]
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/PatchFileChange"
+        fileCount:
+          type: integer
+        truncated:
+          type: boolean
+        patch:
+          type: string
+    BytecodeResponse:
+      type: object
+      required: [version, class, bytecode]
+      properties:
+        version:
+          type: string
+        class:
+          type: string
+        bytecode:
+          type: string
+    SourceResponse:
+      type: object
+      required: [version, class, namespace, source, path]
+      properties:
+        version:
+          type: string
+        class:
+          type: string
+        namespace:
+          type: string
+          enum: [yarn, mojmap]
+        source:
+          type: string
+        path:
+          type: string
