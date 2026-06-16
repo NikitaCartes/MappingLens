@@ -19,7 +19,47 @@ import kotlin.io.path.isDirectory
 class GitSourceRepository(private val repoRoot: Path) {
     private val log = LoggerFactory.getLogger(GitSourceRepository::class.java)
 
+    data class DiffEntry(val relativePath: String, val changeType: String)
+
     fun isGitWorkTree(): Boolean = runGitText("rev-parse", "--is-inside-work-tree")?.trim() == "true"
+
+    fun diff(fromVersionId: String, toVersionId: String, pathPrefix: String? = null): List<DiffEntry>? {
+        if (!isGitWorkTree()) return null
+        val normalizedPrefix = pathPrefix?.let(::normalizeRelativePath)?.takeIf { it.isNotBlank() }
+        val pathSpec = normalizedPrefix?.let { "$SOURCE_TREE/$it" } ?: SOURCE_TREE
+        val output = runGitBytes(
+            "diff",
+            "--name-status",
+            "--no-renames",
+            "--diff-filter=ADM",
+            "-z",
+            fromVersionId,
+            toVersionId,
+            "--",
+            pathSpec,
+        ) ?: return null
+        if (output.isEmpty()) return emptyList()
+
+        val tokens = output.toString(StandardCharsets.UTF_8)
+            .split('\u0000')
+            .filter { it.isNotBlank() }
+        val result = mutableListOf<DiffEntry>()
+        var index = 0
+        while (index + 1 < tokens.size) {
+            val status = tokens[index++].trim()
+            val rawPath = normalizeRelativePath(tokens[index++])
+            if (!rawPath.startsWith("$SOURCE_TREE/")) continue
+            val relativePath = rawPath.removePrefix("$SOURCE_TREE/")
+            if (!relativePath.endsWith(".java")) continue
+            val changeType = when {
+                status.startsWith("A") -> "added"
+                status.startsWith("D") -> "removed"
+                else -> "modified"
+            }
+            result += DiffEntry(relativePath, changeType)
+        }
+        return result.sortedWith(compareBy<DiffEntry> { it.relativePath }.thenBy { it.changeType })
+    }
 
     fun scan(versionId: String): List<SourceFileInfo>? {
         if (!isGitWorkTree()) return null

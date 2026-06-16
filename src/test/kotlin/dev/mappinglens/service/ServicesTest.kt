@@ -251,6 +251,51 @@ class DiffServiceTest {
     }
 
     @Test
+    fun `diff uses git backed source candidates when source files are not indexed`(@TempDir tmp: Path) {
+        val db = Fixtures.newDb(tmp)
+        Fixtures.seed_1_21(db)
+        Fixtures.seed_1_21_1(db)
+        val yarnRepo = java.nio.file.Files.createDirectories(tmp.resolve("yarn-repo"))
+
+        initGitSourceRepo(
+            yarnRepo,
+            Fixtures.V_1_21,
+            mapOf(
+                "net/minecraft/block/Block.java" to blockSource(changedReturn = 1, otherReturn = 3),
+                "net/minecraft/block/BlockState.java" to "package net.minecraft.block; public class BlockState {}",
+                "net/minecraft/block/OldBlock.java" to "package net.minecraft.block; public class OldBlock {}",
+            ),
+        )
+        commitGitSourceTree(
+            yarnRepo,
+            Fixtures.V_1_21_1,
+            mapOf(
+                "net/minecraft/block/Block.java" to blockSource(changedReturn = 2, otherReturn = 3),
+                "net/minecraft/block/BlockState.java" to "package net.minecraft.block; public class BlockState {}",
+                "net/minecraft/block/NewBlock.java" to "package net.minecraft.block; public class NewBlock {}",
+            ),
+            removed = listOf("net/minecraft/block/OldBlock.java"),
+        )
+
+        val diff = DiffService(db, appConfig(tmp, yarnRepo)).diff(
+            from = Fixtures.V_1_21,
+            to = Fixtures.V_1_21_1,
+            namespace = "yarn",
+            type = "all",
+            packageFilter = null,
+            changeType = "all",
+            limit = 100,
+        )
+
+        assertTrue(diff.changes.added.any { it.type == "class" && it.name == "net/minecraft/block/NewBlock" })
+        assertTrue(diff.changes.removed.any { it.type == "class" && it.name == "net/minecraft/block/OldBlock" })
+        val renamedMethod = diff.changes.renamed.singleOrNull { it.type == "method" }
+        assertNotNull(renamedMethod)
+        assertEquals("getDefaultStateOld", renamedMethod.oldName)
+        assertEquals("getDefaultState", renamedMethod.newName)
+    }
+
+    @Test
     fun `unknown version returns empty diff`(@TempDir tmp: Path) {
         val s = setup(tmp)
         val resp = s.diff("0.0", "1.21.1", "yarn", "all", null, "all", 100)
@@ -375,11 +420,32 @@ class DiffServiceTest {
         commitGitSourceVersion(root, tag, relativePath, content)
     }
 
+    private fun initGitSourceRepo(root: Path, tag: String, files: Map<String, String>) {
+        runGit(root, "init")
+        runGit(root, "config", "user.email", "test@example.invalid")
+        runGit(root, "config", "user.name", "MappingLens Test")
+        commitGitSourceTree(root, tag, files)
+    }
+
     private fun commitGitSourceVersion(root: Path, tag: String, relativePath: String, content: String) {
         val file = root.resolve("minecraft/src").resolve(relativePath)
         java.nio.file.Files.createDirectories(file.parent)
         java.nio.file.Files.writeString(file, content)
         runGit(root, "add", "minecraft/src/$relativePath")
+        runGit(root, "commit", "-m", tag)
+        runGit(root, "tag", tag)
+    }
+
+    private fun commitGitSourceTree(root: Path, tag: String, files: Map<String, String>, removed: List<String> = emptyList()) {
+        for (relativePath in removed) {
+            java.nio.file.Files.deleteIfExists(root.resolve("minecraft/src").resolve(relativePath))
+        }
+        for ((relativePath, content) in files) {
+            val file = root.resolve("minecraft/src").resolve(relativePath)
+            java.nio.file.Files.createDirectories(file.parent)
+            java.nio.file.Files.writeString(file, content)
+        }
+        runGit(root, "add", "-A", "minecraft/src")
         runGit(root, "commit", "-m", tag)
         runGit(root, "tag", tag)
     }

@@ -1,6 +1,6 @@
 ---
 name: mappinglens
-description: 'Use when: working with MappingLens, Minecraft mappings, Yarn, Mojmap, Intermediary, obfuscated names, mapping search, namespace translation, cross-version mapping diffs, source lookup, or bytecode inspection via the MappingLens REST API at <url>.'
+description: 'Use when: working with MappingLens, Minecraft mappings, Yarn, Mojmap, Intermediary, obfuscated names, mapping search, namespace translation, cross-version mapping diffs, source lookup, or bytecode inspection via the MappingLens REST API at 127.0.0.1:8081.'
 argument-hint: 'mapping task, name, namespace, version, or version diff'
 ---
 
@@ -8,7 +8,7 @@ argument-hint: 'mapping task, name, namespace, version, or version diff'
 
 Use this skill to query MappingLens, a read-only REST API for Minecraft mappings across Yarn, Mojmap, Intermediary, and obfuscated namespaces.
 
-Base URL: `<url>`
+Base URL: `127.0.0.1:8081`
 
 For the full OpenAPI contract in this repository, see `../../../src/main/resources/openapi/mappinglens-api.yaml`.
 
@@ -25,11 +25,11 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 
 ## General Workflow
 
-1. If the user did not specify a version and exact version matters, call `GET <url>/api/v1/versions` and choose the latest indexed release, or ask for the version if ambiguity affects the answer.
-2. Prefer `GET <url>/api/v1/search` when the namespace, type, owner class, or exact name is uncertain.
-3. Prefer `GET <url>/api/v1/translate` when the input namespace and target namespace are known.
-4. For version-to-version changes, use `GET <url>/api/v1/diff` for mapping elements, `GET <url>/api/v1/diff/files` for source file movement/modification, and `GET <url>/api/v1/diff/patch` when the user asks for a real git/patch-style source diff.
-5. For implementation details, use `GET <url>/api/v1/source/{version}/{className}` first; use bytecode only when source is missing or bytecode-level details are required.
+1. If the user did not specify a version and exact version matters, call `GET 127.0.0.1:8081/api/v1/versions` and choose the latest indexed release, or ask for the version if ambiguity affects the answer.
+2. Prefer `GET 127.0.0.1:8081/api/v1/search` when the namespace, type, owner class, or exact name is uncertain.
+3. Prefer `GET 127.0.0.1:8081/api/v1/translate` when the input namespace and target namespace are known.
+4. For version-to-version changes, use `GET 127.0.0.1:8081/api/v1/diff` for mapping elements, `GET 127.0.0.1:8081/api/v1/diff/files` for source file movement/modification, and `GET 127.0.0.1:8081/api/v1/diff/patch` when the user asks for a real git/patch-style source diff.
+5. For implementation details, use `GET 127.0.0.1:8081/api/v1/source/{version}/{className}` first; use bytecode only when source is missing or bytecode-level details are required.
 6. URL-encode query parameters and slash-containing path values. If an endpoint supports catch-all class path segments, keep JVM-style slash-separated class names unless the calling tool requires escaping.
 7. Treat all endpoints as read-only. Do not assume MappingLens has indexed every Minecraft version or namespace; handle `404` and empty results explicitly.
 
@@ -37,14 +37,14 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 
 ### Versions
 
-- `GET <url>/api/v1/versions`
+- `GET 127.0.0.1:8081/api/v1/versions`
   - Lists indexed versions with counts and namespace availability.
-- `GET <url>/api/v1/versions/{version}`
+- `GET 127.0.0.1:8081/api/v1/versions/{version}`
   - Gets metadata for one indexed version.
 
 ### Search
 
-- `GET <url>/api/v1/search?q={query}&version={version}&type={type}&namespace={namespace}&limit={limit}&offset={offset}&exact={bool}`
+- `GET 127.0.0.1:8081/api/v1/search?q={query}&version={version}&type={type}&namespace={namespace}&limit={limit}&offset={offset}&exact={bool}`
 - `q` is required.
 - `type`: `class`, `method`, `field`, or `all`.
 - `namespace`: `yarn`, `mojmap`, `intermediary`, or `all`.
@@ -53,29 +53,29 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 
 ### Translate
 
-- `GET <url>/api/v1/translate?name={name}&from={from}&to={to}&version={version}&type={type}`
+- `GET 127.0.0.1:8081/api/v1/translate?name={name}&from={from}&to={to}&version={version}&type={type}`
 - `from` / `to`: `yarn`, `mojmap`, `intermediary`, `obfuscated`, or `obf`.
 - `type`: `class`, `method`, `field`, or `auto`.
 - Use this when the input name and namespace are already known.
-- `GET <url>/api/v1/translate/class/{name}?from={from}&to={to}&version={version}` is a class-specific shortcut.
+- `GET 127.0.0.1:8081/api/v1/translate/class/{name}?from={from}&to={to}&version={version}` is a class-specific shortcut.
 
 ### Diff
 
-- `GET <url>/api/v1/diff?from={fromVersion}&to={toVersion}&namespace={namespace}&type={type}&package={packagePrefix}&changeType={changeType}&limit={limit}`
+- `GET 127.0.0.1:8081/api/v1/diff?from={fromVersion}&to={toVersion}&namespace={namespace}&type={type}&package={packagePrefix}&changeType={changeType}&limit={limit}`
 - `namespace`: `yarn`, `mojmap`, or `intermediary`.
 - `changeType`: `added`, `removed`, `renamed`, or `all`.
 - Use `package` for path/package prefix filters such as `net/minecraft/block`.
 
 ### File Diff
 
-- `GET <url>/api/v1/diff/files?from={fromVersion}&to={toVersion}&namespace={namespace}&path={pathPrefix}&format={format}`
+- `GET 127.0.0.1:8081/api/v1/diff/files?from={fromVersion}&to={toVersion}&namespace={namespace}&path={pathPrefix}&format={format}`
 - `namespace`: `yarn` or `mojmap`.
 - `format`: `json` (default), `patch`, or `git`.
 - Use `json` when the question is about changed source files rather than renamed mapping entries. Use `patch`/`git` when raw unified diff text is requested.
 
 ### Patch Diff
 
-- `GET <url>/api/v1/diff/patch?from={fromVersion}&to={toVersion}&namespace={namespace}&path={pathPrefix}&file={filePath}&function={functionName}&context={lines}&limit={limit}&format={format}`
+- `GET 127.0.0.1:8081/api/v1/diff/patch?from={fromVersion}&to={toVersion}&namespace={namespace}&path={pathPrefix}&file={filePath}&function={functionName}&context={lines}&limit={limit}&format={format}`
 - `namespace`: `yarn` or `mojmap`.
 - `path` / `file`: optional folder or source file prefix such as `net/minecraft/block` or `net/minecraft/block/Block.java`.
 - `function`: optional method/function filter such as `getDefaultState` or `Block#getDefaultState`.
@@ -85,23 +85,23 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 
 ### Source
 
-- `GET <url>/api/v1/source/{version}/{className}?namespace={namespace}`
+- `GET 127.0.0.1:8081/api/v1/source/{version}/{className}?namespace={namespace}`
 - `namespace`: `yarn` or `mojmap`.
 - Returns decompiled source text and the indexed source path.
 - Use class names such as `net/minecraft/block/Block` or the namespace-specific class name known to MappingLens.
 
 ### Bytecode
 
-- `GET <url>/api/v1/bytecode/{version}/{className}?format={format}&namespace={namespace}`
+- `GET 127.0.0.1:8081/api/v1/bytecode/{version}/{className}?format={format}&namespace={namespace}`
 - `format`: `text` or `json`.
 - `namespace`: `yarn`, `mojmap`, `intermediary`, `obfuscated`, or `obf`.
 - Use this for descriptor-level or instruction-level inspection.
 
 ### API Docs
 
-- `GET <url>/openapi.yaml`
-- `GET <url>/openapi.json`
-- `GET <url>/docs`
+- `GET 127.0.0.1:8081/openapi.yaml`
+- `GET 127.0.0.1:8081/openapi.json`
+- `GET 127.0.0.1:8081/docs`
 
 ## Suggested MCP Tool Contract
 

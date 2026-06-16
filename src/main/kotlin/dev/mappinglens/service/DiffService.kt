@@ -22,16 +22,34 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         packageFilter: String?,
         changeType: String,
         limit: Int,
-    ): DiffResponse = transaction(db) {
+    ): DiffResponse {
+        val mappingType = namespace.takeIf { it == "yarn" || it == "mojmap" }
+        val sourceCandidates = mappingType?.let {
+            loadSourceCandidates(from, to, it, packageFilter?.normalizeDiffPath())
+        }
+
+        return transaction(db) {
         val fromId = versionRowId(from)
         val toId = versionRowId(to)
-        if (fromId == null || toId == null) return@transaction DiffResponse(from, to, namespace, DiffChanges(emptyList(), emptyList(), emptyList()), DiffSummary())
+        if (fromId == null || toId == null) return@transaction emptyDiffResponse(from, to, namespace)
 
-        val classDiff = diffClasses(fromId, toId, namespace, packageFilter)
-        val methodDiff = diffMethods(fromId, toId, namespace, packageFilter)
-        val fieldDiff = diffFields(fromId, toId, namespace, packageFilter)
+        if (sourceCandidates?.available == true && sourceCandidates.files.isEmpty()) {
+            return@transaction emptyDiffResponse(from, to, namespace)
+        }
 
-        val typesIncluded = setOf(type, "all")
+        val candidateStableKeys = if (sourceCandidates?.available == true) {
+            resolveCandidateStableKeys(fromId, toId, namespace, sourceCandidates.files)
+        } else {
+            null
+        }
+        if (sourceCandidates?.available == true && candidateStableKeys != null && candidateStableKeys.isEmpty()) {
+            return@transaction emptyDiffResponse(from, to, namespace)
+        }
+
+        val classDiff = diffClasses(fromId, toId, namespace, packageFilter, candidateStableKeys)
+        val methodDiff = diffMethods(fromId, toId, namespace, packageFilter, candidateStableKeys)
+        val fieldDiff = diffFields(fromId, toId, namespace, packageFilter, candidateStableKeys)
+
         val includeClasses = type == "class" || type == "all"
         val includeMethods = type == "method" || type == "all"
         val includeFields = type == "field" || type == "all"
@@ -72,6 +90,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
                 fieldsRenamed = fieldDiff.renamed.size,
             )
         )
+    }
     }
 
     fun diffFiles(from: String, to: String, namespace: String, pathPrefix: String?): FileDiffResponse = transaction(db) {
@@ -165,6 +184,11 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
 
     private data class SourcePatchFile(val path: String, val changeType: String)
 
+    private data class SourceCandidateSet(
+        val available: Boolean,
+        val files: List<SourcePatchFile>,
+    )
+
     private data class SourceSlice(val lines: List<String>, val startLine: Int)
 
     private enum class DiffLineKind { SAME, OLD, NEW }
@@ -188,6 +212,88 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         "mojmap" -> table.mojmapName
         "intermediary" -> table.intermediaryName
         else -> table.yarnName
+    }
+
+    private fun emptyDiffResponse(from: String, to: String, namespace: String): DiffResponse = DiffResponse(
+        from = from,
+        to = to,
+        namespace = namespace,
+        changes = DiffChanges(emptyList(), emptyList(), emptyList()),
+        summary = DiffSummary(),
+    )
+
+    private fun loadSourceCandidates(from: String, to: String, mappingType: String, pathPrefix: String?): SourceCandidateSet {
+        gitSourceCandidates(from, to, mappingType, pathPrefix)?.let {
+            return SourceCandidateSet(available = true, files = it)
+        }
+        return transaction(db) {
+            val fromId = versionRowId(from)
+            val toId = versionRowId(to)
+            if (fromId == null || toId == null) return@transaction SourceCandidateSet(false, emptyList())
+
+            val fromFiles = SourceFileTable.selectAll()
+                .where { (SourceFileTable.versionId eq fromId) and (SourceFileTable.mappingType eq mappingType) }
+                .associate { it[SourceFileTable.relativePath] to it[SourceFileTable.contentHash] }
+            val toFiles = SourceFileTable.selectAll()
+                .where { (SourceFileTable.versionId eq toId) and (SourceFileTable.mappingType eq mappingType) }
+                .associate { it[SourceFileTable.relativePath] to it[SourceFileTable.contentHash] }
+
+            if (fromFiles.isEmpty() || toFiles.isEmpty()) {
+                return@transaction SourceCandidateSet(false, emptyList())
+            }
+
+            fun keep(path: String): Boolean = pathPrefix.isNullOrBlank() || path.startsWith(pathPrefix)
+            val files = buildList {
+                addAll((toFiles.keys - fromFiles.keys).filter(::keep).map { SourcePatchFile(it, "added") })
+                addAll((fromFiles.keys - toFiles.keys).filter(::keep).map { SourcePatchFile(it, "removed") })
+                addAll(
+                    (fromFiles.keys intersect toFiles.keys)
+                        .filter(::keep)
+                        .filter { fromFiles.getValue(it) != toFiles.getValue(it) }
+                        .map { SourcePatchFile(it, "modified") },
+                )
+            }.sortedWith(compareBy<SourcePatchFile> { it.path }.thenBy { it.changeType })
+
+            SourceCandidateSet(available = true, files = files)
+        }
+    }
+
+    private fun gitSourceCandidates(from: String, to: String, mappingType: String, pathPrefix: String?): List<SourcePatchFile>? {
+        val appConfig = config ?: return null
+        val repoRoot = Paths.get(if (mappingType == "mojmap") appConfig.sources.mojmapRepo else appConfig.sources.yarnRepo)
+        val repo = GitSourceRepository(repoRoot)
+        return repo.diff(from, to, pathPrefix)?.map { SourcePatchFile(it.relativePath, it.changeType) }
+    }
+
+    private fun resolveCandidateStableKeys(
+        fromId: Int,
+        toId: Int,
+        namespace: String,
+        sourceCandidates: List<SourcePatchFile>,
+    ): Set<String>? {
+        val candidatePrefixes = sourceCandidates.asSequence()
+            .map { it.path.removeSuffix(".java") }
+            .filter { it.isNotBlank() }
+            .toSet()
+        if (candidatePrefixes.isEmpty()) return emptySet()
+
+        val stableKeyColumn = stableIdentityColumn(fromId, toId) ?: return null
+        val stableColumn = if (stableKeyColumn == "mojmap_name") ClassTable.mojmapName else ClassTable.intermediaryName
+        val namespaceColumn = when (namespace) {
+            "mojmap" -> ClassTable.mojmapName
+            "intermediary" -> ClassTable.intermediaryName
+            else -> ClassTable.yarnName
+        }
+
+        return ClassTable.selectAll()
+            .where { ClassTable.versionId inList listOf(fromId, toId) }
+            .mapNotNull { row ->
+                val stableKey = row[stableColumn]
+                val className = row[namespaceColumn]
+                if (stableKey == null || className == null) return@mapNotNull null
+                stableKey.takeIf { className.substringBefore('$') in candidatePrefixes }
+            }
+            .toSet()
     }
 
     private fun sourceDiffCandidates(from: String, to: String, mappingType: String, pathPrefix: String?): List<SourcePatchFile> = transaction(db) {
@@ -486,7 +592,13 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         .substringAfterLast('/')
         .substringAfterLast('.')
 
-    private fun diffClasses(fromId: Int, toId: Int, namespace: String, packageFilter: String?): TypedDiff {
+    private fun diffClasses(
+        fromId: Int,
+        toId: Int,
+        namespace: String,
+        packageFilter: String?,
+        candidateStableKeys: Set<String>?,
+    ): TypedDiff {
         val nameColExpr: (Int) -> String = { _ -> when (namespace) {
             "mojmap" -> "mojmap_name"; "intermediary" -> "intermediary_name"; else -> "yarn_name"
         } }
@@ -505,13 +617,16 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         // indexed `intermediary_name`; for two unobfuscated Mojang releases (26.x and
         // *_unobfuscated) intermediary_name is NULL, so fall back to `mojmap_name`.
         val keyCol = stableIdentityColumn(fromId, toId) ?: return TypedDiff(emptyList(), emptyList(), emptyList())
+        val addedCandidateSql = stableKeyCondition("c2", keyCol, candidateStableKeys)
+        val removedCandidateSql = stableKeyCondition("c1", keyCol, candidateStableKeys)
+        val renamedCandidateSql = stableKeyCondition("c1", keyCol, candidateStableKeys)
         // added
         conn.createStatement().use { st ->
             st.executeQuery(
                 """
                 SELECT c2.id, c2.intermediary_name, c2.$nameCol AS name FROM classes c2
                 LEFT JOIN classes c1 ON c1.$keyCol = c2.$keyCol AND c1.version_id = $fromId
-                WHERE c2.version_id = $toId AND c1.id IS NULL $addedPackageSql
+                WHERE c2.version_id = $toId AND c1.id IS NULL $addedPackageSql $addedCandidateSql
                 """.trimIndent()
             ).use { rs ->
                 while (rs.next()) added += DiffEntryItem(
@@ -524,7 +639,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
                 """
                 SELECT c1.id, c1.intermediary_name, c1.$nameCol AS name FROM classes c1
                 LEFT JOIN classes c2 ON c1.$keyCol = c2.$keyCol AND c2.version_id = $toId
-                WHERE c1.version_id = $fromId AND c2.id IS NULL $removedPackageSql
+                WHERE c1.version_id = $fromId AND c2.id IS NULL $removedPackageSql $removedCandidateSql
                 """.trimIndent()
             ).use { rs ->
                 while (rs.next()) removed += DiffEntryItem(
@@ -541,7 +656,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
                 WHERE c1.version_id = $fromId AND c2.version_id = $toId
                   AND c1.$keyCol IS NOT NULL
                   AND IFNULL(c1.$nameCol,'') != IFNULL(c2.$nameCol,'')
-                                    $renamedPackageSql
+                                    $renamedPackageSql $renamedCandidateSql
                 """.trimIndent()
             ).use { rs ->
                 while (rs.next()) renamed += DiffEntryItem(
@@ -573,14 +688,26 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         }
     }
 
-    private fun diffMethods(fromId: Int, toId: Int, namespace: String, packageFilter: String?): TypedDiff {
+    private fun diffMethods(
+        fromId: Int,
+        toId: Int,
+        namespace: String,
+        packageFilter: String?,
+        candidateStableKeys: Set<String>?,
+    ): TypedDiff {
         val nameCol = when (namespace) { "mojmap" -> "mojmap_name"; "intermediary" -> "intermediary_name"; else -> "yarn_name" }
-        return diffMembers("methods", fromId, toId, nameCol, "method", packageFilter)
+        return diffMembers("methods", fromId, toId, nameCol, "method", packageFilter, candidateStableKeys)
     }
 
-    private fun diffFields(fromId: Int, toId: Int, namespace: String, packageFilter: String?): TypedDiff {
+    private fun diffFields(
+        fromId: Int,
+        toId: Int,
+        namespace: String,
+        packageFilter: String?,
+        candidateStableKeys: Set<String>?,
+    ): TypedDiff {
         val nameCol = when (namespace) { "mojmap" -> "mojmap_name"; "intermediary" -> "intermediary_name"; else -> "yarn_name" }
-        return diffMembers("fields", fromId, toId, nameCol, "field", packageFilter)
+        return diffMembers("fields", fromId, toId, nameCol, "field", packageFilter, candidateStableKeys)
     }
 
     private fun fileChangeWithMemberCounts(
@@ -652,7 +779,15 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         return "$name#$desc"
     }
 
-    private fun diffMembers(table: String, fromId: Int, toId: Int, nameCol: String, kind: String, packageFilter: String?): TypedDiff {
+    private fun diffMembers(
+        table: String,
+        fromId: Int,
+        toId: Int,
+        nameCol: String,
+        kind: String,
+        packageFilter: String?,
+        candidateStableKeys: Set<String>?,
+    ): TypedDiff {
         val added = mutableListOf<DiffEntryItem>()
         val removed = mutableListOf<DiffEntryItem>()
         val renamed = mutableListOf<DiffEntryItem>()
@@ -664,6 +799,9 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         // and the descriptor we stored in obf_desc for those).
         val keyCol = stableIdentityColumn(fromId, toId) ?: return TypedDiff(emptyList(), emptyList(), emptyList())
         val keyDesc = if (keyCol == "intermediary_name") "intermediary_desc" else "obf_desc"
+        val addedCandidateSql = stableKeyCondition("c2", keyCol, candidateStableKeys)
+        val removedCandidateSql = stableKeyCondition("c1", keyCol, candidateStableKeys)
+        val renamedCandidateSql = stableKeyCondition("c1", keyCol, candidateStableKeys)
         val conn = org.jetbrains.exposed.sql.transactions.TransactionManager.current().connection
             .connection as java.sql.Connection
         conn.createStatement().use { st ->
@@ -675,7 +813,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
                 JOIN classes c2 ON c2.id = m2.class_id
                 LEFT JOIN $table m1 ON m1.$keyCol = m2.$keyCol
                     AND m1.$keyDesc = m2.$keyDesc AND m1.version_id = $fromId
-                WHERE m2.version_id = $toId AND m1.id IS NULL $addedPackageSql
+                WHERE m2.version_id = $toId AND m1.id IS NULL $addedPackageSql $addedCandidateSql
                 """.trimIndent()
             ).use { rs ->
                 while (rs.next()) added += DiffEntryItem(
@@ -693,7 +831,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
                 JOIN classes c1 ON c1.id = m1.class_id
                 LEFT JOIN $table m2 ON m1.$keyCol = m2.$keyCol
                     AND m1.$keyDesc = m2.$keyDesc AND m2.version_id = $toId
-                WHERE m1.version_id = $fromId AND m2.id IS NULL $removedPackageSql
+                WHERE m1.version_id = $fromId AND m2.id IS NULL $removedPackageSql $removedCandidateSql
                 """.trimIndent()
             ).use { rs ->
                 while (rs.next()) removed += DiffEntryItem(
@@ -718,7 +856,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
                   AND m1.$keyCol IS NOT NULL
                   AND c1.$keyCol = c2.$keyCol
                   AND IFNULL(m1.$nameCol,'') != IFNULL(m2.$nameCol,'')
-                                    $renamedPackageSql
+                                    $renamedPackageSql $renamedCandidateSql
                 """.trimIndent()
             ).use { rs ->
                 while (rs.next()) renamed += DiffEntryItem(
@@ -744,6 +882,15 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         val escaped = packageFilter.replace("'", "''")
         return "AND ($leftAlias.package_path LIKE '$escaped%' OR $rightAlias.package_path LIKE '$escaped%')"
     }
+
+    private fun stableKeyCondition(alias: String, keyCol: String, candidateStableKeys: Set<String>?): String {
+        if (candidateStableKeys == null) return ""
+        if (candidateStableKeys.isEmpty()) return "AND 1=0"
+        val inList = candidateStableKeys.joinToString(",") { sqlStringLiteral(it) }
+        return "AND $alias.$keyCol IN ($inList)"
+    }
+
+    private fun sqlStringLiteral(value: String): String = "'" + value.replace("'", "''") + "'"
 
     private companion object {
         const val MAX_LCS_CELLS = 4_000_000L
