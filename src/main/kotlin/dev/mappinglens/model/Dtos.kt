@@ -169,3 +169,27 @@ data class SourceResponse(
     val source: String,
     val path: String,
 )
+
+@Serializable
+data class CompareMember(
+    val kind: String, // method | field
+    val obfName: String? = null,
+    val obfDesc: String? = null,
+    val intermediary: String? = null,
+    val yarn: String? = null,
+    val mojmap: String? = null,
+    val status: String, // matched | yarnOnly | mojmapOnly | unmappedYarn | synthetic | initializer
+)
+
+@Serializable
+data class CompareResponse(
+    val version: String,
+    val from: String,
+    val to: String,
+    val obf: String? = null,
+    val intermediary: String? = null,
+    val yarnClass: String? = null,
+    val mojmapClass: String? = null,
+    val presence: String? = null, // both | yarn_only | mojmap_only
+    val members: List<CompareMember>,
+)

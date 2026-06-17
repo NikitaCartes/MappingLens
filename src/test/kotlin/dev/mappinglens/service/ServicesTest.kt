@@ -64,7 +64,7 @@ class VersionServiceTest {
 class TranslationServiceTest {
 
     /**
-     * Expected translations are real Yarn↔Mojang↔Intermediary correspondences
+     * Expected translations are real Yarn<->Mojang<->Intermediary correspondences
      * sourced from https://linkie.shedaniel.dev/ for Minecraft 1.21.1.
      */
 

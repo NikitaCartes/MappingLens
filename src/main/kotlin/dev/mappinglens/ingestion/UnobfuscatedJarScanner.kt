@@ -71,6 +71,7 @@ object UnobfuscatedJarScanner {
                 mojmapName = n,
                 methods = methods,
                 fields = fields,
+                presence = CorrespondenceResolver.PRESENCE_MOJMAP_ONLY,
             )
         }
     }

@@ -38,6 +38,9 @@ dependencies {
     // Mappings
     implementation("net.fabricmc:mapping-io:0.7.1")
 
+    // OpenAPI spec is authored in YAML; converted to JSON for /openapi.json
+    implementation("org.yaml:snakeyaml:2.3")
+
     // Bytecode
     implementation("org.ow2.asm:asm:9.10.1")
     implementation("org.ow2.asm:asm-util:9.10.1")

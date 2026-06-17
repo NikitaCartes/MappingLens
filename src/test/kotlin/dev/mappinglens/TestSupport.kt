@@ -11,7 +11,7 @@ import java.time.Instant
 /**
  * Small in-memory mappings dataset used across service / route tests.
  *
- * Names are based on real Yarn ↔ Mojang ↔ Intermediary correspondences
+ * Names are based on real Yarn <-> Mojang <-> Intermediary correspondences
  * for Minecraft 1.21.1, as exposed by https://linkie.shedaniel.dev/.
  * We only keep a handful of entries — enough to drive translation, search and diff.
  */

@@ -15,12 +15,15 @@ fun Route.bytecodeRoutes(service: BytecodeService) {
             call.respond(HttpStatusCode.BadRequest, ApiError("invalid_query", "Missing class name", 400)); return@get
         }
         val ns = call.request.queryParameters["namespace"] ?: "yarn"
-        val format = call.request.queryParameters["format"] ?: "text"
+        val format = call.request.queryParameters["format"] ?: "json"
         if (!call.ensureOneOf("namespace", ns, setOf("yarn", "mojmap", "intermediary", "obfuscated", "obf"))) return@get
         if (!call.ensureOneOf("format", format, setOf("text", "json"))) return@get
         val r = service.bytecode(version, name, ns)
-        if (r == null) call.respond(HttpStatusCode.NotFound, ApiError("not_found", "Class or jar not found", 404))
-        else call.respond(r)
+        when {
+            r == null -> call.respond(HttpStatusCode.NotFound, ApiError("not_found", "Class or jar not found", 404))
+            format == "text" -> call.respondText(r.bytecode, ContentType.Text.Plain)
+            else -> call.respond(r)
+        }
     }
     get("/api/v1/source/{version}/{className...}") {
         val version = call.parameters["version"]!!

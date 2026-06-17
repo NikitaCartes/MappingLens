@@ -144,6 +144,7 @@ class RealDataRoutesAndOpenApiTest {
             "/api/v1/translate",
             "/api/v1/bytecode/{version}/{className}",
             "/api/v1/source/{version}/{className}",
+            "/api/v1/compare/{version}/{className}",
         )
 
         for (path in expectedPaths) {

@@ -13,6 +13,10 @@ object VersionTable : IntIdTable("versions") {
     val hasYarn = bool("has_yarn").default(false)
     val hasMojmap = bool("has_mojmap").default(false)
     val hasIntermediary = bool("has_intermediary").default(false)
+
+    // Rank of this version in canonical semver order (lower = older). Lets the stateless server
+    // order versions and resolve "latest release" correctly without re-reading the semver cache.
+    val sortIndex = integer("sort_index").nullable().index()
 }
 
 object ClassTable : IntIdTable("classes") {
@@ -23,6 +27,9 @@ object ClassTable : IntIdTable("classes") {
     val mojmapName = text("mojmap_name").nullable().index()
     val packagePath = text("package_path").nullable().index()
     val simpleName = text("simple_name").nullable().index()
+
+    // Yarn<->Mojmap correspondence side: both | yarn_only | mojmap_only (see CorrespondenceResolver).
+    val presence = text("presence").nullable()
 }
 
 object MethodTable : IntIdTable("methods") {

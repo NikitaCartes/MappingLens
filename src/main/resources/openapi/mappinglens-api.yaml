@@ -11,6 +11,7 @@ tags:
   - name: Diff
   - name: Translation
   - name: Bytecode
+  - name: Compare
   - name: Docs
 paths:
   /api/v1/versions:
@@ -376,15 +377,16 @@ paths:
           name: format
           schema:
             type: string
-            enum: [text, json]
-            default: text
+            enum: [json, text]
+            default: json
+          description: "`json` wraps the disassembly in an object; `text` returns raw text/plain."
         - in: query
           name: namespace
           schema:
             $ref: "#/components/schemas/LookupNamespace"
       responses:
         "200":
-          description: ASM Textifier output wrapped in JSON.
+          description: ASM Textifier output, wrapped in JSON or as raw text per `format`.
           content:
             application/json:
               schema:
@@ -422,6 +424,45 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+  /api/v1/compare/{version}/{className}:
+    get:
+      tags: [Compare]
+      summary: Yarn↔Mojmap member-correspondence table for a class
+      description: >
+        Returns the obf-keyed member table aligning a class across the Yarn and Mojmap namespaces,
+        including members present in only one namespace. No source is read; this is a projection of
+        the indexed mappings.
+      parameters:
+        - $ref: "#/components/parameters/VersionPath"
+        - in: path
+          name: className
+          required: true
+          schema:
+            type: string
+          description: Slash-separated class name in the `from` namespace. Catch-all path segments.
+        - in: query
+          name: from
+          schema:
+            $ref: "#/components/schemas/LookupNamespace"
+          description: Namespace the class name is given in. Defaults to yarn.
+        - in: query
+          name: to
+          schema:
+            $ref: "#/components/schemas/LookupNamespace"
+          description: The namespace to compare against. Defaults to mojmap.
+      responses:
+        "200":
+          description: Class correspondence with a per-member table.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompareResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
   /openapi.json:
     get:
       tags: [Docs]
@@ -469,6 +510,12 @@ components:
             $ref: "#/components/schemas/ApiError"
     NotFound:
       description: Requested object was not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    Unprocessable:
+      description: The requested namespace is unavailable for this version.
       content:
         application/json:
           schema:
@@ -787,3 +834,48 @@ components:
           type: string
         path:
           type: string
+    CompareMember:
+      type: object
+      required: [kind, status]
+      properties:
+        kind:
+          type: string
+          enum: [method, field]
+        obfName:
+          type: [string, "null"]
+        obfDesc:
+          type: [string, "null"]
+        intermediary:
+          type: [string, "null"]
+        yarn:
+          type: [string, "null"]
+        mojmap:
+          type: [string, "null"]
+        status:
+          type: string
+          enum: [matched, yarnOnly, mojmapOnly, unmappedYarn, synthetic, initializer, unmapped]
+    CompareResponse:
+      type: object
+      required: [version, from, to, members]
+      properties:
+        version:
+          type: string
+        from:
+          type: string
+        to:
+          type: string
+        obf:
+          type: [string, "null"]
+        intermediary:
+          type: [string, "null"]
+        yarnClass:
+          type: [string, "null"]
+        mojmapClass:
+          type: [string, "null"]
+        presence:
+          type: [string, "null"]
+          enum: [both, yarn_only, mojmap_only, null]
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/CompareMember"

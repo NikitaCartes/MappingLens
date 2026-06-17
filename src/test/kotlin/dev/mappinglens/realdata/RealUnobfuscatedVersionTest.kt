@@ -51,7 +51,7 @@ import kotlin.test.assertTrue
  * Verifies end-to-end behavior for Mojang's unobfuscated releases (26.x): these versions ship
  * without tiny mappings, so the pipeline ingests them by ASM-scanning the mojmap jar. They must
  * appear in /api/v1/versions, allow source/diff retrieval under namespace=mojmap, and produce a
- * clean "namespace_unavailable" error for yarn ↔ mojmap translation (yarn doesn't exist for them).
+ * clean "namespace_unavailable" error for yarn <-> mojmap translation (yarn doesn't exist for them).
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class RealUnobfuscatedVersionTest {

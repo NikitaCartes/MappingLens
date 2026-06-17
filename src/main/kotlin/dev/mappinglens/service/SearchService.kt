@@ -78,8 +78,13 @@ class SearchService(private val db: Database, private val versionService: Versio
                                          rank ASC
             LIMIT ? OFFSET ?
         """.trimIndent()
+        val params = buildList<Any> {
+            add(matchExpr); add(versionRowId)
+            if (typeFilter.isNotEmpty()) add(type)
+            add(limit); add(offset)
+        }
         val rows = mutableListOf<Triple<String, Int, Double>>()
-        execRaw(sql, listOf(matchExpr, versionRowId.toString(), limit.toString(), offset.toString())) { rs ->
+        execRaw(sql, params) { rs ->
             while (rs.next()) {
                 val rank = rs.getDouble("rank")
                 // FTS5 bm25 returns negative-ish lower=better; convert to positive score
@@ -105,17 +110,16 @@ class SearchService(private val db: Database, private val versionService: Versio
             ORDER BY bm25(search_index) ASC
             LIMIT 50
         """.trimIndent()
-        execRaw(ownerSql, listOf(ownerMatch, versionRowId.toString())) { rs ->
+        execRaw(ownerSql, listOf(ownerMatch, versionRowId)) { rs ->
             while (rs.next()) classIds += rs.getInt("element_id")
         }
         if (classIds.isEmpty()) return emptyList()
         val typeForMember = if (type == "class") "method" else type
         val typeFilter = typeFilterClause(typeForMember)
         val memberMatch = buildFtsMatch(memberPart, namespace, exact)
-        val memberPlaceholders = classIds.joinToString(",") { "?" }
 
         // Look up methods/fields filtering by class_id IN list. The FTS index stores class_id NOT directly,
-        // so we resolve element_id → class_id via the relational tables.
+        // so we resolve element_id -> class_id via the relational tables.
         val classIdSet = classIds.toSet()
         val results = mutableListOf<SearchResultEntry>()
         val sql = """
@@ -132,7 +136,12 @@ class SearchService(private val db: Database, private val versionService: Versio
                                          rank ASC
             LIMIT ? OFFSET ?
         """.trimIndent()
-        execRaw(sql, listOf(memberMatch, versionRowId.toString(), (limit * 4).toString(), offset.toString())) { rs ->
+        val memberParams = buildList<Any> {
+            add(memberMatch); add(versionRowId)
+            if (typeFilter.isNotEmpty()) add(typeForMember)
+            add(limit * 4); add(offset)
+        }
+        execRaw(sql, memberParams) { rs ->
             while (rs.next()) {
                 val etype = rs.getString("element_type")
                 val eid = rs.getInt("element_id")
@@ -157,7 +166,7 @@ class SearchService(private val db: Database, private val versionService: Versio
     }
 
     private fun typeFilterClause(type: String): String = when (type) {
-        "class", "method", "field" -> "AND element_type = '$type'"
+        "class", "method", "field" -> "AND element_type = ?"
         else -> ""
     }
 
@@ -255,30 +264,23 @@ class SearchService(private val db: Database, private val versionService: Versio
         return "$owner#$member"
     }
 
-    private fun execRaw(sql: String, params: List<String>, action: (ResultSet) -> Unit) {
-        // Substitute placeholders by hand. params are either pre-escaped FTS expressions or numerics.
-        var idx = 0
-        val rendered = StringBuilder(sql.length + 64)
-        var i = 0
-        while (i < sql.length) {
-            val c = sql[i]
-            if (c == '?') {
-                val v = params[idx++]
-                val asNum = v.toLongOrNull()
-                if (asNum != null) rendered.append(asNum) else {
-                    rendered.append('\'').append(v.replace("'", "''")).append('\'')
-                }
-            } else rendered.append(c)
-            i++
-        }
+    /** Runs a parameterized FTS query; parameters are bound, never string-substituted. */
+    private fun execRaw(sql: String, params: List<Any>, action: (ResultSet) -> Unit) {
         val conn = org.jetbrains.exposed.sql.transactions.TransactionManager.current().connection
             .connection as java.sql.Connection
         try {
-            conn.createStatement().use { st ->
-                st.executeQuery(rendered.toString()).use { rs -> action(rs) }
+            conn.prepareStatement(sql).use { ps ->
+                params.forEachIndexed { i, p ->
+                    when (p) {
+                        is Int -> ps.setInt(i + 1, p)
+                        is Long -> ps.setLong(i + 1, p)
+                        else -> ps.setString(i + 1, p.toString())
+                    }
+                }
+                ps.executeQuery().use { rs -> action(rs) }
             }
         } catch (e: Exception) {
-            log.warn("FTS5 query failed: {} | sql={}", e.message, rendered)
+            log.warn("FTS5 query failed: {} | sql={}", e.message, sql)
         }
     }
 }

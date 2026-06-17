@@ -26,6 +26,10 @@ import org.objectweb.asm.commons.Remapper
 
 class BytecodeService(private val config: AppConfig, private val db: Database) {
 
+    // The index is immutable for the server's lifetime, so name maps (3 full-table reads) are cached
+    // per (version, namespace) instead of being rebuilt on every intermediary bytecode request.
+    private val nameMapCache = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, BytecodeNameMaps>()
+
     /**
      * Loads a JAR for the version and produces a textual disassembly via ASM Textifier.
      *
@@ -125,7 +129,7 @@ class BytecodeService(private val config: AppConfig, private val db: Database) {
 
     private fun bytecodeRemapper(versionId: String, namespace: String): Remapper? {
         if (namespace == "obfuscated" || namespace == "obf") return null
-        val maps = loadBytecodeNameMaps(versionId, namespace)
+        val maps = nameMapCache.computeIfAbsent(versionId to namespace) { (v, ns) -> loadBytecodeNameMaps(v, ns) }
         if (maps.classes.isEmpty() && maps.methods.isEmpty() && maps.fields.isEmpty()) return null
         return object : Remapper() {
             override fun map(internalName: String): String = maps.classes[internalName] ?: internalName

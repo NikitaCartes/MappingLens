@@ -17,10 +17,13 @@ class ApplicationStartupTest {
 
     @Test
     fun `application module starts and serves health endpoint`(@TempDir tmp: Path) = testApplication {
+        val dbPath = tmp.resolve("mappinglens.db").toString()
+        // The stateless server opens a prebuilt index read-only, so create it first.
+        dev.mappinglens.db.DatabaseFactory.init(dbPath)
         application {
             module(
                 AppConfig(
-                    databasePath = tmp.resolve("mappinglens.db").toString(),
+                    databasePath = dbPath,
                     sources = SourcesConfig(
                         yarnRepo = tmp.resolve("yarn-src").toString(),
                         mojmapRepo = tmp.resolve("mojmap-src").toString(),

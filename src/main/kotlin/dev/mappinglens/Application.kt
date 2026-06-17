@@ -20,22 +20,52 @@ import io.ktor.server.plugins.statuspages.*
 import io.ktor.server.plugins.swagger.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import org.yaml.snakeyaml.Yaml
+import kotlin.system.exitProcess
 import kotlin.time.Duration.Companion.seconds
 
 fun main(args: Array<String>) {
-    val startup = RuntimeBootstrap.load(args)
     val log = LoggerFactory.getLogger("dev.mappinglens.Application")
+    // First non-flag token is the subcommand; default to "serve" so bare invocation still serves.
+    val (command, rest) = if (args.isNotEmpty() && !args[0].startsWith("-")) {
+        args[0] to args.copyOfRange(1, args.size)
+    } else {
+        "serve" to args
+    }
+    when (command) {
+        "index" -> runIndex(rest, log)
+        "serve" -> runServe(rest, log)
+        else -> {
+            System.err.println("Unknown command '$command'. Usage: mappinglens [serve|index] [options]")
+            exitProcess(2)
+        }
+    }
+}
 
+/** Offline: build the read-only index. The only writer of the database. */
+private fun runIndex(args: Array<String>, log: Logger) {
+    val startup = RuntimeBootstrap.load(args)
+    log.info("Building index at {} (config {})", startup.appConfig.databasePath, startup.configPath)
+    DatabaseFactory.init(startup.appConfig.databasePath)
+    IngestPipeline(startup.appConfig).run()
+    log.info("Index build complete.")
+}
+
+/** Online: start the stateless HTTP server over the prebuilt read-only index. */
+private fun runServe(args: Array<String>, log: Logger) {
+    val startup = RuntimeBootstrap.load(args)
     if (startup.templateCreated) {
         log.info("Created configuration template at {}", startup.configPath)
     }
-
-    log.info("Starting MappingLens on {}:{} using {}", startup.host, startup.port, startup.configPath)
-
+    log.info("Starting MappingLens (stateless) on {}:{} using {}", startup.host, startup.port, startup.configPath)
     embeddedServer(Netty, host = startup.host, port = startup.port) {
         module(startup.appConfig)
     }.start(wait = true)
@@ -77,12 +107,13 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
         }
     }
 
-    val database = DatabaseFactory.init(appConfig.databasePath)
+    val database = DatabaseFactory.openReadOnly(appConfig.databasePath)
     val versionService = VersionService(database)
     val searchService = SearchService(database, versionService)
     val diffService = DiffService(database, appConfig)
     val translationService = TranslationService(database, versionService)
     val bytecodeService = BytecodeService(appConfig, database)
+    val compareService = CompareService(database, versionService)
 
     routing {
         rateLimit {
@@ -91,6 +122,7 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
             diffRoutes(diffService)
             translationRoutes(translationService)
             bytecodeRoutes(bytecodeService)
+            compareRoutes(compareService)
         }
 
         get("/") {
@@ -98,7 +130,7 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
         }
         get("/health") { call.respondText("ok") }
         get("/openapi.json") {
-            call.respondText(openApiSpec(), ContentType.parse("application/yaml"))
+            call.respondText(openApiJson(), ContentType.Application.Json)
         }
         get("/openapi.yaml") {
             call.respondText(openApiSpec(), ContentType.parse("application/yaml"))
@@ -109,20 +141,24 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
             swaggerUI(path = "docs", swaggerFile = "openapi/mappinglens-api.yaml")
         }
     }
-
-    if (appConfig.indexing.indexOnStartup) {
-        launch(Dispatchers.IO) {
-            try {
-                log.info("Starting ingestion pipeline...")
-                IngestPipeline(appConfig).run()
-                log.info("Ingestion completed.")
-            } catch (e: Exception) {
-                log.error("Ingestion failed: {}", e.message, e)
-            }
-        }
-    }
 }
 
 private fun openApiSpec(): String = checkNotNull(
     Thread.currentThread().contextClassLoader.getResource("openapi/mappinglens-api.yaml"),
 ) { "OpenAPI resource not found" }.readText()
+
+// The spec is authored in YAML; /openapi.json serves the same document as real JSON. Converted once.
+private val openApiJsonCache: String by lazy {
+    Json.encodeToString(JsonElement.serializer(), yamlToJsonElement(Yaml().load(openApiSpec())))
+}
+
+private fun openApiJson(): String = openApiJsonCache
+
+private fun yamlToJsonElement(node: Any?): JsonElement = when (node) {
+    null -> JsonNull
+    is Map<*, *> -> JsonObject(node.entries.associate { (k, v) -> k.toString() to yamlToJsonElement(v) })
+    is List<*> -> JsonArray(node.map { yamlToJsonElement(it) })
+    is Boolean -> JsonPrimitive(node)
+    is Number -> JsonPrimitive(node)
+    else -> JsonPrimitive(node.toString())
+}

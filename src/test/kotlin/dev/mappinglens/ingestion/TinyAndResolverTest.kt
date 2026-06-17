@@ -56,6 +56,28 @@ class TinyV2ParserTest {
     }
 
     @Test
+    fun `parses intermediary tiny v1`(@TempDir tmp: Path) {
+        // Intermediary mappings ship as tiny v1 (header "v1\tofficial\tintermediary"). MappingReader
+        // auto-detects the format, so the same TinyV2Parser handles them.
+        val tiny = "v1\tofficial\tintermediary\n" +
+            "CLASS\ta\tnet/minecraft/class_1158\n" +
+            "METHOD\ta\t()V\tb\tmethod_100\n" +
+            "FIELD\ta\t[F\tc\tfield_5656\n"
+        val file = writeTiny(tmp, tiny)
+        val parsed = TinyV2Parser.parse(file)
+
+        assertEquals(listOf("official", "intermediary"), parsed.namespaces)
+        val cls = parsed.classes.single()
+        assertEquals(listOf("a", "net/minecraft/class_1158"), cls.names)
+        val m = cls.methods.single()
+        assertEquals(listOf("b", "method_100"), m.names)
+        assertEquals("()V", m.descs[0])
+        val f = cls.fields.single()
+        assertEquals(listOf("c", "field_5656"), f.names)
+        assertEquals("[F", f.descs[0])
+    }
+
+    @Test
     fun `parses mojmap-style tiny v2 with two namespaces`(@TempDir tmp: Path) {
         val tiny = "tiny\t2\t0\tofficial\tnamed\n" +
             "c\tdnv\tnet/minecraft/world/level/block/Block\n" +
@@ -163,5 +185,124 @@ class CorrespondenceResolverTest {
         val cls = unified.single()
         assertEquals(null, cls.mojmapName)
         assertNotNull(cls.yarnName)
+    }
+
+    @Test
+    fun `full outer join recovers mojmap-only classes with presence label`() {
+        val yarn = ParsedMappings(
+            namespaces = listOf("official", "intermediary", "named"),
+            classes = listOf(
+                ParsedClass(listOf("a", "net/minecraft/class_1", "net/minecraft/Shared"), emptyList(), emptyList()),
+            ),
+        )
+        val mojmap = ParsedMappings(
+            namespaces = listOf("official", "named"),
+            classes = listOf(
+                ParsedClass(listOf("a", "net/minecraft/world/Shared"), emptyList(), emptyList()),
+                ParsedClass(listOf("b", "net/minecraft/world/MojOnly"), emptyList(), emptyList()),
+            ),
+        )
+        val unified = CorrespondenceResolver.resolve(null, yarn, mojmap)
+        assertEquals(2, unified.size)
+
+        val shared = unified.first { it.obfName == "a" }
+        assertEquals(CorrespondenceResolver.PRESENCE_BOTH, shared.presence)
+        assertEquals("net/minecraft/Shared", shared.yarnName)
+        assertEquals("net/minecraft/world/Shared", shared.mojmapName)
+
+        val mojOnly = unified.first { it.obfName == "b" }
+        assertEquals(CorrespondenceResolver.PRESENCE_MOJMAP_ONLY, mojOnly.presence)
+        assertEquals(null, mojOnly.yarnName)
+        assertEquals("net/minecraft/world/MojOnly", mojOnly.mojmapName)
+    }
+
+    @Test
+    fun `yarn-only class is labelled yarn_only`() {
+        val yarn = ParsedMappings(
+            namespaces = listOf("official", "intermediary", "named"),
+            classes = listOf(
+                ParsedClass(listOf("a", "net/minecraft/class_1", "net/minecraft/YarnOnly"), emptyList(), emptyList()),
+            ),
+        )
+        val mojmap = ParsedMappings(
+            namespaces = listOf("official", "named"),
+            classes = listOf(
+                ParsedClass(listOf("b", "net/minecraft/world/Other"), emptyList(), emptyList()),
+            ),
+        )
+        val unified = CorrespondenceResolver.resolve(null, yarn, mojmap)
+        assertEquals(CorrespondenceResolver.PRESENCE_YARN_ONLY, unified.first { it.obfName == "a" }.presence)
+    }
+
+    @Test
+    fun `overloaded methods sharing an obf name are distinguished by descriptor`() {
+        // One obf class with two methods both named "a", differing only by descriptor — yarn maps
+        // both to one name, mojmap to distinct names. A name-only join would be catastrophically wrong.
+        val yarn = ParsedMappings(
+            namespaces = listOf("official", "intermediary", "named"),
+            classes = listOf(
+                ParsedClass(
+                    names = listOf("enq", "net/minecraft/class_x", "net/minecraft/Buffer"),
+                    methods = listOf(
+                        ParsedMethod(listOf("a", "method_1", "loadStatic"), listOf("(I)V", "(I)V", "(I)V")),
+                        ParsedMethod(listOf("a", "method_2", "loadStatic"), listOf("(F)V", "(F)V", "(F)V")),
+                    ),
+                    fields = emptyList(),
+                ),
+            ),
+        )
+        val mojmap = ParsedMappings(
+            namespaces = listOf("official", "named"),
+            classes = listOf(
+                ParsedClass(
+                    names = listOf("enq", "net/minecraft/world/Buffer"),
+                    methods = listOf(
+                        ParsedMethod(listOf("a", "preload"), listOf("(I)V", "(I)V")),
+                        ParsedMethod(listOf("a", "getCompleteBuffer"), listOf("(F)V", "(F)V")),
+                    ),
+                    fields = emptyList(),
+                ),
+            ),
+        )
+        val cls = CorrespondenceResolver.resolve(null, yarn, mojmap).single()
+        assertEquals(2, cls.methods.size)
+        val intMethod = cls.methods.first { it.obfDesc == "(I)V" }
+        assertEquals("loadStatic", intMethod.yarnName)
+        assertEquals("preload", intMethod.mojmapName)
+        val floatMethod = cls.methods.first { it.obfDesc == "(F)V" }
+        assertEquals("loadStatic", floatMethod.yarnName)
+        assertEquals("getCompleteBuffer", floatMethod.mojmapName)
+    }
+
+    @Test
+    fun `mojmap-only members within a shared class are recovered`() {
+        val yarn = ParsedMappings(
+            namespaces = listOf("official", "intermediary", "named"),
+            classes = listOf(
+                ParsedClass(
+                    names = listOf("a", "net/minecraft/class_1", "net/minecraft/Shared"),
+                    methods = listOf(ParsedMethod(listOf("x", "method_1", "shared"), listOf("()V", "()V", "()V"))),
+                    fields = emptyList(),
+                ),
+            ),
+        )
+        val mojmap = ParsedMappings(
+            namespaces = listOf("official", "named"),
+            classes = listOf(
+                ParsedClass(
+                    names = listOf("a", "net/minecraft/world/Shared"),
+                    methods = listOf(
+                        ParsedMethod(listOf("x", "shared"), listOf("()V", "()V")),
+                        ParsedMethod(listOf("y", "mojOnly"), listOf("()I", "()I")),
+                    ),
+                    fields = emptyList(),
+                ),
+            ),
+        )
+        val cls = CorrespondenceResolver.resolve(null, yarn, mojmap).single()
+        assertEquals(2, cls.methods.size)
+        val mojOnly = cls.methods.first { it.obfName == "y" }
+        assertEquals(null, mojOnly.yarnName)
+        assertEquals("mojOnly", mojOnly.mojmapName)
     }
 }

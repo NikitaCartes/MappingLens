@@ -1,74 +1,68 @@
 package dev.mappinglens.ingestion
 
 import dev.mappinglens.config.AppConfig
+import dev.mappinglens.data.GitCraftStore
 import dev.mappinglens.db.tables.*
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
-import org.jetbrains.exposed.sql.statements.BatchInsertStatement
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.slf4j.LoggerFactory
 import java.nio.file.Paths
 import java.time.Instant
 
 /**
- * Orchestrates ingestion of all available versions: parses mappings, joins them by obfuscated
- * names, and writes to the SQLite database (including FTS5 search index).
+ * Offline indexer: enumerates versions from the [GitCraftStore], joins their mappings by obfuscated
+ * name and writes the read-only SQLite index (versions + classes/methods/fields + FTS5). This is the
+ * single writer of the index; the server only ever reads it. Re-running is idempotent (per-version
+ * replace), so it can simply be re-run when the GitCraft data is refreshed.
  */
 class IngestPipeline(private val config: AppConfig) {
     private val log = LoggerFactory.getLogger(IngestPipeline::class.java)
 
+    private val store = GitCraftStore(
+        artifactStore = Paths.get(config.sources.artifactStore),
+        intermediaryMappingsDir = Paths.get(config.sources.intermediaryMappings),
+    )
+
     fun run() {
-        val discovery = VersionDiscovery(config.sources)
-        val versions = discovery.discover()
+        val allSorted = store.versionIds()
+        val rankOf = allSorted.withIndex().associate { (i, v) -> v to i }
         val filterList = config.indexing.initialVersions.takeIf { it.isNotEmpty() }?.toSet()
-        val targets = versions.filter { filterList == null || it.versionId in filterList }
-        log.info("Ingesting {} versions", targets.size)
+        val targets = allSorted.filter { filterList == null || it in filterList }
+        log.info("Indexing {} of {} versions", targets.size, allSorted.size)
 
-        val yarnGit = GitWatcher(Paths.get(config.sources.yarnRepo)).getCurrentRev()
-        val mojGit = GitWatcher(Paths.get(config.sources.mojmapRepo)).getCurrentRev()
-
-        for (vf in targets) {
+        for (version in targets) {
             try {
-                ingestVersion(vf, yarnGit, mojGit)
+                ingestVersion(version, rankOf[version])
             } catch (e: Exception) {
-                log.error("Failed to ingest version {}: {}", vf.versionId, e.message, e)
+                log.error("Failed to index version {}: {}", version, e.message, e)
             }
         }
     }
 
-    private fun ingestVersion(vf: VersionDiscovery.VersionFiles, yarnGit: String?, mojGit: String?) {
-        val (existingId, storedYarnGit, storedMojGit) = transaction {
-            VersionTable.selectAll().where { VersionTable.versionId eq vf.versionId }
-                .singleOrNull()
-                ?.let { Triple(it[VersionTable.id].value, it[VersionTable.gitRevYarn], it[VersionTable.gitRevMojmap]) }
-                ?: Triple(null, null, null)
-        }
-
-        val gitChanged = (yarnGit != null && yarnGit != storedYarnGit) ||
-            (mojGit != null && mojGit != storedMojGit)
-        if (existingId != null && !gitChanged) {
-            log.info("Skipping version {} (up-to-date)", vf.versionId)
+    private fun ingestVersion(version: String, sortRank: Int?) {
+        val src = store.resolve(version)
+        if (!src.hasAny) {
+            log.warn("Skipping {} (no resolvable mappings)", version)
             return
         }
 
-        log.info("Parsing mappings for {}", vf.versionId)
-        val intermediary = vf.intermediary?.let { TinyV2Parser.parse(it) }
-        val yarn = vf.yarn?.let { TinyV2Parser.parse(it) }
-        val mojmap = mergeMappings(vf.mojmaps.map { TinyV2Parser.parse(it) })
-
-        val unified = if (vf.unobfuscated && vf.unobfuscatedJar != null) {
-            log.info("  unobfuscated jar scan: {}", vf.unobfuscatedJar)
-            UnobfuscatedJarScanner.scan(vf.unobfuscatedJar)
-        } else {
-            CorrespondenceResolver.resolve(intermediary, yarn, mojmap)
-        }
+        log.info("Indexing {}", version)
+        val unified = store.parseUnified(version)
         log.info("  unified classes: {}", unified.size)
 
+        val meta = src.meta
         val now = Instant.now().toString()
-        val releaseType = classifyReleaseType(vf.versionId)
+        val classifiedType = meta?.releaseType ?: classifyReleaseType(version)
+        val release = meta?.releaseTime
+
+        val existingId = transaction {
+            VersionTable.selectAll().where { VersionTable.versionId eq version }
+                .singleOrNull()?.get(VersionTable.id)?.value
+        }
 
         transaction {
-            // Replace existing data
+            // Replace existing data (idempotent re-index)
             val versionRowId = if (existingId != null) {
                 MethodTable.deleteWhere { MethodTable.versionId eq existingId }
                 FieldTable.deleteWhere { FieldTable.versionId eq existingId }
@@ -76,26 +70,25 @@ class IngestPipeline(private val config: AppConfig) {
                 SourceFileTable.deleteWhere { SourceFileTable.versionId eq existingId }
                 exec("DELETE FROM search_index WHERE version_id = $existingId;")
                 VersionTable.update({ VersionTable.id eq existingId }) {
-                    it[releaseTime] = null
-                    it[VersionTable.releaseType] = releaseType
+                    it[releaseTime] = release
+                    it[releaseType] = classifiedType
                     it[indexedAt] = now
-                    it[gitRevYarn] = yarnGit
-                    it[gitRevMojmap] = mojGit
-                    it[hasYarn] = yarn != null
-                    it[hasMojmap] = mojmap != null || vf.unobfuscated
-                    it[hasIntermediary] = intermediary != null
+                    it[sortIndex] = sortRank
+                    it[hasYarn] = src.hasYarn
+                    it[hasMojmap] = src.hasMojmap
+                    it[hasIntermediary] = src.hasIntermediary
                 }
                 existingId
             } else {
                 VersionTable.insertAndGetId {
-                    it[versionId] = vf.versionId
-                    it[VersionTable.releaseType] = releaseType
+                    it[versionId] = version
+                    it[releaseType] = classifiedType
+                    it[releaseTime] = release
                     it[indexedAt] = now
-                    it[gitRevYarn] = yarnGit
-                    it[gitRevMojmap] = mojGit
-                    it[hasYarn] = yarn != null
-                    it[hasMojmap] = mojmap != null || vf.unobfuscated
-                    it[hasIntermediary] = intermediary != null
+                    it[sortIndex] = sortRank
+                    it[hasYarn] = src.hasYarn
+                    it[hasMojmap] = src.hasMojmap
+                    it[hasIntermediary] = src.hasIntermediary
                 }.value
             }
 
@@ -108,13 +101,13 @@ class IngestPipeline(private val config: AppConfig) {
                 this[ClassTable.intermediaryName] = cls.intermediaryName
                 this[ClassTable.yarnName] = cls.yarnName
                 this[ClassTable.mojmapName] = cls.mojmapName
+                this[ClassTable.presence] = cls.presence
                 val nameForPath = cls.yarnName ?: cls.mojmapName ?: cls.intermediaryName
                 this[ClassTable.packagePath] = Names.packagePath(nameForPath)
                 this[ClassTable.simpleName] = Names.simpleName(nameForPath)
             }.forEach { classIds += it[ClassTable.id].value }
 
             // Methods + Fields
-            val methodInsertRows = ArrayList<Triple<Int, UnifiedMemberEntry, Int>>() // (classRowId, member, generatedId placeholder)
             unified.forEachIndexed { idx, cls ->
                 val classRowId = classIds[idx]
                 val nameForPath = cls.yarnName ?: cls.mojmapName ?: cls.intermediaryName
@@ -154,81 +147,8 @@ class IngestPipeline(private val config: AppConfig) {
         }
 
         // Source files outside the heavy mapping transaction
-        indexSourceFiles(vf.versionId)
-        log.info("Done ingesting {}", vf.versionId)
-    }
-
-    private fun mergeMappings(mappings: List<ParsedMappings>): ParsedMappings? {
-        if (mappings.isEmpty()) return null
-        if (mappings.size == 1) return mappings.single()
-
-        val namespaces = mappings.first().namespaces
-        val classesByObf = linkedMapOf<String, ParsedClass>()
-        for (mapping in mappings) {
-            if (mapping.namespaces != namespaces) {
-                log.warn(
-                    "Skipping mapping merge input with namespaces {} because expected {}",
-                    mapping.namespaces,
-                    namespaces,
-                )
-                continue
-            }
-            for (cls in mapping.classes) {
-                val key = cls.names.getOrNull(0) ?: cls.names.filterNotNull().joinToString("|")
-                if (key.isBlank()) continue
-                classesByObf[key] = classesByObf[key]?.let { mergeClass(it, cls) } ?: cls
-            }
-        }
-        return ParsedMappings(namespaces, classesByObf.values.toList())
-    }
-
-    private fun mergeClass(left: ParsedClass, right: ParsedClass): ParsedClass = ParsedClass(
-        names = mergeNullableLists(left.names, right.names),
-        methods = mergeMethods(left.methods, right.methods),
-        fields = mergeFields(left.fields, right.fields),
-    )
-
-    private fun mergeMethods(left: List<ParsedMethod>, right: List<ParsedMethod>): List<ParsedMethod> {
-        val merged = linkedMapOf<Pair<String, String>, ParsedMethod>()
-        fun add(method: ParsedMethod) {
-            val key = memberKey(method.names, method.descs)
-            merged[key] = merged[key]?.let {
-                ParsedMethod(
-                    names = mergeNullableLists(it.names, method.names),
-                    descs = mergeNullableLists(it.descs, method.descs),
-                )
-            } ?: method
-        }
-        left.forEach(::add)
-        right.forEach(::add)
-        return merged.values.toList()
-    }
-
-    private fun mergeFields(left: List<ParsedField>, right: List<ParsedField>): List<ParsedField> {
-        val merged = linkedMapOf<Pair<String, String>, ParsedField>()
-        fun add(field: ParsedField) {
-            val key = memberKey(field.names, field.descs)
-            merged[key] = merged[key]?.let {
-                ParsedField(
-                    names = mergeNullableLists(it.names, field.names),
-                    descs = mergeNullableLists(it.descs, field.descs),
-                )
-            } ?: field
-        }
-        left.forEach(::add)
-        right.forEach(::add)
-        return merged.values.toList()
-    }
-
-    private fun memberKey(names: List<String?>, descs: List<String?>): Pair<String, String> {
-        val name = names.getOrNull(0) ?: names.filterNotNull().joinToString("|")
-        val desc = descs.getOrNull(0) ?: descs.filterNotNull().joinToString("|")
-        return name to desc
-    }
-
-    private fun mergeNullableLists(left: List<String?>, right: List<String?>): List<String?> {
-        val size = maxOf(left.size, right.size)
-        return (0 until size).map { idx -> left.getOrNull(idx) ?: right.getOrNull(idx) }
+        indexSourceFiles(version)
+        log.info("Done indexing {}", version)
     }
 
     private fun Transaction.insertClassFtsBatch(versionRowId: Int, classes: List<UnifiedClassEntry>, classIds: List<Int>) {
@@ -319,7 +239,7 @@ class IngestPipeline(private val config: AppConfig) {
             val rootPath = Paths.get(root)
             val scanner = SourceScanner(rootPath)
             val files = try {
-                val sourceJar = config.sources.decompiledSourceJar(versionId, mappingType)
+                val sourceJar = store.decompiledJar(versionId, mappingType)
                 if (sourceJar != null) SourceScanner.scanJar(sourceJar) else scanner.scan(versionId)
             } catch (e: Exception) {
                 log.warn("Source scan failed for {} at {}: {}", mappingType, root, e.message); continue

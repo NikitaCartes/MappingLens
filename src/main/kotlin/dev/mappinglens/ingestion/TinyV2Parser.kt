@@ -20,14 +20,14 @@ data class ParsedClass(
 )
 
 data class ParsedMethod(
-    val names: List<String?>,
-    val descs: List<String?>,
-)
+    override val names: List<String?>,
+    override val descs: List<String?>,
+) : HasNamesDescs
 
 data class ParsedField(
-    val names: List<String?>,
-    val descs: List<String?>,
-)
+    override val names: List<String?>,
+    override val descs: List<String?>,
+) : HasNamesDescs
 
 object TinyV2Parser {
     fun parse(file: Path): ParsedMappings {

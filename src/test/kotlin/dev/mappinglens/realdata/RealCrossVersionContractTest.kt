@@ -57,7 +57,7 @@ import kotlin.test.assertTrue
  * independent code path inside the test itself.
  *
  * Covers: search (with and without version), diff (mappings), diff (files/folders),
- * yarn ↔ mojmap correspondence and bytecode retrieval.
+ * yarn <-> mojmap correspondence and bytecode retrieval.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class RealCrossVersionContractTest {
@@ -127,7 +127,7 @@ class RealCrossVersionContractTest {
         assertEquals(unifiedTo.sumOf { it.fields.size }.toLong(), byId.getValue(to).fieldCount)
     }
 
-    // -------- /api/v1/translate (yarn ↔ mojmap correspondence) --------
+    // -------- /api/v1/translate (yarn <-> mojmap correspondence) --------
 
     @Test
     fun `translate endpoint returns the yarn-mojmap-intermediary chain derived from tiny files`() = testApplication {
