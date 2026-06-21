@@ -17,6 +17,7 @@ For the full OpenAPI contract in this repository, see `../../../src/main/resourc
 - Translate class, method, or field names between `yarn`, `mojmap`, `intermediary`, and `obfuscated` namespaces.
 - Search for Minecraft classes, methods, and fields by mapped names, intermediary IDs, descriptors, or owner/member expressions.
 - Compare mapping changes between Minecraft versions.
+- Align a single class across Yarn and Mojmap with a per-member correspondence table.
 - Fetch git-like/unified source patches between Minecraft versions.
 - Fetch indexed decompiled source or ASM textified bytecode for a class.
 - Validate which Minecraft versions are indexed before answering mapping questions.
@@ -29,9 +30,10 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 2. Prefer `GET 127.0.0.1:8081/api/v1/search` when the namespace, type, owner class, or exact name is uncertain.
 3. Prefer `GET 127.0.0.1:8081/api/v1/translate` when the input namespace and target namespace are known.
 4. For version-to-version changes, use `GET 127.0.0.1:8081/api/v1/diff` for mapping elements, `GET 127.0.0.1:8081/api/v1/diff/files` for source file movement/modification, and `GET 127.0.0.1:8081/api/v1/diff/patch` when the user asks for a real git/patch-style source diff.
-5. For implementation details, use `GET 127.0.0.1:8081/api/v1/source/{version}/{className}` first; use bytecode only when source is missing or bytecode-level details are required.
-6. URL-encode query parameters and slash-containing path values. If an endpoint supports catch-all class path segments, keep JVM-style slash-separated class names unless the calling tool requires escaping.
-7. Treat all endpoints as read-only. Do not assume MappingLens has indexed every Minecraft version or namespace; handle `404` and empty results explicitly.
+5. To line up one class's members across Yarn and Mojmap (without reading source), use `GET 127.0.0.1:8081/api/v1/compare/{version}/{className}`.
+6. For implementation details, use `GET 127.0.0.1:8081/api/v1/source/{version}/{className}` first; use bytecode only when source is missing or bytecode-level details are required.
+7. URL-encode query parameters and slash-containing path values. If an endpoint supports catch-all class path segments, keep JVM-style slash-separated class names unless the calling tool requires escaping.
+8. Treat all endpoints as read-only. Do not assume MappingLens has indexed every Minecraft version or namespace; handle `404` and empty results explicitly.
 
 ## Endpoint Quick Reference
 
@@ -68,8 +70,10 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 
 ### File Diff
 
-- `GET 127.0.0.1:8081/api/v1/diff/files?from={fromVersion}&to={toVersion}&namespace={namespace}&path={pathPrefix}&format={format}`
+- `GET 127.0.0.1:8081/api/v1/diff/files?from={fromVersion}&to={toVersion}&namespace={namespace}&path={pathPrefix}&file={filePath}&function={functionName}&context={lines}&limit={limit}&format={format}`
 - `namespace`: `yarn` or `mojmap`.
+- `file`: exact or prefix source path filter; takes precedence over `path`.
+- `function`, `context`, `limit`: only used when `format=patch`/`git` (same semantics as the Patch Diff endpoint).
 - `format`: `json` (default), `patch`, or `git`.
 - Use `json` when the question is about changed source files rather than renamed mapping entries. Use `patch`/`git` when raw unified diff text is requested.
 
@@ -82,6 +86,15 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 - `context`: hunk context lines, 0-20; default 3.
 - `format`: `patch`/`git` returns `text/x-diff`; `json` returns metadata plus the patch string.
 - Use this endpoint for full real source diffs between versions; it compares actual decompiled source content, not only renamed mapping entries.
+
+### Compare
+
+- `GET 127.0.0.1:8081/api/v1/compare/{version}/{className}?from={from}&to={to}`
+- `from`: namespace the class name is given in; defaults to `yarn`.
+- `to`: namespace to compare against; defaults to `mojmap`.
+- Returns the obf-keyed member table aligning the class across both namespaces, including members present in only one side. No source is read; it is a projection of the indexed mappings.
+- Per-member `status`: `matched`, `yarnOnly`, `mojmapOnly`, `unmappedYarn`, `synthetic`, `initializer`, or `unmapped`. Class-level `presence`: `both`, `yarn_only`, or `mojmap_only`.
+- `422` is returned when the requested namespace is unavailable for that version.
 
 ### Source
 
@@ -116,6 +129,7 @@ If wrapping MappingLens as an MCP server, expose these read-only tools and map t
 | `mappinglens_diff` | Compare mapping elements between versions | `from`, `to` | `namespace`, `type`, `package`, `changeType`, `limit` |
 | `mappinglens_diff_files` | Compare indexed source files | `from`, `to` | `namespace`, `path`, `format` |
 | `mappinglens_diff_patch` | Return real unified source patch between versions | `from`, `to` | `namespace`, `path`, `file`, `function`, `context`, `limit`, `format` |
+| `mappinglens_compare` | Yarn↔Mojmap per-member correspondence table for a class | `version`, `className` | `from`, `to` |
 | `mappinglens_get_source` | Fetch decompiled source | `version`, `className` | `namespace` |
 | `mappinglens_get_bytecode` | Fetch bytecode/disassembly | `version`, `className` | `namespace`, `format` |
 | `mappinglens_get_openapi` | Fetch the API specification | none | `format` |
@@ -127,6 +141,7 @@ For MCP schemas, keep enum values identical to the REST API. Return the JSON bod
 - `200`: Use the returned JSON directly; summarize only the fields needed for the user's question.
 - `400`: Check parameter names, enum values, and URL encoding.
 - `404`: The version, class, mapping entry, source, or bytecode may not be indexed; try search first or report that MappingLens has no indexed match.
+- `422` (compare): the requested `from`/`to` namespace is not available for that version; check `GET /api/v1/versions` for namespace availability.
 - Empty search results: broaden `namespace=all`, `type=all`, remove `exact=true`, or search by simple name/intermediary ID.
 
 ## Answering Guidelines
