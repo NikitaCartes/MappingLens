@@ -24,11 +24,23 @@ class IngestPipeline(private val config: AppConfig) {
         intermediaryMappingsDir = Paths.get(config.sources.intermediaryMappings),
     )
 
-    fun run() {
+    fun run(force: Boolean = false) {
         val allSorted = store.versionIds()
         val rankOf = allSorted.withIndex().associate { (i, v) -> v to i }
         val filterList = config.indexing.initialVersions.takeIf { it.isNotEmpty() }?.toSet()
-        val targets = allSorted.filter { filterList == null || it in filterList }
+        var targets = allSorted.filter { filterList == null || it in filterList }
+
+        if (!force) {
+            // Resume: skip versions already indexed (each version row is committed atomically with its
+            // data, so its presence means it's complete). Re-run with -force to rebuild everything.
+            val alreadyIndexed = transaction {
+                VersionTable.selectAll().map { it[VersionTable.versionId] }.toSet()
+            }
+            val before = targets.size
+            targets = targets.filter { it !in alreadyIndexed }
+            if (before != targets.size) log.info("Skipping {} already-indexed versions", before - targets.size)
+        }
+
         log.info("Indexing {} of {} versions", targets.size, allSorted.size)
 
         for (version in targets) {

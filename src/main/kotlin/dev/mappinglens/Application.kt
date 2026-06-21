@@ -55,7 +55,8 @@ private fun runIndex(args: Array<String>, log: Logger) {
     val startup = RuntimeBootstrap.load(args)
     log.info("Building index at {} (config {})", startup.appConfig.databasePath, startup.configPath)
     DatabaseFactory.init(startup.appConfig.databasePath)
-    IngestPipeline(startup.appConfig).run()
+    val force = args.any { it == "-force" || it == "--force" }
+    IngestPipeline(startup.appConfig).run(force)
     log.info("Index build complete.")
 }
 
