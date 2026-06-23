@@ -5,6 +5,7 @@ import dev.mappinglens.data.GitCraftStore
 import dev.mappinglens.db.tables.*
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.transactions.TransactionManager
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.slf4j.LoggerFactory
 import java.nio.file.Paths
@@ -50,6 +51,31 @@ class IngestPipeline(private val config: AppConfig) {
                 log.error("Failed to index version {}: {}", version, e.message, e)
             }
         }
+
+        populateFtsRanges()
+    }
+
+    /**
+     * Records each version's inclusive [min,max] search_index rowid range so the server can prune a
+     * search MATCH by rowid instead of post-filtering version_id (see VersionTable.ftsMinRowid).
+     * A version's FTS rows are inserted contiguously, so one grouped scan over the FTS yields the
+     * ranges; run once at the end of indexing (its cost is trivial next to building the index).
+     */
+    private fun populateFtsRanges() = transaction {
+        val ranges = ArrayList<Triple<Int, Long, Long>>()
+        val conn = TransactionManager.current().connection.connection as java.sql.Connection
+        conn.createStatement().use { st ->
+            st.executeQuery("SELECT version_id, MIN(rowid), MAX(rowid) FROM search_index GROUP BY version_id").use { rs ->
+                while (rs.next()) ranges += Triple(rs.getInt(1), rs.getLong(2), rs.getLong(3))
+            }
+        }
+        ranges.forEach { (vid, lo, hi) ->
+            VersionTable.update({ VersionTable.id eq vid }) {
+                it[ftsMinRowid] = lo
+                it[ftsMaxRowid] = hi
+            }
+        }
+        log.info("Recorded FTS rowid ranges for {} versions", ranges.size)
     }
 
     private fun ingestVersion(version: String, sortRank: Int?) {

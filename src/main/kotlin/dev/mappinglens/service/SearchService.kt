@@ -27,7 +27,11 @@ class SearchService(private val db: Database, private val versionService: Versio
             ?: return@transaction SearchResponse(query, "", 0, emptyList())
         val versionRow = VersionTable.selectAll().where { VersionTable.versionId eq effectiveVersion }
             .singleOrNull() ?: return@transaction SearchResponse(query, effectiveVersion, 0, emptyList())
-        val versionRowId = versionRow[VersionTable.id].value
+        val scope = VersionScope(
+            rowId = versionRow[VersionTable.id].value,
+            ftsLo = versionRow[VersionTable.ftsMinRowid],
+            ftsHi = versionRow[VersionTable.ftsMaxRowid],
+        )
 
         // Owner#member, owner.member or short owner/member splitting.
         val ownerMember = splitOwnerMemberQuery(query.trim())
@@ -35,11 +39,24 @@ class SearchService(private val db: Database, private val versionService: Versio
         val memberPart = ownerMember?.second
 
         val results = if (ownerPart != null && memberPart != null) {
-            searchOwnerMember(versionRowId, ownerPart, memberPart, type, namespace, limit, offset, exact)
+            searchOwnerMember(scope, ownerPart, memberPart, type, namespace, limit, offset, exact)
         } else {
-            searchSingle(versionRowId, query.trim(), type, namespace, limit, offset, exact)
+            searchSingle(scope, query.trim(), type, namespace, limit, offset, exact)
         }
         SearchResponse(query, effectiveVersion, results.size, results)
+    }
+
+    /**
+     * One version's identity for an FTS query. [ftsLo]/[ftsHi] are its inclusive search_index rowid
+     * range; when present we constrain `rowid BETWEEN ftsLo AND ftsHi` so FTS5 ranks only this
+     * version's rows. Falls back to the version_id post-filter when the range is absent (an index
+     * built before this column existed) — same results, just the old slow scan.
+     */
+    private class VersionScope(val rowId: Int, val ftsLo: Long?, val ftsHi: Long?) {
+        /** Returns the SQL fragment scoping the match to this version plus its bound parameters. */
+        fun clause(): Pair<String, List<Any>> =
+            if (ftsLo != null && ftsHi != null) "rowid BETWEEN ? AND ?" to listOf(ftsLo, ftsHi)
+            else "version_id = ?" to listOf(rowId)
     }
 
     private fun splitOwnerMemberQuery(query: String): Pair<String, String>? {
@@ -58,16 +75,17 @@ class SearchService(private val db: Database, private val versionService: Versio
     }
 
     private fun searchSingle(
-        versionRowId: Int, q: String, type: String, namespace: String,
+        scope: VersionScope, q: String, type: String, namespace: String,
         limit: Int, offset: Int, exact: Boolean,
     ): List<SearchResultEntry> {
         val typeFilter = typeFilterClause(type)
         val matchExpr = buildFtsMatch(q, namespace, exact)
+        val (versionClause, versionParams) = scope.clause()
         val sql = """
             SELECT element_type, element_id, version_id, bm25(search_index) AS rank
             FROM search_index
             WHERE search_index MATCH ?
-              AND version_id = ?
+              AND $versionClause
               $typeFilter
                         ORDER BY CASE element_type
                                              WHEN 'class' THEN 0
@@ -79,7 +97,7 @@ class SearchService(private val db: Database, private val versionService: Versio
             LIMIT ? OFFSET ?
         """.trimIndent()
         val params = buildList<Any> {
-            add(matchExpr); add(versionRowId)
+            add(matchExpr); addAll(versionParams)
             if (typeFilter.isNotEmpty()) add(type)
             add(limit); add(offset)
         }
@@ -96,21 +114,22 @@ class SearchService(private val db: Database, private val versionService: Versio
     }
 
     private fun searchOwnerMember(
-        versionRowId: Int, ownerPart: String, memberPart: String,
+        scope: VersionScope, ownerPart: String, memberPart: String,
         type: String, namespace: String, limit: Int, offset: Int, exact: Boolean,
     ): List<SearchResultEntry> {
+        val (versionClause, versionParams) = scope.clause()
         // First, find candidate class ids matching ownerPart.
         val ownerMatch = buildFtsMatch(ownerPart, namespace, exact)
         val classIds = mutableListOf<Int>()
         val ownerSql = """
             SELECT element_id FROM search_index
             WHERE search_index MATCH ?
-              AND version_id = ?
+              AND $versionClause
               AND element_type = 'class'
             ORDER BY bm25(search_index) ASC
             LIMIT 50
         """.trimIndent()
-        execRaw(ownerSql, listOf(ownerMatch, versionRowId)) { rs ->
+        execRaw(ownerSql, buildList<Any> { add(ownerMatch); addAll(versionParams) }) { rs ->
             while (rs.next()) classIds += rs.getInt("element_id")
         }
         if (classIds.isEmpty()) return emptyList()
@@ -126,7 +145,7 @@ class SearchService(private val db: Database, private val versionService: Versio
             SELECT element_type, element_id, bm25(search_index) AS rank
             FROM search_index
             WHERE search_index MATCH ?
-              AND version_id = ?
+              AND $versionClause
               $typeFilter
                         ORDER BY CASE element_type
                                              WHEN 'method' THEN 0
@@ -137,7 +156,7 @@ class SearchService(private val db: Database, private val versionService: Versio
             LIMIT ? OFFSET ?
         """.trimIndent()
         val memberParams = buildList<Any> {
-            add(memberMatch); add(versionRowId)
+            add(memberMatch); addAll(versionParams)
             if (typeFilter.isNotEmpty()) add(typeForMember)
             add(limit * 4); add(offset)
         }

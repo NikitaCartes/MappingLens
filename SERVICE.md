@@ -38,7 +38,13 @@ read-only GitCraft-стора, индекс открывается с `PRAGMA qu
   - Для `serve` — **готовый индекс** по пути `database.path` (иначе сервер падает на старте с подсказкой запустить `index`). Источники репозиториев на старте не нужны, но `diff`/`bytecode`/`source` лениво читают jar'ы из `artifact-store` во время запроса.
   - Для `/openapi.*` и `/docs` — ресурс `openapi/mappinglens-api.yaml` на classpath (поставляется в jar).
 
-> ⚠️ **Миграции схемы нет.** Индекс, собранный до переписывания, не содержит колонок `versions.sort_index` / `classes.presence`, и `serve` на нём вернёт 500 `no such column: versions.sort_index`. Лечится только пересборкой через `index`.
+> ⚠️ **Совместимость схемы.** Индекс, собранный до переписывания, не содержит колонок `versions.sort_index` / `classes.presence`, и `serve` на нём вернёт 500 `no such column: versions.sort_index` — лечится пересборкой через `index`.
+>
+> Индекс, собранный до оптимизации поиска/diff, не содержит колонок `versions.fts_min_rowid` / `versions.fts_max_rowid` и составного индекса `classes(version_id, intermediary_name)`. Их добавляет **`index`** при сборке; для уже существующего большого индекса есть быстрая миграция **без переразбора исходников** (всё выводится из уже записанных строк):
+> ```sh
+> sqlite3 data/mappinglens.db < dev/migrate-search-perf.sql   # ~1.5 мин на полном индексе
+> ```
+> Пока `fts_*_rowid` пусты (старый индекс, миграция не запускалась), поиск автоматически откатывается на прежний медленный путь — результаты те же.
 
 ---
 
@@ -182,7 +188,7 @@ npm run build                            # статика в dist/ (tsc + vite)
 
 ## Что хранит индекс
 
-SQLite-индекс (собирается `index`, открывается `serve` как RO): `versions` (метаданные + semver-порядок + counts),
+SQLite-индекс (собирается `index`, открывается `serve` как RO): `versions` (метаданные + semver-порядок + counts + FTS rowid-диапазон версии),
 унифицированные obf-ключённые строки `classes`/`methods`/`fields` (с `presence ∈ {both, yarn_only, mojmap_only}`)
 и FTS5-таблица `search_index` по именам. **Не хранит** декомпилированный исходник, байткод и git-блобы —
 они читаются по требованию из read-only стора.

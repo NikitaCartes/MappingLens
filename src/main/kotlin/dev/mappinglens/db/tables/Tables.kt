@@ -17,6 +17,13 @@ object VersionTable : IntIdTable("versions") {
     // Rank of this version in canonical semver order (lower = older). Lets the stateless server
     // order versions and resolve "latest release" correctly without re-reading the semver cache.
     val sortIndex = integer("sort_index").nullable().index()
+
+    // Inclusive [min,max] FTS5 rowid range of this version's search_index rows. Each version's rows
+    // are inserted contiguously, so the server prunes a search MATCH with `rowid BETWEEN ? AND ?`
+    // (which FTS5 pushes into the scan) instead of post-filtering the version-agnostic match across
+    // all ~500 versions — same results, but it ranks only one version's rows. See IngestPipeline.
+    val ftsMinRowid = long("fts_min_rowid").nullable()
+    val ftsMaxRowid = long("fts_max_rowid").nullable()
 }
 
 object ClassTable : IntIdTable("classes") {
@@ -30,6 +37,14 @@ object ClassTable : IntIdTable("classes") {
 
     // Yarn<->Mojmap correspondence side: both | yarn_only | mojmap_only (see CorrespondenceResolver).
     val presence = text("presence").nullable()
+
+    init {
+        // Cross-version class diff joins on (version_id, intermediary_name). The standalone
+        // intermediary_name index is version-agnostic, so a rename scan fans out across all ~500
+        // indexed versions (5s+ on a full index). This composite — mirroring the methods/fields
+        // (version_id, intermediary_name, ...) indexes — makes that join a direct seek (~3ms).
+        index(isUnique = false, versionId, intermediaryName)
+    }
 }
 
 object MethodTable : IntIdTable("methods") {

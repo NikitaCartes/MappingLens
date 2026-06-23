@@ -20,12 +20,32 @@ import org.jetbrains.exposed.sql.transactions.transaction
 
 class VersionService(private val db: Database) {
 
+    // The index is immutable for the server's lifetime (read-only, sole writer is the offline
+    // indexer), so per-version row counts never change. Computing the three grouped COUNTs scans
+    // ~50M index rows (~1.5s warm / ~6.5s cold on a full multi-version index); memoize them so only
+    // the first /versions request pays. ponytail: a benign double-compute under a startup race is
+    // fine (idempotent over immutable data); no lock needed.
+    @Volatile
+    private var countsCache: VersionCounts? = null
+
+    private data class VersionCounts(
+        val classes: Map<Int, Long>,
+        val methods: Map<Int, Long>,
+        val fields: Map<Int, Long>,
+    )
+
+    /** Must be called inside a [transaction]; populates and caches the per-version counts once. */
+    private fun counts(): VersionCounts = countsCache ?: VersionCounts(
+        classes = countsByVersion(ClassTable.versionId),
+        methods = countsByVersion(MethodTable.versionId),
+        fields = countsByVersion(FieldTable.versionId),
+    ).also { countsCache = it }
+
     fun listVersions(): VersionListResponse = transaction(db) {
-        // One grouped COUNT per table instead of 3 counts per version (the old N+1 that made
-        // /versions take ~17s on a full multi-version index).
-        val classCounts = countsByVersion(ClassTable.versionId)
-        val methodCounts = countsByVersion(MethodTable.versionId)
-        val fieldCounts = countsByVersion(FieldTable.versionId)
+        val counts = counts()
+        val classCounts = counts.classes
+        val methodCounts = counts.methods
+        val fieldCounts = counts.fields
         val versions = VersionTable.selectAll()
             .orderBy(VersionTable.sortIndex to SortOrder.DESC_NULLS_LAST, VersionTable.versionId to SortOrder.DESC)
             .map { row ->

@@ -27,7 +27,17 @@ object DatabaseFactory {
         log.info("Opening SQLite index (query-only) at {}", path)
         return Database.connect(getNewConnection = {
             DriverManager.getConnection(jdbcUrl).also { conn ->
-                conn.createStatement().use { it.execute("PRAGMA query_only=ON;") }
+                conn.createStatement().use { st ->
+                    st.execute("PRAGMA query_only=ON;")
+                    // Read tuning for a large (tens of GB) immutable index. mmap lets reads share the
+                    // OS page cache without per-connection copies; temp_store=MEMORY keeps the search
+                    // ORDER BY temp b-tree off disk. cache_size is modest because connections are
+                    // short-lived (a fresh one per request), so a big per-connection cache never warms.
+                    st.execute("PRAGMA mmap_size=2147483648;")   // 2 GiB
+                    st.execute("PRAGMA cache_size=-65536;")       // 64 MiB
+                    st.execute("PRAGMA temp_store=MEMORY;")
+                    st.execute("PRAGMA busy_timeout=3000;")
+                }
             }
         })
     }
