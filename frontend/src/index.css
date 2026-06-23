@@ -65,14 +65,19 @@ code,
   flex: 1;
   min-height: 0;
 }
+.layout .ant-splitter {
+  height: 100%;
+  width: 100%;
+}
 
 .sidebar {
-  width: 260px;
-  flex-shrink: 0;
+  height: 100%;
   border-right: 1px solid var(--border);
   background: var(--bg-elev);
   padding: 1rem;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 .sidebar h2 {
   font-size: 0.72rem;
@@ -149,10 +154,263 @@ code,
 }
 
 .content {
+  height: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* The search/browse panels live in the (resizable) sidebar; let them scroll. */
+.sidebar-results,
+.sidebar-tree {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.classtree {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 0.5rem;
+}
+.classtree-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.source-ns {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+.source-ns-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+
+.result-open {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  color: var(--accent);
+  text-align: left;
+}
+.result-open:hover {
+  text-decoration: underline;
+}
+
+/* ---- editor area (tabs + monaco) ---- */
+.editor-area {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.editor-area > .ant-tabs {
+  flex: 0 0 auto;
+}
+.editor-area .ant-tabs-content-holder {
+  display: none;
+}
+.editor-content {
+  flex: 1;
+  min-height: 0;
+}
+.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-dim);
+  padding: 2rem;
+  text-align: center;
+}
+
+.codeview {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.codeview-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+  flex-wrap: wrap;
+}
+.codeview-class {
+  font-family: ui-monospace, monospace;
+  font-size: 0.82rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.codeview-controls {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+.codeview-body,
+.codeview-spin,
+.codeview-spin .ant-spin-container {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
+.codeview-message {
+  padding: 1rem;
+}
+
+/* ---- compare ---- */
+.compareview {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.compare-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+  flex-wrap: wrap;
+}
+.compare-arrow {
+  color: var(--text-dim);
+}
+.compare-summary {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  margin-left: auto;
+}
+.compare-summary .added,
+.symbol-col .added,
+b.added {
+  color: var(--field);
+}
+.compare-summary .removed,
+b.removed {
+  color: #ff8a8a;
+}
+.compare-summary .renamed,
+b.renamed {
+  color: var(--method);
+}
+.compare-spin,
+.compare-spin .ant-spin-container,
+.compare-tabs {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
+.compare-tabs .ant-tabs-content,
+.compare-tabs .ant-tabs-tabpane {
+  height: 100%;
+}
+.compare-message {
+  padding: 1rem;
+}
+.compare-files {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+.compare-filelist {
+  width: 38%;
+  min-width: 220px;
+  overflow: auto;
+  border-right: 1px solid var(--border);
+  padding: 0.25rem;
+}
+.compare-filelist ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.filerow {
+  padding: 0.2rem 0.4rem;
+  cursor: pointer;
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.filerow:hover {
+  background: var(--bg-elev-2);
+}
+.filerow.active {
+  background: color-mix(in srgb, var(--accent) 22%, var(--bg-elev-2));
+}
+.filerow .filemark {
+  display: inline-block;
+  width: 1ch;
+  font-weight: 700;
+}
+.filerow.added .filemark {
+  color: var(--field);
+}
+.filerow.removed .filemark {
+  color: #ff8a8a;
+}
+.filerow.modified .filemark {
+  color: var(--method);
+}
+.compare-patch {
   flex: 1;
   min-width: 0;
-  padding: 1rem 1.25rem;
-  overflow-y: auto;
+  min-height: 0;
+}
+.compare-symbols {
+  display: flex;
+  gap: 1rem;
+  height: 100%;
+  overflow: auto;
+  padding: 0.5rem;
+}
+.symbol-col {
+  flex: 1;
+  min-width: 0;
+}
+.symbol-col h3 {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  margin: 0 0 0.4rem;
+}
+.symbol-col ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.sym {
+  font-family: ui-monospace, monospace;
+  font-size: 0.74rem;
+  padding: 0.12rem 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .searchbar {

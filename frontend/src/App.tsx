@@ -1,9 +1,19 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ConfigProvider, Splitter, Tabs, theme } from "antd";
 import { ApiRequestError, fetchVersions, search } from "./api";
-import type { SearchNamespace, SearchResponse, SearchType, VersionInfo } from "./types";
-import { Sidebar } from "./components/Sidebar";
-import { SearchBar } from "./components/SearchBar";
-import { Results } from "./components/Results";
+import type {
+  SearchNamespace,
+  SearchResponse,
+  SearchResultEntry,
+  SearchType,
+  SourceNamespace,
+  VersionInfo,
+} from "./types";
+import { Sidebar, type Mode } from "./components/Sidebar";
+import { CodeView, tabLabel } from "./components/CodeView";
+import { CompareView } from "./components/CompareView";
+import { OpenClassProvider, type OpenClassRequest } from "./openClass";
+import { classKey, type CodeTab } from "./tabs";
 
 function useDebounced<T>(value: T, ms: number): T {
   const [debounced, setDebounced] = useState(value);
@@ -15,37 +25,37 @@ function useDebounced<T>(value: T, ms: number): T {
 }
 
 function pickDefaultVersion(versions: VersionInfo[]): string | undefined {
-  // versions arrive oldest -> newest in canonical semver order
-  const newestFirst = [...versions].reverse();
-  const latestRelease = newestFirst.find((v) => v.releaseType === "release");
-  return (latestRelease ?? newestFirst[0])?.id;
+  // API returns newest → oldest.
+  const latestRelease = versions.find((v) => v.releaseType === "release");
+  return (latestRelease ?? versions[0])?.id;
 }
 
-function isAbort(err: unknown): boolean {
-  return err instanceof DOMException && err.name === "AbortError";
-}
-
-function messageOf(err: unknown): string {
-  if (err instanceof ApiRequestError || err instanceof Error) return err.message;
-  return String(err);
-}
+const isAbort = (err: unknown) => err instanceof DOMException && err.name === "AbortError";
+const messageOf = (err: unknown) =>
+  err instanceof ApiRequestError || err instanceof Error ? err.message : String(err);
 
 export default function App() {
   const [versions, setVersions] = useState<VersionInfo[] | null>(null);
   const [versionsError, setVersionsError] = useState<string | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<string | undefined>(undefined);
   const [showSnapshots, setShowSnapshots] = useState(false);
-  const [namespace, setNamespace] = useState<SearchNamespace>("all");
+  // ponytail: mojmap default — new versions are mojmap-only (no recent yarn). Derive per-version if yarn-only versions matter.
+  const [sourceNamespace, setSourceNamespace] = useState<SourceNamespace>("mojmap");
+  const [mode, setMode] = useState<Mode>("search");
+
+  const [searchNamespace, setSearchNamespace] = useState<SearchNamespace>("all");
   const [type, setType] = useState<SearchType>("all");
   const [query, setQuery] = useState("");
-
-  const [loading, setLoading] = useState(false);
+  const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | undefined>(undefined);
   const [response, setResponse] = useState<SearchResponse | undefined>(undefined);
 
+  const [tabs, setTabs] = useState<CodeTab[]>([]);
+  const [activeKey, setActiveKey] = useState<string | undefined>(undefined);
+
   const debouncedQuery = useDebounced(query, 150);
 
-  // Load the version list once.
+  // Load versions once.
   useEffect(() => {
     const controller = new AbortController();
     fetchVersions(controller.signal)
@@ -60,72 +70,142 @@ export default function App() {
     return () => controller.abort();
   }, []);
 
-  // Run a search whenever the query or any filter changes.
+  // Search on query/filter change.
   useEffect(() => {
     const q = debouncedQuery.trim();
     if (!q || !selectedVersion) {
       setResponse(undefined);
       setSearchError(undefined);
-      setLoading(false);
+      setSearchLoading(false);
       return;
     }
     const controller = new AbortController();
-    setLoading(true);
+    setSearchLoading(true);
     setSearchError(undefined);
-    search({ q, version: selectedVersion, type, namespace }, controller.signal)
+    search({ q, version: selectedVersion, type, namespace: searchNamespace }, controller.signal)
       .then((res) => {
         setResponse(res);
-        setLoading(false);
+        setSearchLoading(false);
       })
       .catch((err: unknown) => {
         if (isAbort(err)) return;
         setSearchError(messageOf(err));
         setResponse(undefined);
-        setLoading(false);
+        setSearchLoading(false);
       });
     return () => controller.abort();
-  }, [debouncedQuery, selectedVersion, type, namespace]);
+  }, [debouncedQuery, selectedVersion, type, searchNamespace]);
+
+  const openClass = useCallback(
+    (req: OpenClassRequest) => {
+      const version = req.version ?? selectedVersion;
+      if (!version) return;
+      const namespace = req.namespace ?? sourceNamespace;
+      const key = classKey(version, req.names);
+      setTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, version, names: req.names, namespace }]));
+      setActiveKey(key);
+    },
+    [selectedVersion, sourceNamespace],
+  );
+
+  const closeTab = useCallback((key: string) => {
+    setTabs((prev) => {
+      const idx = prev.findIndex((t) => t.key === key);
+      const next = prev.filter((t) => t.key !== key);
+      setActiveKey((cur) => {
+        if (cur !== key) return cur;
+        const neighbour = next[idx] ?? next[idx - 1];
+        return neighbour?.key;
+      });
+      return next;
+    });
+  }, []);
+
+  const activeTab = useMemo(() => tabs.find((t) => t.key === activeKey), [tabs, activeKey]);
+
+  const main = (() => {
+    if (versionsError) {
+      return (
+        <p className="hint error" style={{ padding: "1rem" }}>
+          Could not reach the MappingLens API: {versionsError}. Is <code>mappinglens serve</code> running on port 8080?
+        </p>
+      );
+    }
+    if (mode === "compare" && versions) {
+      return <CompareView versions={versions} initialTo={selectedVersion} initialNamespace={sourceNamespace} />;
+    }
+    if (tabs.length === 0) {
+      return (
+        <div className="empty-state">
+          <p>Open a class from Search or Browse to view its source and bytecode.</p>
+        </div>
+      );
+    }
+    return (
+      <div className="editor-area">
+        <Tabs
+          type="editable-card"
+          hideAdd
+          size="small"
+          activeKey={activeKey}
+          onChange={setActiveKey}
+          onEdit={(key, action) => {
+            if (action === "remove") closeTab(key as string);
+          }}
+          items={tabs.map((t) => ({ key: t.key, label: tabLabel(t) }))}
+        />
+        <div className="editor-content">
+          {activeTab && <CodeView key={activeTab.key} tab={activeTab} />}
+        </div>
+      </div>
+    );
+  })();
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <h1>MappingLens</h1>
-        <span className="tagline">Minecraft mappings explorer</span>
-      </header>
-      <div className="layout">
-        {versions && (
-          <Sidebar
-            versions={versions}
-            selectedVersion={selectedVersion}
-            onVersion={setSelectedVersion}
-            showSnapshots={showSnapshots}
-            onShowSnapshots={setShowSnapshots}
-            namespace={namespace}
-            onNamespace={setNamespace}
-            type={type}
-            onType={setType}
-          />
-        )}
-        <main className="content">
-          {versionsError ? (
-            <p className="hint error">
-              Could not reach the MappingLens API: {versionsError}. Is <code>mappinglens serve</code> running on
-              port 8080?
-            </p>
-          ) : (
-            <>
-              <SearchBar value={query} onChange={setQuery} count={response?.totalResults} />
-              <Results
-                loading={loading}
-                error={searchError}
-                results={response?.results}
-                query={debouncedQuery}
-                hasVersion={!!selectedVersion}
-              />
-            </>
-          )}
-        </main>
-      </div>
-    </div>
+    <ConfigProvider theme={{ algorithm: theme.darkAlgorithm, token: { colorPrimary: "#5b9dff" } }}>
+      <OpenClassProvider value={openClass}>
+        <div className="app">
+          <header className="topbar">
+            <h1>MappingLens</h1>
+            <span className="tagline">Minecraft mappings explorer</span>
+          </header>
+          <div className="layout">
+            <Splitter>
+              <Splitter.Panel defaultSize="340" min="220" max="65%">
+                {versions ? (
+                  <Sidebar
+                    versions={versions}
+                    selectedVersion={selectedVersion}
+                    onVersion={setSelectedVersion}
+                    showSnapshots={showSnapshots}
+                    onShowSnapshots={setShowSnapshots}
+                    sourceNamespace={sourceNamespace}
+                    onSourceNamespace={setSourceNamespace}
+                    mode={mode}
+                    onMode={setMode}
+                    query={query}
+                    onQuery={setQuery}
+                    searchNamespace={searchNamespace}
+                    onSearchNamespace={setSearchNamespace}
+                    type={type}
+                    onType={setType}
+                    searchLoading={searchLoading}
+                    searchError={searchError}
+                    results={response?.results as SearchResultEntry[] | undefined}
+                  />
+                ) : (
+                  <div className="sidebar">
+                    <p className="hint">{versionsError ?? "Loading versions…"}</p>
+                  </div>
+                )}
+              </Splitter.Panel>
+              <Splitter.Panel>
+                <main className="content">{main}</main>
+              </Splitter.Panel>
+            </Splitter>
+          </div>
+        </div>
+      </OpenClassProvider>
+    </ConfigProvider>
   );
 }

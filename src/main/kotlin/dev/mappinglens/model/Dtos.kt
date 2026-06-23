@@ -29,6 +29,22 @@ data class VersionInfo(
 data class VersionListResponse(val versions: List<VersionInfo>)
 
 @Serializable
+data class ClassEntry(
+    val obfuscated: String? = null,
+    val intermediary: String? = null,
+    val yarn: String? = null,
+    val mojmap: String? = null,
+    val presence: String? = null, // both | yarn_only | mojmap_only
+)
+
+/** All classes of one version, for building the package/class structure tree client-side. */
+@Serializable
+data class ClassListResponse(
+    val version: String,
+    val classes: List<ClassEntry>,
+)
+
+@Serializable
 data class ClassRef(
     val intermediary: String? = null,
     val yarn: String? = null,

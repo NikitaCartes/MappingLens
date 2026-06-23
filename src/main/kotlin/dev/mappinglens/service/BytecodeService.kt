@@ -58,8 +58,9 @@ class BytecodeService(private val config: AppConfig, private val db: Database) {
         val rootDir = if (mappingType == "yarn") config.sources.yarnRepo else config.sources.mojmapRepo
         val rootPath = Paths.get(rootDir)
         val sourceClassName = resolveSourceClassName(versionId, className, namespace, mappingType) ?: className
-        // Try {root}/{version}/{className}.java first, then {root}/{className}.java
-        val rel = "$sourceClassName.java"
+        // Nested classes (Outer$Inner) live in the top-level class's .java file, so strip the
+        // "$Inner" suffix to find the file. Try {root}/{version}/{file} first, then {root}/{file}.
+        val rel = "${sourceClassName.substringBefore('$')}.java"
         readSourceFromArtifactStore(versionId, mappingType, rel)?.let { source ->
             return SourceResponse(versionId, className, mappingType, source, rel)
         }

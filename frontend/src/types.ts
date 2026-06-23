@@ -46,3 +46,98 @@ export interface SearchResponse {
   totalResults: number;
   results: SearchResultEntry[];
 }
+
+// --- Code / structure / compare ---
+
+export type SourceNamespace = "yarn" | "mojmap";
+
+export interface ClassEntry {
+  obfuscated?: string | null;
+  intermediary?: string | null;
+  yarn?: string | null;
+  mojmap?: string | null;
+  presence?: string | null; // both | yarn_only | mojmap_only
+}
+
+export interface ClassListResponse {
+  version: string;
+  classes: ClassEntry[];
+}
+
+/** Names of one class across namespaces — what a code tab carries so it can switch namespace. */
+export interface ClassNames {
+  obfuscated?: string | null;
+  intermediary?: string | null;
+  yarn?: string | null;
+  mojmap?: string | null;
+}
+
+export interface SourceResponse {
+  version: string;
+  class: string;
+  namespace: string;
+  source: string;
+  path: string;
+}
+
+export interface BytecodeResponse {
+  version: string;
+  class: string;
+  bytecode: string;
+}
+
+export interface DiffEntryItem {
+  type: string;
+  name?: string | null;
+  intermediary?: string | null;
+  owner?: string | null;
+  oldName?: string | null;
+  newName?: string | null;
+}
+
+export interface DiffChanges {
+  added: DiffEntryItem[];
+  removed: DiffEntryItem[];
+  renamed: DiffEntryItem[];
+}
+
+export interface DiffSummary {
+  classesAdded: number;
+  classesRemoved: number;
+  classesRenamed: number;
+  methodsAdded: number;
+  methodsRemoved: number;
+  methodsRenamed: number;
+  fieldsAdded: number;
+  fieldsRemoved: number;
+  fieldsRenamed: number;
+}
+
+export interface DiffResponse {
+  from: string;
+  to: string;
+  namespace: string;
+  changes: DiffChanges;
+  summary: DiffSummary;
+}
+
+export interface FileChange {
+  path: string;
+  methodsAdded: number;
+  methodsRemoved: number;
+  fieldsAdded: number;
+  fieldsRemoved: number;
+}
+
+export interface FileDiff {
+  added: string[];
+  removed: string[];
+  modified: FileChange[];
+}
+
+export interface FileDiffResponse {
+  from: string;
+  to: string;
+  namespace: string;
+  files: FileDiff;
+}

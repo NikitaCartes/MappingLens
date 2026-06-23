@@ -1,4 +1,16 @@
-import type { SearchNamespace, SearchType, VersionInfo } from "../types";
+import { Segmented, Select } from "antd";
+import type {
+  SearchNamespace,
+  SearchResultEntry,
+  SearchType,
+  SourceNamespace,
+  VersionInfo,
+} from "../types";
+import { SearchBar } from "./SearchBar";
+import { Results } from "./Results";
+import { ClassTree } from "./ClassTree";
+
+export type Mode = "search" | "browse" | "compare";
 
 interface Props {
   versions: VersionInfo[];
@@ -6,10 +18,20 @@ interface Props {
   onVersion: (v: string) => void;
   showSnapshots: boolean;
   onShowSnapshots: (v: boolean) => void;
-  namespace: SearchNamespace;
-  onNamespace: (v: SearchNamespace) => void;
+  sourceNamespace: SourceNamespace;
+  onSourceNamespace: (ns: SourceNamespace) => void;
+  mode: Mode;
+  onMode: (m: Mode) => void;
+  // search
+  query: string;
+  onQuery: (q: string) => void;
+  searchNamespace: SearchNamespace;
+  onSearchNamespace: (n: SearchNamespace) => void;
   type: SearchType;
-  onType: (v: SearchType) => void;
+  onType: (t: SearchType) => void;
+  searchLoading: boolean;
+  searchError?: string;
+  results?: SearchResultEntry[];
 }
 
 const SEARCH_NAMESPACES: { id: SearchNamespace; label: string }[] = [
@@ -27,12 +49,11 @@ const TYPES: { id: SearchType; label: string }[] = [
 ];
 
 export function Sidebar(props: Props) {
-  const { versions, selectedVersion, showSnapshots } = props;
+  const { versions, selectedVersion, showSnapshots, sourceNamespace, mode } = props;
   const selected = versions.find((v) => v.id === selectedVersion);
 
-  // The API returns versions oldest -> newest in canonical semver order; show newest first.
-  const ordered = [...versions].reverse();
-  const visible = ordered.filter(
+  // API returns newest → oldest already.
+  const visible = versions.filter(
     (v) => showSnapshots || v.releaseType === "release" || v.id === selectedVersion,
   );
 
@@ -40,18 +61,19 @@ export function Sidebar(props: Props) {
     <aside className="sidebar">
       <section>
         <h2>Version</h2>
-        <select
-          className="version-select"
-          value={selectedVersion ?? ""}
-          onChange={(e) => props.onVersion(e.target.value)}
-        >
-          {visible.map((v) => (
-            <option key={v.id} value={v.id}>
-              {v.id}
-              {v.releaseType !== "release" ? `  (${v.releaseType})` : ""}
-            </option>
-          ))}
-        </select>
+        <Select
+          className="version-antd-select"
+          size="small"
+          showSearch
+          style={{ width: "100%" }}
+          value={selectedVersion}
+          onChange={props.onVersion}
+          optionFilterProp="label"
+          options={visible.map((v) => ({
+            value: v.id,
+            label: v.releaseType === "release" ? v.id : `${v.id} (${v.releaseType})`,
+          }))}
+        />
         <label className="checkbox">
           <input
             type="checkbox"
@@ -73,39 +95,91 @@ export function Sidebar(props: Props) {
             </p>
           </>
         )}
-      </section>
-
-      <section>
-        <h2>Search in</h2>
-        <div className="pill-group">
-          {SEARCH_NAMESPACES.map((n) => (
-            <button
-              key={n.id}
-              type="button"
-              className={`pill${props.namespace === n.id ? " active" : ""}`}
-              onClick={() => props.onNamespace(n.id)}
-            >
-              {n.label}
-            </button>
-          ))}
+        <div className="source-ns">
+          <span className="source-ns-label">Source</span>
+          <Segmented
+            size="small"
+            value={sourceNamespace}
+            onChange={(val) => props.onSourceNamespace(val as SourceNamespace)}
+            options={[
+              { label: "Yarn", value: "yarn" },
+              { label: "Mojmap", value: "mojmap" },
+            ]}
+          />
         </div>
       </section>
 
       <section>
-        <h2>Type</h2>
-        <div className="pill-group">
-          {TYPES.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              className={`pill${props.type === t.id ? " active" : ""}`}
-              onClick={() => props.onType(t.id)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <Segmented
+          block
+          value={mode}
+          onChange={(val) => props.onMode(val as Mode)}
+          options={[
+            { label: "Search", value: "search" },
+            { label: "Browse", value: "browse" },
+            { label: "Compare", value: "compare" },
+          ]}
+        />
       </section>
+
+      {mode === "search" && (
+        <>
+          <section>
+            <SearchBar value={props.query} onChange={props.onQuery} count={props.results?.length} />
+          </section>
+          <section>
+            <h2>Search in</h2>
+            <div className="pill-group">
+              {SEARCH_NAMESPACES.map((n) => (
+                <button
+                  key={n.id}
+                  type="button"
+                  className={`pill${props.searchNamespace === n.id ? " active" : ""}`}
+                  onClick={() => props.onSearchNamespace(n.id)}
+                >
+                  {n.label}
+                </button>
+              ))}
+            </div>
+          </section>
+          <section>
+            <h2>Type</h2>
+            <div className="pill-group">
+              {TYPES.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  className={`pill${props.type === t.id ? " active" : ""}`}
+                  onClick={() => props.onType(t.id)}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </section>
+          <section className="sidebar-results">
+            <Results
+              loading={props.searchLoading}
+              error={props.searchError}
+              results={props.results}
+              query={props.query}
+              hasVersion={!!selectedVersion}
+            />
+          </section>
+        </>
+      )}
+
+      {mode === "browse" && selectedVersion && (
+        <section className="sidebar-tree">
+          <ClassTree version={selectedVersion} namespace={sourceNamespace} />
+        </section>
+      )}
+
+      {mode === "compare" && (
+        <section>
+          <p className="hint">Comparing versions — pick the two versions on the right.</p>
+        </section>
+      )}
     </aside>
   );
 }

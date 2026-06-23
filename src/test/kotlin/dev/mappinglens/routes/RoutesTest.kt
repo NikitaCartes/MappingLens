@@ -5,6 +5,7 @@ import dev.mappinglens.config.AppConfig
 import dev.mappinglens.config.IndexingConfig
 import dev.mappinglens.config.SearchConfig
 import dev.mappinglens.config.SourcesConfig
+import dev.mappinglens.model.ClassListResponse
 import dev.mappinglens.model.SearchResponse
 import dev.mappinglens.model.TranslateResponse
 import dev.mappinglens.model.VersionListResponse
@@ -95,6 +96,30 @@ class RoutesTest {
         }
         val s: SearchResponse = searchResp.body()
         assertTrue(s.results.any { it.yarn?.endsWith("/BlockState") == true })
+    }
+
+    @Test
+    fun `GET classes lists a version's classes and 404s for unknown version`(@TempDir tmp: Path) = testApplication {
+        val db = Fixtures.newDb(tmp)
+        Fixtures.seed_1_21_1(db)
+        val versionService = VersionService(db)
+
+        application {
+            installJson()
+            routing { versionRoutes(versionService) }
+        }
+
+        val client = createClient {
+            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+        }
+
+        val resp = client.get("/api/v1/classes/1.21.1")
+        assertEquals(HttpStatusCode.OK, resp.status)
+        val list: ClassListResponse = resp.body()
+        assertEquals("1.21.1", list.version)
+        assertTrue(list.classes.any { it.yarn?.endsWith("/BlockState") == true })
+
+        assertEquals(HttpStatusCode.NotFound, client.get("/api/v1/classes/9.9.9").status)
     }
 
     @Test

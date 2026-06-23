@@ -620,13 +620,22 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         val addedCandidateSql = stableKeyCondition("c2", keyCol, candidateStableKeys)
         val removedCandidateSql = stableKeyCondition("c1", keyCol, candidateStableKeys)
         val renamedCandidateSql = stableKeyCondition("c1", keyCol, candidateStableKeys)
-        // added
+        // Added/removed as a set difference on the stable key, scoped to each version. A direct
+        // self-join on $keyCol uses the version-agnostic name index and fans out across every
+        // indexed version (~500), turning a 7.6k-class diff into a 26s scan; NOT IN against the
+        // single-version key set keeps it sub-second. NULL key = no stable identity → per-row
+        // sentinel so it always counts as added/removed (matching join NULL semantics).
+        val keyOrUnique = "CASE WHEN c2.$keyCol IS NULL THEN char(2)||c2.id ELSE c2.$keyCol END"
+        val keyOrUniqueFrom = "CASE WHEN c1.$keyCol IS NULL THEN char(2)||c1.id ELSE c1.$keyCol END"
         conn.createStatement().use { st ->
             st.executeQuery(
                 """
                 SELECT c2.id, c2.intermediary_name, c2.$nameCol AS name FROM classes c2
-                LEFT JOIN classes c1 ON c1.$keyCol = c2.$keyCol AND c1.version_id = $fromId
-                WHERE c2.version_id = $toId AND c1.id IS NULL $addedPackageSql $addedCandidateSql
+                WHERE c2.version_id = $toId
+                  AND $keyOrUnique NOT IN (
+                    SELECT c1.$keyCol FROM classes c1 WHERE c1.version_id = $fromId AND c1.$keyCol IS NOT NULL
+                  )
+                  $addedPackageSql $addedCandidateSql
                 """.trimIndent()
             ).use { rs ->
                 while (rs.next()) added += DiffEntryItem(
@@ -638,8 +647,11 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
             st.executeQuery(
                 """
                 SELECT c1.id, c1.intermediary_name, c1.$nameCol AS name FROM classes c1
-                LEFT JOIN classes c2 ON c1.$keyCol = c2.$keyCol AND c2.version_id = $toId
-                WHERE c1.version_id = $fromId AND c2.id IS NULL $removedPackageSql $removedCandidateSql
+                WHERE c1.version_id = $fromId
+                  AND $keyOrUniqueFrom NOT IN (
+                    SELECT c2.$keyCol FROM classes c2 WHERE c2.version_id = $toId AND c2.$keyCol IS NOT NULL
+                  )
+                  $removedPackageSql $removedCandidateSql
                 """.trimIndent()
             ).use { rs ->
                 while (rs.next()) removed += DiffEntryItem(
@@ -648,7 +660,8 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
                     intermediary = rs.getString("intermediary_name"),
                 )
             }
-            st.executeQuery(
+            // keyCol == nameCol (unobfuscated) ⇒ a rename is undetectable; skip the scan.
+            if (keyCol != nameCol) st.executeQuery(
                 """
                 SELECT c1.intermediary_name, c1.$nameCol AS old_name, c2.$nameCol AS new_name
                 FROM classes c1
@@ -802,18 +815,34 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         val addedCandidateSql = stableKeyCondition("c2", keyCol, candidateStableKeys)
         val removedCandidateSql = stableKeyCondition("c1", keyCol, candidateStableKeys)
         val renamedCandidateSql = stableKeyCondition("c1", keyCol, candidateStableKeys)
+        // Member identity across versions = (owner class key, member key, member desc). Encoded as a
+        // single string so added/removed reduce to a set difference instead of a self-join: with a
+        // non-unique fallback key (mojmap_name+obf_desc on unobfuscated 26.x) a join explodes into a
+        // many-to-many cartesian and took minutes. A NULL in any key part means "no stable identity",
+        // so that row can never match — `keyOrUnique` gives it a per-row sentinel (always added/removed)
+        // and `keyNotNull` drops it from the lookup set, exactly replicating SQL join NULL semantics.
+        fun key(c: String, m: String) = "$c.$keyCol||char(1)||$m.$keyCol||char(1)||$m.$keyDesc"
+        fun keyOrUnique(c: String, m: String) =
+            "CASE WHEN $m.$keyCol IS NULL OR $c.$keyCol IS NULL OR $m.$keyDesc IS NULL " +
+                "THEN char(2)||$m.id ELSE ${key(c, m)} END"
+        fun keyNotNull(c: String, m: String) =
+            "$m.$keyCol IS NOT NULL AND $c.$keyCol IS NOT NULL AND $m.$keyDesc IS NOT NULL"
         val conn = org.jetbrains.exposed.sql.transactions.TransactionManager.current().connection
             .connection as java.sql.Connection
         conn.createStatement().use { st ->
+            // Added = members in `to` whose (owner class, member, desc) identity is absent from `from`.
             st.executeQuery(
                 """
                 SELECT m2.intermediary_name, m2.$nameCol AS name,
                        c2.$nameCol AS owner
                 FROM $table m2
                 JOIN classes c2 ON c2.id = m2.class_id
-                LEFT JOIN $table m1 ON m1.$keyCol = m2.$keyCol
-                    AND m1.$keyDesc = m2.$keyDesc AND m1.version_id = $fromId
-                WHERE m2.version_id = $toId AND m1.id IS NULL $addedPackageSql $addedCandidateSql
+                WHERE m2.version_id = $toId
+                  AND ${keyOrUnique("c2", "m2")} NOT IN (
+                    SELECT ${key("c1", "m1")} FROM $table m1 JOIN classes c1 ON c1.id = m1.class_id
+                    WHERE m1.version_id = $fromId AND ${keyNotNull("c1", "m1")}
+                  )
+                  $addedPackageSql $addedCandidateSql
                 """.trimIndent()
             ).use { rs ->
                 while (rs.next()) added += DiffEntryItem(
@@ -829,9 +858,12 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
                        c1.$nameCol AS owner
                 FROM $table m1
                 JOIN classes c1 ON c1.id = m1.class_id
-                LEFT JOIN $table m2 ON m1.$keyCol = m2.$keyCol
-                    AND m1.$keyDesc = m2.$keyDesc AND m2.version_id = $toId
-                WHERE m1.version_id = $fromId AND m2.id IS NULL $removedPackageSql $removedCandidateSql
+                WHERE m1.version_id = $fromId
+                  AND ${keyOrUnique("c1", "m1")} NOT IN (
+                    SELECT ${key("c2", "m2")} FROM $table m2 JOIN classes c2 ON c2.id = m2.class_id
+                    WHERE m2.version_id = $toId AND ${keyNotNull("c2", "m2")}
+                  )
+                  $removedPackageSql $removedCandidateSql
                 """.trimIndent()
             ).use { rs ->
                 while (rs.next()) removed += DiffEntryItem(
@@ -841,22 +873,24 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
                     owner = rs.getString("owner"),
                 )
             }
-            st.executeQuery(
+            // A rename is "same stable key, different display name". When the stable key IS the
+            // display name (unobfuscated versions, where keyCol == nameCol) a rename is undetectable
+            // by definition, so skip the query entirely instead of scanning to a guaranteed 0 rows.
+            if (keyCol != nameCol) st.executeQuery(
                 """
                 SELECT m1.intermediary_name,
                        m1.$nameCol AS old_name,
                        m2.$nameCol AS new_name,
-                                             c2.$nameCol AS owner
+                       c2.$nameCol AS owner
                 FROM $table m1
-                JOIN $table m2 ON m1.$keyCol = m2.$keyCol
-                    AND m1.$keyDesc = m2.$keyDesc
-                                JOIN classes c1 ON c1.id = m1.class_id
-                                JOIN classes c2 ON c2.id = m2.class_id
-                WHERE m1.version_id = $fromId AND m2.version_id = $toId
+                JOIN classes c1 ON c1.id = m1.class_id
+                JOIN classes c2 ON c2.$keyCol = c1.$keyCol AND c2.version_id = $toId
+                JOIN $table m2 ON m2.class_id = c2.id AND m2.version_id = $toId
+                    AND m2.$keyCol = m1.$keyCol AND m2.$keyDesc = m1.$keyDesc
+                WHERE m1.version_id = $fromId
                   AND m1.$keyCol IS NOT NULL
-                  AND c1.$keyCol = c2.$keyCol
                   AND IFNULL(m1.$nameCol,'') != IFNULL(m2.$nameCol,'')
-                                    $renamedPackageSql $renamedCandidateSql
+                  $renamedPackageSql $renamedCandidateSql
                 """.trimIndent()
             ).use { rs ->
                 while (rs.next()) renamed += DiffEntryItem(

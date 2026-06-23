@@ -1,12 +1,24 @@
 import type {
+  BytecodeResponse,
+  ClassEntry,
+  ClassListResponse,
+  DiffResponse,
+  FileDiffResponse,
   SearchNamespace,
   SearchResponse,
   SearchType,
+  SourceNamespace,
+  SourceResponse,
   VersionInfo,
   VersionListResponse,
 } from "./types";
 
 const BASE = "/api/v1";
+
+/** Encodes a version for a path segment (versions can contain spaces, e.g. "1.14 Pre-Release 1"). */
+const v = (version: string) => encodeURIComponent(version);
+/** Class internal names use "/" as real path separators in catch-all routes — keep them literal. */
+const cls = (className: string) => className.split("/").map(encodeURIComponent).join("/");
 
 /** Thrown for non-2xx responses, carrying the API's structured error message when present. */
 export class ApiRequestError extends Error {
@@ -55,4 +67,77 @@ export function search(args: SearchArgs, signal?: AbortSignal): Promise<SearchRe
   params.set("limit", String(args.limit ?? 50));
   if (args.exact) params.set("exact", "true");
   return getJson<SearchResponse>(`${BASE}/search?${params.toString()}`, signal);
+}
+
+async function getText(url: string, signal?: AbortSignal): Promise<string> {
+  const res = await fetch(url, { signal });
+  if (!res.ok) {
+    let message = `${res.status} ${res.statusText}`;
+    try {
+      const body = (await res.clone().json()) as { message?: unknown };
+      if (typeof body.message === "string") message = body.message;
+    } catch {
+      // not JSON — keep the status line
+    }
+    throw new ApiRequestError(res.status, message);
+  }
+  return res.text();
+}
+
+export function fetchClasses(version: string, signal?: AbortSignal): Promise<ClassEntry[]> {
+  return getJson<ClassListResponse>(`${BASE}/classes/${v(version)}`, signal).then((r) => r.classes);
+}
+
+export function fetchSource(
+  version: string,
+  className: string,
+  namespace: SourceNamespace,
+  signal?: AbortSignal,
+): Promise<SourceResponse> {
+  return getJson<SourceResponse>(`${BASE}/source/${v(version)}/${cls(className)}?namespace=${namespace}`, signal);
+}
+
+export function fetchBytecode(
+  version: string,
+  className: string,
+  namespace: SourceNamespace,
+  signal?: AbortSignal,
+): Promise<BytecodeResponse> {
+  return getJson<BytecodeResponse>(`${BASE}/bytecode/${v(version)}/${cls(className)}?namespace=${namespace}`, signal);
+}
+
+export function fetchDiff(
+  from: string,
+  to: string,
+  namespace: SourceNamespace,
+  signal?: AbortSignal,
+): Promise<DiffResponse> {
+  return getJson<DiffResponse>(
+    `${BASE}/diff?from=${v(from)}&to=${v(to)}&namespace=${namespace}&limit=5000`,
+    signal,
+  );
+}
+
+export function fetchDiffFiles(
+  from: string,
+  to: string,
+  namespace: SourceNamespace,
+  signal?: AbortSignal,
+): Promise<FileDiffResponse> {
+  return getJson<FileDiffResponse>(
+    `${BASE}/diff/files?from=${v(from)}&to=${v(to)}&namespace=${namespace}`,
+    signal,
+  );
+}
+
+/** Unified patch text for one file (text/x-diff). */
+export function fetchPatch(
+  from: string,
+  to: string,
+  namespace: SourceNamespace,
+  path: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const params = new URLSearchParams({ from, to, namespace, path, format: "patch", context: "3" });
+  return getText(`${BASE}/diff/patch?${params.toString()}`, signal);
 }

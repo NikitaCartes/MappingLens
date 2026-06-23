@@ -1,22 +1,35 @@
 package dev.mappinglens.service
 
+import dev.mappinglens.db.tables.ClassTable
+import dev.mappinglens.db.tables.FieldTable
+import dev.mappinglens.db.tables.MethodTable
 import dev.mappinglens.db.tables.VersionTable
+import dev.mappinglens.model.ClassEntry
+import dev.mappinglens.model.ClassListResponse
 import dev.mappinglens.model.VersionInfo
 import dev.mappinglens.model.VersionListResponse
+import org.jetbrains.exposed.dao.id.EntityID
+import org.jetbrains.exposed.sql.Column
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.count
+import org.jetbrains.exposed.sql.select
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 
 class VersionService(private val db: Database) {
 
     fun listVersions(): VersionListResponse = transaction(db) {
+        // One grouped COUNT per table instead of 3 counts per version (the old N+1 that made
+        // /versions take ~17s on a full multi-version index).
+        val classCounts = countsByVersion(ClassTable.versionId)
+        val methodCounts = countsByVersion(MethodTable.versionId)
+        val fieldCounts = countsByVersion(FieldTable.versionId)
         val versions = VersionTable.selectAll()
-            .orderBy(VersionTable.sortIndex to SortOrder.ASC_NULLS_LAST, VersionTable.versionId to SortOrder.ASC)
+            .orderBy(VersionTable.sortIndex to SortOrder.DESC_NULLS_LAST, VersionTable.versionId to SortOrder.DESC)
             .map { row ->
             val versionRowId = row[VersionTable.id].value
-            val (classes, methods, fields) = countsFor(versionRowId)
             VersionInfo(
                 id = row[VersionTable.versionId],
                 releaseType = row[VersionTable.releaseType],
@@ -25,9 +38,9 @@ class VersionService(private val db: Database) {
                 hasYarn = row[VersionTable.hasYarn],
                 hasMojmap = row[VersionTable.hasMojmap],
                 hasIntermediary = row[VersionTable.hasIntermediary],
-                classCount = classes,
-                methodCount = methods,
-                fieldCount = fields,
+                classCount = classCounts[versionRowId] ?: 0,
+                methodCount = methodCounts[versionRowId] ?: 0,
+                fieldCount = fieldCounts[versionRowId] ?: 0,
                 indexedAt = row[VersionTable.indexedAt],
             )
         }
@@ -54,6 +67,24 @@ class VersionService(private val db: Database) {
         )
     }
 
+    /** Every class of one version (names per namespace + presence), for the client-side structure tree. */
+    fun listClasses(versionId: String): ClassListResponse? = transaction(db) {
+        val versionRowId = VersionTable.selectAll().where { VersionTable.versionId eq versionId }
+            .singleOrNull()?.get(VersionTable.id)?.value ?: return@transaction null
+        val classes = ClassTable.selectAll()
+            .where { ClassTable.versionId eq versionRowId }
+            .map { row ->
+                ClassEntry(
+                    obfuscated = row[ClassTable.obfName],
+                    intermediary = row[ClassTable.intermediaryName],
+                    yarn = row[ClassTable.yarnName],
+                    mojmap = row[ClassTable.mojmapName],
+                    presence = row[ClassTable.presence],
+                )
+            }
+        ClassListResponse(versionId, classes)
+    }
+
     /**
      * Returns the latest "release" version by semver order (via the persisted sort index),
      * falling back to any version if none. Versions without a sort index fall back to name order.
@@ -69,12 +100,20 @@ class VersionService(private val db: Database) {
     }
 
     private fun countsFor(versionRowId: Int): Triple<Long, Long, Long> {
-        val classCount = dev.mappinglens.db.tables.ClassTable.selectAll()
-            .where { dev.mappinglens.db.tables.ClassTable.versionId eq versionRowId }.count()
-        val methodCount = dev.mappinglens.db.tables.MethodTable.selectAll()
-            .where { dev.mappinglens.db.tables.MethodTable.versionId eq versionRowId }.count()
-        val fieldCount = dev.mappinglens.db.tables.FieldTable.selectAll()
-            .where { dev.mappinglens.db.tables.FieldTable.versionId eq versionRowId }.count()
+        val classCount = ClassTable.selectAll()
+            .where { ClassTable.versionId eq versionRowId }.count()
+        val methodCount = MethodTable.selectAll()
+            .where { MethodTable.versionId eq versionRowId }.count()
+        val fieldCount = FieldTable.selectAll()
+            .where { FieldTable.versionId eq versionRowId }.count()
         return Triple(classCount, methodCount, fieldCount)
+    }
+
+    /** Row count per version_id in a single grouped query (version_id -> count). */
+    private fun countsByVersion(versionCol: Column<EntityID<Int>>): Map<Int, Long> {
+        val cnt = versionCol.count()
+        return versionCol.table.select(versionCol, cnt)
+            .groupBy(versionCol)
+            .associate { it[versionCol].value to it[cnt] }
     }
 }

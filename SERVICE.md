@@ -23,7 +23,7 @@ read-only GitCraft-стора, индекс открывается с `PRAGMA qu
 | Compare Yarn↔Mojmap | Таблица соответствия членов одного класса между Yarn и Mojmap |
 | Байткод | Дизассемблированный байткод класса (ASM Textifier) в любом неймспейсе, text или JSON |
 | Исходники | Декомпилированный `.java` класса из artifact-store (namespace yarn/mojmap) |
-| Версии | Список проиндексированных версий с флагами доступности неймспейсов и counts, порядок — semver |
+| Версии | Список проиндексированных версий с флагами доступности неймспейсов и counts, порядок — semver (новые сверху) |
 | OpenAPI / Swagger | Машиночитаемая спецификация (`/openapi.json`, `/openapi.yaml`) + Swagger UI (`/docs`) |
 | Frontend explorer | Браузерный UI: выбор версии, фильтры неймспейса/типа, debounced-поиск, кросс-неймспейс карточки с click-to-copy |
 
@@ -111,7 +111,7 @@ npm run build                            # статика в dist/ (tsc + vite)
 
 | Эндпоинт | Описание |
 |---|---|
-| `GET /api/v1/versions` | Список всех версий (флаги `hasYarn/Mojmap/Intermediary` + counts), порядок semver |
+| `GET /api/v1/versions` | Список всех версий (флаги `hasYarn/Mojmap/Intermediary` + counts), порядок semver (новые сверху) |
 | `GET /api/v1/versions/{version}` | Метаданные одной версии (`404 version_not_found`, если нет) |
 
 ### Поиск

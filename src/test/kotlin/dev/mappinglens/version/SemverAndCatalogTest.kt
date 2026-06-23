@@ -73,6 +73,25 @@ class VersionCatalogTest {
     }
 
     @Test
+    fun `release without a cache entry still sorts above its own pre and rc builds`() {
+        // Real case: semver-cache lags behind, so 26.2 (release), pre-3 and rc-2 have no cached
+        // semver while pre-2/snapshot-1 do. Derivation must keep the bare release newest.
+        val cat = catalog(
+            "26.2-snapshot-1" to "26.2-alpha.1",
+            "26.2-pre-2" to "26.2-pre.2",
+            "26.2-pre-3" to null,
+            "26.2-rc-2" to null,
+            "26.2" to null,
+        )
+        val ids = listOf("26.2", "26.2-rc-2", "26.2-pre-3", "26.2-pre-2", "26.2-snapshot-1")
+        assertEquals(
+            listOf("26.2-snapshot-1", "26.2-pre-2", "26.2-pre-3", "26.2-rc-2", "26.2"),
+            cat.sorted(ids),
+        )
+        assertEquals("26.2", cat.latestRelease(ids))
+    }
+
+    @Test
     fun `loads real semver-cache and mc-meta`() {
         assumeTrue(Files.exists(RealDataTestConfig.artifactStore), "artifact-store missing")
         val cat = VersionCatalog.load(RealDataTestConfig.artifactStore)

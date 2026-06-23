@@ -50,12 +50,21 @@ class VersionCatalog(private val metaByCanonical: Map<String, VersionMeta>) {
     fun get(canonical: String): VersionMeta? = metaByCanonical[canonical]
 
     /**
+     * Effective semver: the cached value, or one derived from the canonical id when the cache hasn't
+     * caught up to the newest builds (otherwise a bare release sorts below its own pre/rc builds).
+     */
+    private fun semverOf(id: String): Semver? {
+        val meta = metaByCanonical[id] ?: return null
+        return meta.semver?.let(Semver::parse) ?: Semver.fromMinecraftId(meta.canonical)
+    }
+
+    /**
      * Orders canonical ids by their parsed semver. Ids with unknown semver sort last, then by name,
      * so ordering is always total and deterministic.
      */
     val order: Comparator<String> = Comparator { a, b ->
-        val sa = metaByCanonical[a]?.semver?.let(Semver::parse)
-        val sb = metaByCanonical[b]?.semver?.let(Semver::parse)
+        val sa = semverOf(a)
+        val sb = semverOf(b)
         when {
             sa != null && sb != null -> sa.compareTo(sb).let { if (it != 0) it else a.compareTo(b) }
             sa != null -> -1
@@ -68,7 +77,7 @@ class VersionCatalog(private val metaByCanonical: Map<String, VersionMeta>) {
 
     /** Latest stable release (semver with no pre-release component) among the given ids. */
     fun latestRelease(canonicalIds: Collection<String>): String? = canonicalIds
-        .filter { metaByCanonical[it]?.semver?.let(Semver::parse)?.preRelease?.isEmpty() == true }
+        .filter { semverOf(it)?.preRelease?.isEmpty() == true }
         .maxWithOrNull(order)
 
     companion object {

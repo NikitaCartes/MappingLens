@@ -48,6 +48,30 @@ data class Semver(
             return Semver(major, minor, patch, preIds)
         }
 
+        /**
+         * Best-effort semver derived from a GitCraft canonical id, for newest builds the
+         * semver-cache hasn't caught up to yet (`26.2`, `26.2-pre-3`, `26.2-rc-1`, `26.2-snapshot-1`).
+         * Without this they fall back to lexicographic ordering, which sorts the bare release
+         * ("26.2") *below* its own "26.2-pre-N"/"-rc-N" strings. Handles only the modern
+         * `X.Y[.Z][-qualifier-N]` form; returns null for anything else (space-named ids, weekly
+         * snapshots like 25w43a) so the caller keeps its lexicographic fallback. `snapshot` maps to
+         * `alpha` to match the cache's own convention → precedence alpha < pre < rc < release.
+         */
+        fun fromMinecraftId(id: String): Semver? {
+            val core = id.substringBefore('-')
+            val coreParts = core.split('.')
+            val major = coreParts.getOrNull(0)?.toIntOrNull() ?: return null
+            if (coreParts.size > 3 || coreParts.drop(1).any { it.toIntOrNull() == null }) return null
+            val minor = coreParts.getOrNull(1)?.toIntOrNull() ?: 0
+            val patch = coreParts.getOrNull(2)?.toIntOrNull() ?: 0
+            val rest = id.substringAfter('-', "")
+            if (rest.isEmpty()) return Semver(major, minor, patch, emptyList())
+            val tokens = rest.split('-').filter { it.isNotEmpty() }
+            if (tokens.isEmpty()) return null
+            val qualifier = if (tokens[0] == "snapshot") "alpha" else tokens[0]
+            return Semver(major, minor, patch, listOf(qualifier) + tokens.drop(1))
+        }
+
         /** Numeric identifiers compare numerically and rank below alphanumeric ones (semver section 11). */
         private fun comparePreReleaseId(a: String, b: String): Int {
             val an = a.toIntOrNull()

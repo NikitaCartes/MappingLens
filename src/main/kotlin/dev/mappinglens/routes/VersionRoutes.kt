@@ -19,4 +19,10 @@ fun Route.versionRoutes(versionService: VersionService) {
             else call.respond(info)
         }
     }
+    get("/api/v1/classes/{version}") {
+        val v = call.parameters["version"]!!
+        val classes = versionService.listClasses(v)
+        if (classes == null) call.respond(HttpStatusCode.NotFound, ApiError("version_not_found", "Version $v not found", 404))
+        else call.respond(classes)
+    }
 }
