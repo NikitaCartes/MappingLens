@@ -162,7 +162,7 @@ paths:
           schema:
             type: string
             enum: [yarn, mojmap]
-            default: yarn
+            default: mojmap
         - in: query
           name: path
           schema:
@@ -233,7 +233,7 @@ paths:
           schema:
             type: string
             enum: [yarn, mojmap]
-            default: yarn
+            default: mojmap
         - in: query
           name: path
           schema:
@@ -337,7 +337,7 @@ paths:
           required: true
           schema:
             type: string
-          description: Slash-separated class name. This route also accepts catch-all path segments.
+          description: Slash-separated internal name (`net/minecraft/Foo`) or dot-separated FQN (`net.minecraft.Foo`). Accepts catch-all path segments.
         - in: query
           name: from
           schema:
@@ -372,7 +372,7 @@ paths:
           required: true
           schema:
             type: string
-          description: Slash-separated class name. This route also accepts catch-all path segments.
+          description: Slash-separated internal name (`net/minecraft/Foo`) or dot-separated FQN (`net.minecraft.Foo`). Accepts catch-all path segments.
         - in: query
           name: format
           schema:
@@ -383,7 +383,9 @@ paths:
         - in: query
           name: namespace
           schema:
-            $ref: "#/components/schemas/LookupNamespace"
+            type: string
+            enum: [yarn, mojmap, intermediary, obfuscated, obf]
+            default: mojmap
       responses:
         "200":
           description: ASM Textifier output, wrapped in JSON or as raw text per `format`.
@@ -399,6 +401,9 @@ paths:
     get:
       tags: [Bytecode]
       summary: Return decompiled source for a class
+      description: >
+        When `namespace` is omitted it defaults to `mojmap` and falls back to `yarn`
+        for versions that have no mojmap source. An explicit `namespace` is used as-is.
       parameters:
         - $ref: "#/components/parameters/VersionPath"
         - in: path
@@ -406,13 +411,13 @@ paths:
           required: true
           schema:
             type: string
-          description: Slash-separated class name. This route also accepts catch-all path segments.
+          description: Slash-separated internal name (`net/minecraft/Foo`) or dot-separated FQN (`net.minecraft.Foo`). Accepts catch-all path segments.
         - in: query
           name: namespace
           schema:
             type: string
             enum: [yarn, mojmap]
-            default: yarn
+            default: mojmap
       responses:
         "200":
           description: Source code response.
@@ -532,7 +537,7 @@ components:
     MappingNamespace:
       type: string
       enum: [yarn, mojmap, intermediary]
-      default: yarn
+      default: mojmap
     LookupNamespace:
       type: string
       enum: [yarn, mojmap, intermediary, obfuscated, obf]

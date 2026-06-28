@@ -14,7 +14,7 @@ fun Route.diffRoutes(diffService: DiffService) {
         if (from.isNullOrBlank() || to.isNullOrBlank()) {
             call.respond(HttpStatusCode.BadRequest, ApiError("invalid_query", "Missing 'from' or 'to'", 400)); return@get
         }
-        val namespace = call.request.queryParameters["namespace"] ?: "yarn"
+        val namespace = call.request.queryParameters["namespace"] ?: "mojmap"
         val type = call.request.queryParameters["type"] ?: "all"
         val pkg = call.request.queryParameters["package"]
         val changeType = call.request.queryParameters["changeType"] ?: "all"
@@ -30,7 +30,7 @@ fun Route.diffRoutes(diffService: DiffService) {
         if (from.isNullOrBlank() || to.isNullOrBlank()) {
             call.respond(HttpStatusCode.BadRequest, ApiError("invalid_query", "Missing 'from' or 'to'", 400)); return@get
         }
-        val namespace = call.request.queryParameters["namespace"] ?: "yarn"
+        val namespace = call.request.queryParameters["namespace"] ?: "mojmap"
         if (!call.ensureOneOf("namespace", namespace, setOf("yarn", "mojmap"))) return@get
         val path = call.request.queryParameters["file"] ?: call.request.queryParameters["path"]
         val format = call.request.queryParameters["format"] ?: "json"
@@ -51,7 +51,7 @@ fun Route.diffRoutes(diffService: DiffService) {
         if (from.isNullOrBlank() || to.isNullOrBlank()) {
             call.respond(HttpStatusCode.BadRequest, ApiError("invalid_query", "Missing 'from' or 'to'", 400)); return@get
         }
-        val namespace = call.request.queryParameters["namespace"] ?: "yarn"
+        val namespace = call.request.queryParameters["namespace"] ?: "mojmap"
         if (!call.ensureOneOf("namespace", namespace, setOf("yarn", "mojmap"))) return@get
         val path = call.request.queryParameters["file"] ?: call.request.queryParameters["path"]
         val function = call.request.queryParameters["function"]

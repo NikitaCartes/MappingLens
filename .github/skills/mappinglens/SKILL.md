@@ -67,14 +67,14 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 ### Diff
 
 - `GET 127.0.0.1:8080/api/v1/diff?from={fromVersion}&to={toVersion}&namespace={namespace}&type={type}&package={packagePrefix}&changeType={changeType}&limit={limit}`
-- `namespace`: `yarn`, `mojmap`, or `intermediary`.
+- `namespace`: `yarn`, `mojmap`, or `intermediary`. Defaults to `mojmap`.
 - `changeType`: `added`, `removed`, `renamed`, or `all`.
 - Use `package` for path/package prefix filters such as `net/minecraft/block`.
 
 ### File Diff
 
 - `GET 127.0.0.1:8080/api/v1/diff/files?from={fromVersion}&to={toVersion}&namespace={namespace}&path={pathPrefix}&file={filePath}&function={functionName}&context={lines}&limit={limit}&format={format}`
-- `namespace`: `yarn` or `mojmap`.
+- `namespace`: `yarn` or `mojmap`. Defaults to `mojmap`.
 - `file`: exact or prefix source path filter; takes precedence over `path`.
 - `function`, `context`, `limit`: only used when `format=patch`/`git` (same semantics as the Patch Diff endpoint).
 - `format`: `json` (default), `patch`, or `git`.
@@ -83,7 +83,7 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 ### Patch Diff
 
 - `GET 127.0.0.1:8080/api/v1/diff/patch?from={fromVersion}&to={toVersion}&namespace={namespace}&path={pathPrefix}&file={filePath}&function={functionName}&context={lines}&limit={limit}&format={format}`
-- `namespace`: `yarn` or `mojmap`.
+- `namespace`: `yarn` or `mojmap`. Defaults to `mojmap`.
 - `path` / `file`: optional folder or source file prefix such as `net/minecraft/block` or `net/minecraft/block/Block.java`.
 - `function`: optional method/function filter such as `getDefaultState` or `Block#getDefaultState`.
 - `context`: hunk context lines, 0-20; default 3.
@@ -102,15 +102,16 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 ### Source
 
 - `GET 127.0.0.1:8080/api/v1/source/{version}/{className}?namespace={namespace}`
-- `namespace`: `yarn` or `mojmap`.
+- `namespace`: `yarn` or `mojmap`. Defaults to `mojmap`, falling back to `yarn` when the version has no mojmap source. An explicit `namespace` is used as-is (no fallback).
 - Returns decompiled source text and the indexed source path.
-- Use class names such as `net/minecraft/block/Block` or the namespace-specific class name known to MappingLens.
+- `className` accepts a slash-separated internal name (`net/minecraft/block/Block`) or a dot-separated FQN (`net.minecraft.block.Block`).
 
 ### Bytecode
 
 - `GET 127.0.0.1:8080/api/v1/bytecode/{version}/{className}?format={format}&namespace={namespace}`
 - `format`: `text` or `json`.
-- `namespace`: `yarn`, `mojmap`, `intermediary`, `obfuscated`, or `obf`.
+- `namespace`: `yarn`, `mojmap`, `intermediary`, `obfuscated`, or `obf`. Defaults to `mojmap`.
+- `className` accepts a slash-separated internal name or a dot-separated FQN (`net.minecraft.block.Block`).
 - Use this for descriptor-level or instruction-level inspection.
 
 ### Meta / Health

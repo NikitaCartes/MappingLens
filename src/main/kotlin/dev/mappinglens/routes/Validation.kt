@@ -41,3 +41,7 @@ internal suspend fun ApplicationCall.intQuery(name: String, default: Int, min: I
 }
 
 internal fun Parameters.required(name: String): String? = this[name]?.takeIf { it.isNotBlank() }
+
+/** Accept dot-separated FQNs (`net.minecraft.Foo`) alongside slash-separated internal names. */
+internal fun normalizeClassName(name: String): String =
+    if ('/' in name) name else name.replace('.', '/')
