@@ -3,6 +3,11 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [6.3]
+
+### Added
+- Ability to show and download the full patch between two versions.
+
 ## [6.2]
 
 ### Changed

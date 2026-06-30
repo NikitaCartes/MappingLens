@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { DiffEditor, Editor } from "@monaco-editor/react";
-import { Segmented, Select, Spin, Tabs } from "antd";
-import { fetchBytecode, fetchDiff, fetchDiffFiles, fetchPatch, fetchSource, ApiRequestError } from "../api";
+import { Button, Segmented, Select, Spin, Tabs } from "antd";
+import { fetchBytecode, fetchDiff, fetchDiffFiles, fetchPatch, fetchSource, patchDownloadUrl, ApiRequestError } from "../api";
 import type { DiffResponse, FileDiffResponse, SourceNamespace, VersionInfo } from "../types";
 
 const msg = (err: unknown) =>
   err instanceof ApiRequestError || err instanceof Error ? err.message : String(err);
+
+/** Sentinel `selectedFile` meaning "the whole version-to-version patch, all files". */
+const WHOLE_PATCH = "\0whole";
 
 const SUMMARY_ROWS: { label: string; keys: [keyof DiffResponse["summary"], keyof DiffResponse["summary"], keyof DiffResponse["summary"]] }[] = [
   { label: "Classes", keys: ["classesAdded", "classesRemoved", "classesRenamed"] },
@@ -86,13 +89,16 @@ export function CompareView({ versions, initialTo, initialNamespace }: Props) {
   // "bytecode" fetch the whole class in both versions for a side-by-side Monaco diff (compare two
   // files in full, not just the patch). A 404 on one side (added/removed class) becomes an empty
   // side so the diff shows a full add/remove.
+  const isWhole = selectedFile === WHOLE_PATCH;
+
   useEffect(() => {
     if (!selectedFile || !from || !to) return;
     const controller = new AbortController();
-    if (viewMode === "patch") {
+    // The whole-version patch is always a unified-diff view (no single class for source/bytecode).
+    if (viewMode === "patch" || isWhole) {
       setPatchStatus("loading");
       setPatchError(undefined);
-      fetchPatch(from, to, namespace, selectedFile, controller.signal)
+      fetchPatch(from, to, namespace, isWhole ? undefined : selectedFile, controller.signal)
         .then((text) => {
           setPatch(text);
           setPatchStatus(text.trim() ? "ready" : "empty");
@@ -133,6 +139,14 @@ export function CompareView({ versions, initialTo, initialNamespace }: Props) {
   const filesTab = (
     <div className="compare-files">
       <div className="compare-filelist">
+        <ul>
+          <li
+            className={`filerow modified${isWhole ? " active" : ""}`}
+            onClick={() => openFile(WHOLE_PATCH)}
+          >
+            <span className="filemark">≡</span> Whole patch (all files)
+          </li>
+        </ul>
         {!fileList ? (
           <p className="hint">Pick two different versions.</p>
         ) : fileList.added.length + fileList.removed.length + fileList.modified.length === 0 ? (
@@ -173,16 +187,16 @@ export function CompareView({ versions, initialTo, initialNamespace }: Props) {
         <div style={{ padding: "6px 8px" }}>
           <Segmented
             size="small"
-            value={viewMode}
+            value={isWhole ? "patch" : viewMode}
             onChange={(val) => setViewMode(val as "patch" | "source" | "bytecode")}
             options={[
               { label: "Patch", value: "patch" },
-              { label: "Source", value: "source" },
-              { label: "Bytecode", value: "bytecode" },
+              { label: "Source", value: "source", disabled: isWhole },
+              { label: "Bytecode", value: "bytecode", disabled: isWhole },
             ]}
           />
         </div>
-        {viewMode === "patch" ? (
+        {viewMode === "patch" || isWhole ? (
           patchStatus === "idle" ? (
             <p className="hint">Select a file to view its patch.</p>
           ) : patchStatus === "loading" ? (
@@ -275,6 +289,15 @@ export function CompareView({ versions, initialTo, initialNamespace }: Props) {
             { label: "Mojmap", value: "mojmap" },
           ]}
         />
+        {from && to && from !== to && (
+          <Button
+            size="small"
+            href={patchDownloadUrl(from, to, namespace)}
+            download={`${from}_to_${to}_${namespace}.patch`}
+          >
+            Download .patch
+          </Button>
+        )}
         {diff && (
           <div className="compare-summary">
             {SUMMARY_ROWS.map((row) => (

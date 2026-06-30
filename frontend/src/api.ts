@@ -130,14 +130,21 @@ export function fetchDiffFiles(
   );
 }
 
-/** Unified patch text for one file (text/x-diff). */
+/** Unified patch text (text/x-diff). Omit `path` for the whole version-to-version patch. */
 export function fetchPatch(
   from: string,
   to: string,
   namespace: SourceNamespace,
-  path: string,
+  path: string | undefined,
   signal?: AbortSignal,
 ): Promise<string> {
-  const params = new URLSearchParams({ from, to, namespace, path, format: "patch", context: "3" });
+  const params = new URLSearchParams({ from, to, namespace, format: "patch", context: "3" });
+  if (path) params.set("path", path);
   return getText(`${BASE}/diff/patch?${params.toString()}`, signal);
+}
+
+/** Same-origin URL for the whole git-format patch — used as an <a download> href. */
+export function patchDownloadUrl(from: string, to: string, namespace: SourceNamespace): string {
+  const params = new URLSearchParams({ from, to, namespace, format: "git", context: "3", limit: "50000" });
+  return `${BASE}/diff/patch?${params.toString()}`;
 }
