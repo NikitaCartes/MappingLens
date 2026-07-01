@@ -187,6 +187,69 @@ data class SourceResponse(
 )
 
 @Serializable
+data class HierarchyNode(
+    val name: String,
+    val simpleName: String,
+    val isInterface: Boolean = false,
+    val isAbstract: Boolean = false,
+)
+
+@Serializable
+data class HierarchyEdge(
+    val parent: String,
+    val child: String,
+)
+
+@Serializable
+data class HierarchyResponse(
+    val version: String,
+    val namespace: String,
+    val root: String,
+    val nodes: List<HierarchyNode>,
+    val edges: List<HierarchyEdge>,
+)
+
+@Serializable
+data class SourceToken(
+    // Monaco-style 1-based range (endColumn is exclusive, i.e. one past the last char).
+    val startLine: Int,
+    val startColumn: Int,
+    val endLine: Int,
+    val endColumn: Int,
+    val type: String, // class | method | field
+    val className: String, // owner internal name (slashes, `$` for nested), in the source namespace
+    val name: String? = null, // member name (null for class tokens)
+    val descriptor: String? = null, // member descriptor (null for class tokens)
+    val declaration: Boolean = false,
+)
+
+@Serializable
+data class TokensResponse(
+    val version: String,
+    val `class`: String,
+    val namespace: String,
+    val source: String,
+    val tokens: List<SourceToken>,
+)
+
+@Serializable
+data class ReferenceItem(
+    val owner: String,
+    val ownerSimple: String,
+    val member: String? = null,
+    val descriptor: String? = null,
+    val kind: String, // class | method | field (of the referring site)
+)
+
+@Serializable
+data class ReferenceResponse(
+    val version: String,
+    val namespace: String,
+    val query: String,
+    val references: List<ReferenceItem>,
+)
+
+@Serializable
 data class CompareMember(
     val kind: String, // method | field
     val obfName: String? = null,

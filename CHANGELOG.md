@@ -3,6 +3,23 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [7]
+
+### Added
+- `GET /api/v1/hierarchy/{version}/{className}` — class inheritance hierarchy
+  (supertypes + subtypes) as a node/edge graph.
+- `GET /api/v1/references/{version}?q={key}` — find all references to a class or
+  member (`q` is a class internal name or an `owner:name:descriptor` key).
+- `GET /api/v1/tokens/{version}/{className}` — decompiled source plus a token per
+  identifier resolved to owner/name/descriptor.
+- Frontend right-click actions in the source view: Find All References, View
+  Inheritance Hierarchy, and Copy Class Tweaker/Access Widener, Access
+  Transformer, and Mixin Target — member-precise when the cursor is on a
+  resolved identifier, class-scoped otherwise.
+- Successful `/api/v1` responses are served with
+  `Cache-Control: public, max-age=2592000, immutable` (one month); error
+  responses are not cached.
+
 ## [6.3]
 
 ### Added

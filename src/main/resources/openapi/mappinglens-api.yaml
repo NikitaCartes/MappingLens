@@ -12,6 +12,8 @@ tags:
   - name: Translation
   - name: Bytecode
   - name: Compare
+  - name: Hierarchy
+  - name: References
   - name: Docs
 paths:
   /api/v1/versions:
@@ -468,6 +470,105 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/Unprocessable"
+  /api/v1/tokens/{version}/{className}:
+    get:
+      tags: [Bytecode]
+      summary: Resolved identifier tokens for a decompiled class
+      description: >
+        Returns the decompiled source plus a token for every class/method/field identifier resolved
+        to its owner/name/descriptor (via a symbol solver over the version's named jar). Ranges are
+        Monaco-style 1-based; `endColumn` is exclusive. Identifiers the solver cannot resolve are
+        omitted. Cached per (version, class, namespace) for the server's lifetime.
+      parameters:
+        - $ref: "#/components/parameters/VersionPath"
+        - in: path
+          name: className
+          required: true
+          schema:
+            type: string
+          description: Slash-separated internal name (`net/minecraft/Foo`) or dot-separated FQN (`net.minecraft.Foo`). Accepts catch-all path segments.
+        - in: query
+          name: namespace
+          schema:
+            type: string
+            enum: [yarn, mojmap]
+            default: mojmap
+      responses:
+        "200":
+          description: Source text plus resolved identifier tokens.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokensResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/hierarchy/{version}/{className}:
+    get:
+      tags: [Hierarchy]
+      summary: Inheritance hierarchy (supertypes and subtypes) of a class
+      description: >
+        Supertypes (walked up via super + interfaces) and subtypes (walked down) of a class, read from
+        the version's named jar via ASM. `java/lang/Object` is omitted. Cached per (version, namespace).
+      parameters:
+        - $ref: "#/components/parameters/VersionPath"
+        - in: path
+          name: className
+          required: true
+          schema:
+            type: string
+          description: Slash-separated internal name (`net/minecraft/Foo`) or dot-separated FQN (`net.minecraft.Foo`). Accepts catch-all path segments.
+        - in: query
+          name: namespace
+          schema:
+            type: string
+            enum: [yarn, mojmap]
+            default: mojmap
+      responses:
+        "200":
+          description: Nodes and parent→child edges of the hierarchy graph.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HierarchyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/references/{version}:
+    get:
+      tags: [References]
+      summary: Find all references to a class or member
+      description: >
+        Every site referencing the target (`q`), found by scanning the version's named jar via ASM.
+        Only references to Minecraft classes in the same jar are indexed; JDK/library targets are
+        dropped. The reverse index is cached per (version, namespace).
+      parameters:
+        - $ref: "#/components/parameters/VersionPath"
+        - in: query
+          name: q
+          required: true
+          schema:
+            type: string
+          description: "Target key: a class internal name (`net/minecraft/.../Block`) or a member key `owner:name:descriptor`."
+        - in: query
+          name: namespace
+          schema:
+            type: string
+            enum: [yarn, mojmap]
+            default: mojmap
+      responses:
+        "200":
+          description: Referencing sites for the target.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReferenceResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /openapi.json:
     get:
       tags: [Docs]
@@ -884,3 +985,119 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CompareMember"
+    SourceToken:
+      type: object
+      required: [startLine, startColumn, endLine, endColumn, type, className, declaration]
+      properties:
+        startLine:
+          type: integer
+        startColumn:
+          type: integer
+        endLine:
+          type: integer
+        endColumn:
+          type: integer
+          description: Exclusive — one column past the last character (Monaco convention).
+        type:
+          type: string
+          enum: [class, method, field]
+        className:
+          type: string
+          description: Owner internal name (slashes for packages, `$` for nested classes), in the source namespace.
+        name:
+          type: [string, "null"]
+          description: Member name; null for class tokens.
+        descriptor:
+          type: [string, "null"]
+          description: JVM descriptor; null for class tokens.
+        declaration:
+          type: boolean
+    TokensResponse:
+      type: object
+      required: [version, class, namespace, source, tokens]
+      properties:
+        version:
+          type: string
+        class:
+          type: string
+        namespace:
+          type: string
+          enum: [yarn, mojmap]
+        source:
+          type: string
+        tokens:
+          type: array
+          items:
+            $ref: "#/components/schemas/SourceToken"
+    HierarchyNode:
+      type: object
+      required: [name, simpleName, isInterface, isAbstract]
+      properties:
+        name:
+          type: string
+          description: Class internal name.
+        simpleName:
+          type: string
+        isInterface:
+          type: boolean
+        isAbstract:
+          type: boolean
+    HierarchyEdge:
+      type: object
+      required: [parent, child]
+      properties:
+        parent:
+          type: string
+        child:
+          type: string
+    HierarchyResponse:
+      type: object
+      required: [version, namespace, root, nodes, edges]
+      properties:
+        version:
+          type: string
+        namespace:
+          type: string
+          enum: [yarn, mojmap]
+        root:
+          type: string
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/HierarchyNode"
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/HierarchyEdge"
+    ReferenceItem:
+      type: object
+      required: [owner, ownerSimple, kind]
+      properties:
+        owner:
+          type: string
+          description: Internal name of the referencing class.
+        ownerSimple:
+          type: string
+        member:
+          type: [string, "null"]
+          description: Enclosing method name; null when the reference is in the class header.
+        descriptor:
+          type: [string, "null"]
+        kind:
+          type: string
+          enum: [class, method, field]
+    ReferenceResponse:
+      type: object
+      required: [version, namespace, query, references]
+      properties:
+        version:
+          type: string
+        namespace:
+          type: string
+          enum: [yarn, mojmap]
+        query:
+          type: string
+        references:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReferenceItem"

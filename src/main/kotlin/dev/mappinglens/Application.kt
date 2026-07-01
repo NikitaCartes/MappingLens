@@ -18,6 +18,7 @@ import io.ktor.server.plugins.cors.routing.*
 import io.ktor.server.plugins.ratelimit.*
 import io.ktor.server.plugins.statuspages.*
 import io.ktor.server.plugins.swagger.*
+import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.serialization.json.Json
@@ -98,6 +99,20 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
         }
     }
 
+    // Mappings for a given version never change, so let clients/CDNs cache successful /api/v1 responses
+    // for a month. Only 2xx (or default-200, where status() is still null at respond time) are cached —
+    // errors keep an explicit non-2xx status so a 404 for a not-yet-indexed class isn't frozen for weeks.
+    install(createApplicationPlugin("ApiCacheHeaders") {
+        onCallRespond { call ->
+            if (call.request.path().startsWith("/api/v1")) {
+                val status = call.response.status()
+                if (status == null || status.isSuccess()) {
+                    call.response.headers.append(HttpHeaders.CacheControl, "public, max-age=2592000, immutable")
+                }
+            }
+        }
+    })
+
     install(StatusPages) {
         exception<IllegalArgumentException> { call, e ->
             call.respond(HttpStatusCode.BadRequest, ApiError("invalid_query", e.message ?: "Bad request", 400))
@@ -115,6 +130,9 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
     val translationService = TranslationService(database, versionService)
     val bytecodeService = BytecodeService(appConfig, database)
     val compareService = CompareService(database, versionService)
+    val hierarchyService = HierarchyService(appConfig)
+    val referenceService = ReferenceService(appConfig)
+    val tokenService = TokenService(appConfig, bytecodeService)
 
     routing {
         rateLimit {
@@ -124,6 +142,9 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
             translationRoutes(translationService)
             bytecodeRoutes(bytecodeService)
             compareRoutes(compareService)
+            hierarchyRoutes(hierarchyService)
+            referenceRoutes(referenceService)
+            tokenRoutes(tokenService)
         }
 
         get("/") {

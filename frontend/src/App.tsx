@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ConfigProvider, Splitter, Tabs, theme } from "antd";
+import { App as AntApp, ConfigProvider, Splitter, Tabs, theme } from "antd";
 import { ApiRequestError, fetchVersions, search } from "./api";
 import type {
   SearchNamespace,
@@ -12,8 +12,15 @@ import type {
 import { Sidebar, type Mode } from "./components/Sidebar";
 import { CodeView, tabLabel } from "./components/CodeView";
 import { CompareView } from "./components/CompareView";
-import { OpenClassProvider, type OpenClassRequest } from "./openClass";
-import { classKey, type CodeTab } from "./tabs";
+import { InheritanceView, hierarchyTabLabel } from "./components/InheritanceView";
+import { ReferencesView, referencesTabLabel } from "./components/ReferencesView";
+import {
+  OpenClassProvider,
+  type OpenClassRequest,
+  type OpenHierarchyRequest,
+  type OpenReferencesRequest,
+} from "./openClass";
+import { classKey, type Tab } from "./tabs";
 
 function useDebounced<T>(value: T, ms: number): T {
   const [debounced, setDebounced] = useState(value);
@@ -50,7 +57,7 @@ export default function App() {
   const [searchError, setSearchError] = useState<string | undefined>(undefined);
   const [response, setResponse] = useState<SearchResponse | undefined>(undefined);
 
-  const [tabs, setTabs] = useState<CodeTab[]>([]);
+  const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeKey, setActiveKey] = useState<string | undefined>(undefined);
 
   const debouncedQuery = useDebounced(query, 150);
@@ -102,10 +109,40 @@ export default function App() {
       if (!version) return;
       const namespace = req.namespace ?? sourceNamespace;
       const key = classKey(version, req.names);
-      setTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, version, names: req.names, namespace }]));
+      setTabs((prev) =>
+        prev.some((t) => t.key === key) ? prev : [...prev, { kind: "code", key, version, names: req.names, namespace }],
+      );
       setActiveKey(key);
     },
     [selectedVersion, sourceNamespace],
+  );
+
+  const openHierarchy = useCallback((req: OpenHierarchyRequest) => {
+    const key = `hierarchy ${req.version} ${req.className} ${req.namespace}`;
+    setTabs((prev) =>
+      prev.some((t) => t.key === key)
+        ? prev
+        : [...prev, { kind: "hierarchy", key, version: req.version, className: req.className, namespace: req.namespace }],
+    );
+    setActiveKey(key);
+  }, []);
+
+  const openReferences = useCallback((req: OpenReferencesRequest) => {
+    const key = `references ${req.version} ${req.query} ${req.namespace}`;
+    setTabs((prev) =>
+      prev.some((t) => t.key === key)
+        ? prev
+        : [
+            ...prev,
+            { kind: "references", key, version: req.version, query: req.query, title: req.title, namespace: req.namespace },
+          ],
+    );
+    setActiveKey(key);
+  }, []);
+
+  const tabActions = useMemo(
+    () => ({ openClass, openHierarchy, openReferences }),
+    [openClass, openHierarchy, openReferences],
   );
 
   const closeTab = useCallback((key: string) => {
@@ -152,10 +189,21 @@ export default function App() {
           onEdit={(key, action) => {
             if (action === "remove") closeTab(key as string);
           }}
-          items={tabs.map((t) => ({ key: t.key, label: tabLabel(t) }))}
+          items={tabs.map((t) => ({
+            key: t.key,
+            label:
+              t.kind === "hierarchy" ? hierarchyTabLabel(t) : t.kind === "references" ? referencesTabLabel(t) : tabLabel(t),
+          }))}
         />
         <div className="editor-content">
-          {activeTab && <CodeView key={activeTab.key} tab={activeTab} />}
+          {activeTab &&
+            (activeTab.kind === "hierarchy" ? (
+              <InheritanceView key={activeTab.key} tab={activeTab} />
+            ) : activeTab.kind === "references" ? (
+              <ReferencesView key={activeTab.key} tab={activeTab} />
+            ) : (
+              <CodeView key={activeTab.key} tab={activeTab} />
+            ))}
         </div>
       </div>
     );
@@ -163,8 +211,9 @@ export default function App() {
 
   return (
     <ConfigProvider theme={{ algorithm: theme.darkAlgorithm, token: { colorPrimary: "#5b9dff" } }}>
-      <OpenClassProvider value={openClass}>
-        <div className="app">
+      <AntApp>
+        <OpenClassProvider value={tabActions}>
+          <div className="app">
           <header className="topbar">
             <h1>MappingLens</h1>
             <span className="tagline">Minecraft mappings explorer</span>
@@ -204,8 +253,9 @@ export default function App() {
               </Splitter.Panel>
             </Splitter>
           </div>
-        </div>
-      </OpenClassProvider>
+          </div>
+        </OpenClassProvider>
+      </AntApp>
     </ConfigProvider>
   );
 }

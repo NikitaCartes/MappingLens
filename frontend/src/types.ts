@@ -141,3 +141,58 @@ export interface FileDiffResponse {
   namespace: string;
   files: FileDiff;
 }
+
+export interface HierarchyNode {
+  name: string;
+  simpleName: string;
+  isInterface: boolean;
+  isAbstract: boolean;
+}
+
+export interface HierarchyEdge {
+  parent: string;
+  child: string;
+}
+
+export interface HierarchyResponse {
+  version: string;
+  namespace: string;
+  root: string;
+  nodes: HierarchyNode[];
+  edges: HierarchyEdge[];
+}
+
+export interface ReferenceItem {
+  owner: string;
+  ownerSimple: string;
+  member?: string | null;
+  descriptor?: string | null;
+  kind: string; // class | method | field
+}
+
+export interface ReferenceResponse {
+  version: string;
+  namespace: string;
+  query: string;
+  references: ReferenceItem[];
+}
+
+export interface SourceToken {
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number; // exclusive (one past last char)
+  type: "class" | "method" | "field";
+  className: string; // owner internal name (slashes, `$` for nested)
+  name?: string | null;
+  descriptor?: string | null;
+  declaration: boolean;
+}
+
+export interface TokensResponse {
+  version: string;
+  class: string;
+  namespace: string;
+  source: string;
+  tokens: SourceToken[];
+}

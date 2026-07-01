@@ -20,6 +20,7 @@ For the full OpenAPI contract in this repository, see `../../../src/main/resourc
 - Align a single class across Yarn and Mojmap with a per-member correspondence table.
 - Fetch git-like/unified source patches between Minecraft versions.
 - Fetch indexed decompiled source or ASM textified bytecode for a class.
+- Inspect a class's inheritance hierarchy (supertypes/subtypes), find all references to a class or member, or resolve source identifiers to owner/name/descriptor tokens.
 - Validate which Minecraft versions are indexed before answering mapping questions.
 
 Do not use MappingLens as an authority for general Minecraft gameplay facts; it is focused on names, mappings, source paths, diffs, and bytecode/source lookup.
@@ -114,6 +115,26 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 - `className` accepts a slash-separated internal name or a dot-separated FQN (`net.minecraft.block.Block`).
 - Use this for descriptor-level or instruction-level inspection.
 
+### Source Tokens
+
+- `GET 127.0.0.1:8080/api/v1/tokens/{version}/{className}?namespace={namespace}`
+- `namespace`: `yarn` or `mojmap`. Defaults to `mojmap`.
+- Returns `{source, tokens}`, where each token resolves one class/method/field identifier in the decompiled `.java` to `{startLine, startColumn, endLine, endColumn, type, className, name, descriptor, declaration}` (Monaco 1-based range, `endColumn` exclusive).
+- Use to map a cursor position to an exact symbol (owner/name/descriptor). Identifiers the symbol solver cannot resolve are omitted; a partial file still returns its resolvable tokens.
+
+### Inheritance
+
+- `GET 127.0.0.1:8080/api/v1/hierarchy/{version}/{className}?namespace={namespace}`
+- `namespace`: `yarn` or `mojmap`. Defaults to `mojmap`.
+- Returns the class's supertypes and subtypes as `{nodes, edges}` (node: internal `name`, `simpleName`, `isInterface`, `isAbstract`; edge: `{parent, child}`). `java/lang/Object` is omitted. `404` if the class or the version's named jar is absent.
+
+### References
+
+- `GET 127.0.0.1:8080/api/v1/references/{version}?q={key}&namespace={namespace}`
+- `q` (required): the target — a class internal name (`net/minecraft/world/level/block/Block`) or a member key `owner:name:descriptor`.
+- `namespace`: `yarn` or `mojmap`. Defaults to `mojmap`.
+- Returns each referencing site as `{owner, ownerSimple, member, descriptor, kind}` (the enclosing method, or the class header). Only references to Minecraft classes in the same jar are indexed; JDK/library targets are dropped.
+
 ### Meta / Health
 
 - `GET 127.0.0.1:8080/health` — returns `ok`; not rate-limited.
@@ -122,6 +143,8 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 - `GET 127.0.0.1:8080/docs` — Swagger UI.
 
 All `/api/v1` endpoints are rate-limited to 200 requests per 60 seconds. Exceeding this returns `429`.
+
+Successful `/api/v1` responses are immutable for a given version and are served with `Cache-Control: public, max-age=2592000, immutable` (one month); error responses are not cached. Reuse cached results across a session rather than refetching.
 
 ## Suggested MCP Tool Contract
 
@@ -139,7 +162,10 @@ If wrapping MappingLens as an MCP server, expose these read-only tools and map t
 | `mappinglens_diff_patch` | Return real unified source patch between versions | `from`, `to` | `namespace`, `path`, `file`, `function`, `context`, `limit`, `format` |
 | `mappinglens_compare` | Yarn↔Mojmap per-member correspondence table for a class | `version`, `className` | `from`, `to` |
 | `mappinglens_get_source` | Fetch decompiled source | `version`, `className` | `namespace` |
+| `mappinglens_get_tokens` | Resolve source identifiers to owner/name/descriptor tokens | `version`, `className` | `namespace` |
 | `mappinglens_get_bytecode` | Fetch bytecode/disassembly | `version`, `className` | `namespace`, `format` |
+| `mappinglens_hierarchy` | Class supertypes/subtypes graph | `version`, `className` | `namespace` |
+| `mappinglens_references` | Find references to a class or member | `version`, `q` | `namespace` |
 | `mappinglens_get_openapi` | Fetch the API specification | none | `format` |
 
 For MCP schemas, keep enum values identical to the REST API. Return the JSON body unchanged plus the request URL used when useful for debugging.

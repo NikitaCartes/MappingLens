@@ -46,6 +46,9 @@ dependencies {
     implementation("org.ow2.asm:asm-util:9.10.1")
     implementation("org.ow2.asm:asm-commons:9.10.1")
 
+    // Source symbol resolution: map a cursor position in decompiled .java to owner/name/descriptor.
+    implementation("com.github.javaparser:javaparser-symbol-solver-core:3.26.4")
+
     // Serialization & Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")

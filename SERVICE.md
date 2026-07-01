@@ -23,6 +23,9 @@ read-only GitCraft-стора, индекс открывается с `PRAGMA qu
 | Compare Yarn↔Mojmap | Таблица соответствия членов одного класса между Yarn и Mojmap |
 | Байткод | Дизассемблированный байткод класса (ASM Textifier) в любом неймспейсе, text или JSON |
 | Исходники | Декомпилированный `.java` класса из artifact-store (namespace yarn/mojmap) |
+| Иерархия наследования | Супертипы + подтипы класса (ASM-скан named-jar'а), для right-click «View Inheritance» в UI |
+| Find All References | Обратный индекс использований класса/метода/поля (on-demand ASM-скан named-jar'а, кэш per version/namespace) |
+| Токены исходника | Резолв каждого идентификатора `.java` в owner/name/descriptor (JavaParser symbol-solver) → `{source, tokens}`; питает member-level right-click (Copy AW/AT/Mixin) |
 | Версии | Список проиндексированных версий с флагами доступности неймспейсов и counts, порядок — semver (новые сверху) |
 | OpenAPI / Swagger | Машиночитаемая спецификация (`/openapi.json`, `/openapi.yaml`) + Swagger UI (`/docs`) |
 | Frontend explorer | Браузерный UI: выбор версии, фильтры неймспейса/типа, debounced-поиск, кросс-неймспейс карточки с click-to-copy |
@@ -163,6 +166,14 @@ npm run build                            # статика в dist/ (tsc + vite)
 |---|---|
 | `GET /api/v1/bytecode/{version}/{className...}` | Дизассемблированный байткод (ASM Textifier); `namespace`, `format=text/json` |
 | `GET /api/v1/source/{version}/{className...}` | Декомпилированный `.java` класса; `namespace=yarn/mojmap` |
+| `GET /api/v1/tokens/{version}/{className...}` | `{source, tokens}`: каждый идентификатор `.java` резолвится в owner/name/descriptor (JavaParser); `namespace=yarn/mojmap` |
+
+### Иерархия и ссылки
+
+| Эндпоинт | Описание |
+|---|---|
+| `GET /api/v1/hierarchy/{version}/{className...}` | Супертипы+подтипы класса (nodes/edges, ASM-скан named-jar'а); `namespace=yarn/mojmap` |
+| `GET /api/v1/references/{version}?q=<key>` | Использования класса/члена (`q` = `owner` или `owner:name:descriptor`); `namespace=yarn/mojmap` |
 
 ---
 

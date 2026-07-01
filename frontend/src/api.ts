@@ -4,6 +4,9 @@ import type {
   ClassListResponse,
   DiffResponse,
   FileDiffResponse,
+  HierarchyResponse,
+  ReferenceResponse,
+  TokensResponse,
   SearchNamespace,
   SearchResponse,
   SearchType,
@@ -95,6 +98,36 @@ export function fetchSource(
   signal?: AbortSignal,
 ): Promise<SourceResponse> {
   return getJson<SourceResponse>(`${BASE}/source/${v(version)}/${cls(className)}?namespace=${namespace}`, signal);
+}
+
+export function fetchHierarchy(
+  version: string,
+  className: string,
+  namespace: SourceNamespace,
+  signal?: AbortSignal,
+): Promise<HierarchyResponse> {
+  return getJson<HierarchyResponse>(`${BASE}/hierarchy/${v(version)}/${cls(className)}?namespace=${namespace}`, signal);
+}
+
+export function fetchTokens(
+  version: string,
+  className: string,
+  namespace: SourceNamespace,
+  signal?: AbortSignal,
+): Promise<TokensResponse> {
+  return getJson<TokensResponse>(`${BASE}/tokens/${v(version)}/${cls(className)}?namespace=${namespace}`, signal);
+}
+
+export function fetchReferences(
+  version: string,
+  query: string,
+  namespace: SourceNamespace,
+  signal?: AbortSignal,
+): Promise<ReferenceResponse> {
+  return getJson<ReferenceResponse>(
+    `${BASE}/references/${v(version)}?q=${encodeURIComponent(query)}&namespace=${namespace}`,
+    signal,
+  );
 }
 
 export function fetchBytecode(
