@@ -158,8 +158,6 @@ export default function App() {
     });
   }, []);
 
-  const activeTab = useMemo(() => tabs.find((t) => t.key === activeKey), [tabs, activeKey]);
-
   const main = (() => {
     if (versionsError) {
       return (
@@ -196,14 +194,19 @@ export default function App() {
           }))}
         />
         <div className="editor-content">
-          {activeTab &&
-            (activeTab.kind === "hierarchy" ? (
-              <InheritanceView key={activeTab.key} tab={activeTab} />
-            ) : activeTab.kind === "references" ? (
-              <ReferencesView key={activeTab.key} tab={activeTab} />
-            ) : (
-              <CodeView key={activeTab.key} tab={activeTab} />
-            ))}
+          {/* Keep every tab mounted (hide inactive ones) so switching tabs preserves each
+              view's scroll position and its local toggles instead of remounting from scratch. */}
+          {tabs.map((t) => (
+            <div key={t.key} className="tab-pane" style={{ display: t.key === activeKey ? undefined : "none" }}>
+              {t.kind === "hierarchy" ? (
+                <InheritanceView tab={t} />
+              ) : t.kind === "references" ? (
+                <ReferencesView tab={t} />
+              ) : (
+                <CodeView tab={t} />
+              )}
+            </div>
+          ))}
         </div>
       </div>
     );

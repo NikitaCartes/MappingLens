@@ -57,6 +57,17 @@ class TokenService(private val config: AppConfig, private val bytecodeService: B
             val combined = CombinedTypeSolver()
             combined.add(ReflectionTypeSolver()) // JDK types
             combined.add(JarTypeSolver(jar))      // Minecraft named classes
+            // Minecraft's own dependencies (Guava, Brigadier, DataFixerUpper, fastutil, …) so that
+            // library-typed identifiers resolve instead of being silently dropped by emit()'s catch.
+            // ponytail: keeps ~one JarFile handle open per lib per (version,ns) for the server's life;
+            // fine for interactive use, revisit if token requests fan out over very many versions.
+            for (lib in config.sources.libraryJars(v)) {
+                try {
+                    combined.add(JarTypeSolver(lib))
+                } catch (_: Exception) {
+                    // Unreadable/native jar: skip; a missing lib only costs a few unresolved tokens.
+                }
+            }
             Optional.of(JavaSymbolSolver(combined))
         }.orElse(null)
 

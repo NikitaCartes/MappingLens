@@ -3,6 +3,19 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [7.1]
+
+### Fixed
+- `GET /api/v1/tokens/{version}/{className}` now resolves identifiers whose
+  type comes from a Minecraft library (Guava, Brigadier, DataFixerUpper,
+  fastutil, slf4j, …) instead of silently dropping them: the symbol solver's
+  classpath now includes the version's declared library jars (read from its
+  mc-meta manifest), not just the JDK and the remapped Minecraft jar.
+- Web frontend: the layout no longer collapses to the top of the screen
+  (regression from the antd `App` wrapper element, which had no height).
+- Web frontend: switching between open editor tabs no longer resets each tab's
+  scroll position and its Yarn/Mojmap and Source/Bytecode toggles.
+
 ## [7]
 
 ### Added

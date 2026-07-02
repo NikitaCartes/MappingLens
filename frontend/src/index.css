@@ -36,6 +36,13 @@ code,
   font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
 }
 
+/* antd v6 <App> wraps children in a .ant-app div; give it height so the
+   #root → .ant-app → .app height:100% chain resolves (else the layout
+   collapses to content height and only the top of the screen fills). */
+.ant-app {
+  height: 100%;
+}
+
 .app {
   display: flex;
   flex-direction: column;
@@ -225,6 +232,9 @@ code,
 .editor-content {
   flex: 1;
   min-height: 0;
+}
+.editor-content > .tab-pane {
+  height: 100%;
 }
 .empty-state {
   display: flex;
