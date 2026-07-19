@@ -44,7 +44,9 @@ export function CompareView({ versions, initialTo, initialNamespace }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
 
-  const [selectedFile, setSelectedFile] = useState<string | undefined>(undefined);
+  // Default to the whole-version patch so the pane always shows something (and never sits on a
+  // stale "loading" when the selection is cleared mid-flight).
+  const [selectedFile, setSelectedFile] = useState<string>(WHOLE_PATCH);
   const [viewMode, setViewMode] = useState<"patch" | "source" | "bytecode">("patch");
   const [patch, setPatch] = useState("");
   const [patchStatus, setPatchStatus] = useState<"idle" | "loading" | "ready" | "empty" | "error">("idle");
@@ -63,9 +65,7 @@ export function CompareView({ versions, initialTo, initialNamespace }: Props) {
     const controller = new AbortController();
     setLoading(true);
     setError(undefined);
-    setSelectedFile(undefined);
-    setPatchStatus("idle");
-    setPairStatus("idle");
+    setSelectedFile(WHOLE_PATCH);
     Promise.all([
       fetchDiff(from, to, namespace, controller.signal),
       fetchDiffFiles(from, to, namespace, controller.signal),
