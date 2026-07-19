@@ -2,6 +2,7 @@ package dev.mappinglens.service
 
 import dev.mappinglens.config.AppConfig
 import dev.mappinglens.db.tables.*
+import org.jetbrains.exposed.dao.id.IntIdTable
 import dev.mappinglens.ingestion.GitSourceRepository
 import dev.mappinglens.model.*
 import org.jetbrains.exposed.sql.*
@@ -93,6 +94,118 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
     }
     }
 
+    /**
+     * Diff exactly one class between two versions, listing added/removed/renamed members by name.
+     * Member identity uses the same key as [diffFiles]' per-file member counts, so the summary
+     * numbers match `/diff/files` for the same class bit-for-bit. Unlike `package=` (a package-path
+     * prefix over the whole diff), `class=` targets a single class by its name in [namespace].
+     */
+    fun diffClass(
+        from: String,
+        to: String,
+        namespace: String,
+        className: String,
+        type: String,
+        changeType: String,
+        limit: Int,
+    ): DiffResponse = transaction(db) {
+        val fromId = versionRowId(from)
+        val toId = versionRowId(to)
+        if (fromId == null || toId == null) return@transaction emptyDiffResponse(from, to, namespace)
+
+        val normClass = className.normalizeDiffPath().removeSuffix(".java")
+        val fromCid = classIdByName(fromId, namespace, normClass)
+        val toCid = classIdByName(toId, namespace, normClass)
+        if (fromCid == null && toCid == null) return@transaction emptyDiffResponse(from, to, namespace)
+
+        val classAdded = if (fromCid == null && toCid != null) listOf(DiffEntryItem("class", name = normClass)) else emptyList()
+        val classRemoved = if (fromCid != null && toCid == null) listOf(DiffEntryItem("class", name = normClass)) else emptyList()
+
+        val methodDiff = memberDiff(MethodTable, fromCid, toCid, namespace, normClass, "method")
+        val fieldDiff = memberDiff(FieldTable, fromCid, toCid, namespace, normClass, "field")
+
+        val includeClasses = type == "class" || type == "all"
+        val includeMethods = type == "method" || type == "all"
+        val includeFields = type == "field" || type == "all"
+        fun keep(kind: String) = changeType == "all" || changeType == kind
+
+        val added = buildList {
+            if (includeClasses && keep("added")) addAll(classAdded)
+            if (includeMethods && keep("added")) addAll(methodDiff.added)
+            if (includeFields && keep("added")) addAll(fieldDiff.added)
+        }.take(limit)
+        val removed = buildList {
+            if (includeClasses && keep("removed")) addAll(classRemoved)
+            if (includeMethods && keep("removed")) addAll(methodDiff.removed)
+            if (includeFields && keep("removed")) addAll(fieldDiff.removed)
+        }.take(limit)
+        val renamed = buildList {
+            if (includeMethods && keep("renamed")) addAll(methodDiff.renamed)
+            if (includeFields && keep("renamed")) addAll(fieldDiff.renamed)
+        }.take(limit)
+
+        DiffResponse(
+            from = from, to = to, namespace = namespace,
+            changes = DiffChanges(added, removed, renamed),
+            summary = DiffSummary(
+                classesAdded = classAdded.size,
+                classesRemoved = classRemoved.size,
+                methodsAdded = methodDiff.added.size,
+                methodsRemoved = methodDiff.removed.size,
+                methodsRenamed = methodDiff.renamed.size,
+                fieldsAdded = fieldDiff.added.size,
+                fieldsRemoved = fieldDiff.removed.size,
+                fieldsRenamed = fieldDiff.renamed.size,
+            ),
+        )
+    }
+
+    private data class MemberRec(val key: String, val name: String?, val descriptor: String?)
+
+    /** Members of [classId] keyed exactly as [methodKeys]/[fieldKeys], carrying the namespace display name + descriptor. */
+    private fun memberRecords(table: IntIdTable, classId: Int?, namespace: String): List<MemberRec> {
+        if (classId == null) return emptyList()
+        val cols = memberCols(table)
+        val nameCol = when (namespace) { "mojmap" -> cols.mojmap; "intermediary" -> cols.intermediary; else -> cols.yarn }
+        return table.selectAll().where { cols.classId eq classId }.map { row ->
+            MemberRec(
+                key = memberKey(row[cols.intermediary] ?: row[cols.mojmap], row[cols.intermediaryDesc] ?: row[cols.obfDesc], row[cols.obfName], row[cols.obfDesc]),
+                name = row[nameCol],
+                descriptor = row[cols.intermediaryDesc] ?: row[cols.obfDesc],
+            )
+        }
+    }
+
+    private fun memberDiff(table: IntIdTable, fromCid: Int?, toCid: Int?, namespace: String, owner: String, kind: String): TypedDiff {
+        val from = memberRecords(table, fromCid, namespace)
+        val to = memberRecords(table, toCid, namespace)
+        val fromByKey = from.associateBy { it.key }
+        val toByKey = to.associateBy { it.key }
+        fun item(r: MemberRec) = DiffEntryItem(type = kind, name = r.name, owner = owner, descriptor = r.descriptor)
+        val added = (toByKey.keys - fromByKey.keys).map { item(toByKey.getValue(it)) }
+        val removed = (fromByKey.keys - toByKey.keys).map { item(fromByKey.getValue(it)) }
+        val renamed = (fromByKey.keys intersect toByKey.keys)
+            .filter { fromByKey.getValue(it).name != toByKey.getValue(it).name }
+            .map { DiffEntryItem(type = kind, owner = owner, oldName = fromByKey.getValue(it).name, newName = toByKey.getValue(it).name, descriptor = toByKey.getValue(it).descriptor) }
+        return TypedDiff(added, removed, renamed)
+    }
+
+    private class MemberCols(
+        val classId: Column<org.jetbrains.exposed.dao.id.EntityID<Int>>,
+        val obfName: Column<String?>,
+        val obfDesc: Column<String?>,
+        val intermediary: Column<String?>,
+        val intermediaryDesc: Column<String?>,
+        val yarn: Column<String?>,
+        val mojmap: Column<String?>,
+    )
+
+    private fun memberCols(table: IntIdTable): MemberCols = when (table) {
+        MethodTable -> MemberCols(MethodTable.classId, MethodTable.obfName, MethodTable.obfDesc, MethodTable.intermediaryName, MethodTable.intermediaryDesc, MethodTable.yarnName, MethodTable.mojmapName)
+        FieldTable -> MemberCols(FieldTable.classId, FieldTable.obfName, FieldTable.obfDesc, FieldTable.intermediaryName, FieldTable.intermediaryDesc, FieldTable.yarnName, FieldTable.mojmapName)
+        else -> error("unsupported table")
+    }
+
     fun diffFiles(from: String, to: String, namespace: String, pathPrefix: String?): FileDiffResponse = transaction(db) {
         val fromId = versionRowId(from)
         val toId = versionRowId(to)
@@ -128,6 +241,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         functionFilter: String?,
         contextLines: Int,
         limit: Int,
+        ignoreWhitespace: Boolean = false,
     ): PatchDiffResponse {
         val mappingType = if (namespace == "mojmap") "mojmap" else "yarn"
         val normalizedPath = pathPrefix?.normalizeDiffPath()?.takeIf { it.isNotBlank() }
@@ -157,6 +271,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
                         newSource = newSource.orEmpty(),
                         functionName = normalizedFunction,
                         contextLines = contextLines,
+                        ignoreWhitespace = ignoreWhitespace,
                     )
                     if (filePatch.isNotBlank()) {
                         patchFiles += PatchFileChange(file.path, file.changeType)
@@ -361,6 +476,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         newSource: String,
         functionName: String?,
         contextLines: Int,
+        ignoreWhitespace: Boolean = false,
     ): String {
         val oldSlice = functionName?.let { extractFunctionSlice(oldSource, it) }
         val newSlice = functionName?.let { extractFunctionSlice(newSource, it) }
@@ -370,10 +486,102 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         val newLines = newSlice?.lines ?: if (functionName == null) splitSourceLines(newSource) else emptyList()
         val oldStartLine = oldSlice?.startLine ?: if (oldLines.isEmpty()) 0 else 1
         val newStartLine = newSlice?.startLine ?: if (newLines.isEmpty()) 0 else 1
-        val diffLines = buildLineDiff(oldLines, newLines, oldStartLine, newStartLine)
+        // Primary engine is Myers O(ND): it yields the minimal (optimal) edit script in memory
+        // proportional to the *edit distance*, so a big class with a handful of real changes stays
+        // a handful of hunks. The old prefix/suffix + LCS path (buildLineDiff) allocates an O(n·m)
+        // matrix and, once past MAX_LCS_CELLS, dumps the whole file as one -/+ block (a 4k-line
+        // class → a 240 KB "everything changed" patch). It survives only as the fallback for
+        // pathologically dissimilar files where Myers' distance blows the memory budget.
+        // `ignoreWhitespace` is just a normalizing equality; the algorithm is otherwise identical.
+        val norm: (String) -> String = if (ignoreWhitespace) ::normalizeWhitespace else { s -> s }
+        val diffLines = myersLineDiff(oldLines, newLines, oldStartLine, newStartLine, norm)
+            ?: buildLineDiff(oldLines, newLines, oldStartLine, newStartLine)
         if (diffLines.none { it.kind != DiffLineKind.SAME }) return ""
 
         return formatFilePatch(path, changeType, diffLines, contextLines.coerceIn(0, 20))
+    }
+
+    private fun normalizeWhitespace(line: String): String = line.trim().replace(WS_RUN, " ")
+
+    /** Test seam: the raw diff engine ("±text" per line), exercising Myers-primary + fallback without a DB. */
+    internal fun diffLinesForTest(old: List<String>, new: List<String>, ignoreWhitespace: Boolean): List<String> {
+        val norm: (String) -> String = if (ignoreWhitespace) ::normalizeWhitespace else { s -> s }
+        val lines = myersLineDiff(old, new, 1, 1, norm) ?: buildLineDiff(old, new, 1, 1)
+        return lines.map { (if (it.kind == DiffLineKind.OLD) "-" else if (it.kind == DiffLineKind.NEW) "+" else " ") + it.text }
+    }
+
+    /**
+     * Myers O(ND) diff (Eugene Myers, 1986) producing the same [DiffLine] stream the patch formatter
+     * consumes. Lines are compared through [norm] so callers can ignore whitespace. Returns null when
+     * the edit distance would exceed the memory budget (two genuinely dissimilar files, e.g. a full
+     * reformat) so the caller can fall back to the LCS path. SAME lines carry the new-side text so
+     * context reads coherently against the `+++ b/` file.
+     *
+     * The trace keeps one V snapshot per edit-distance round, so its memory is `D · (2·(n+m)+1)`
+     * ints. [maxD] is derived from [MYERS_TRACE_BUDGET_INTS] to bound that at ~64 MB regardless of
+     * file size — for a typical class this permits hundreds of scattered changes before falling back.
+     */
+    private fun myersLineDiff(
+        old: List<String>,
+        new: List<String>,
+        oldStartLine: Int,
+        newStartLine: Int,
+        norm: (String) -> String,
+    ): List<DiffLine>? {
+        val a = old.map(norm)
+        val b = new.map(norm)
+        val n = a.size
+        val m = b.size
+        val max = n + m
+        if (max == 0) return emptyList()
+        val offset = max
+        val maxD = minOf(max, (MYERS_TRACE_BUDGET_INTS / (2L * max + 1)).toInt())
+        val v = IntArray(2 * max + 1)
+        val trace = ArrayList<IntArray>(minOf(max, maxD) + 1)
+        var dFinal = -1
+        for (d in 0..maxD) {
+            trace += v.copyOf()
+            for (k in -d..d step 2) {
+                var x = if (k == -d || (k != d && v[offset + k - 1] < v[offset + k + 1])) {
+                    v[offset + k + 1]
+                } else {
+                    v[offset + k - 1] + 1
+                }
+                var y = x - k
+                while (x < n && y < m && a[x] == b[y]) { x++; y++ }
+                v[offset + k] = x
+                if (x >= n && y >= m) { dFinal = d; break }
+            }
+            if (dFinal >= 0) break
+        }
+        if (dFinal < 0) return null
+
+        val edits = ArrayDeque<DiffLine>()
+        var x = n
+        var y = m
+        for (d in dFinal downTo 1) {
+            val vPrev = trace[d]
+            val k = x - y
+            val prevK = if (k == -d || (k != d && vPrev[offset + k - 1] < vPrev[offset + k + 1])) k + 1 else k - 1
+            val prevX = vPrev[offset + prevK]
+            val prevY = prevX - prevK
+            while (x > prevX && y > prevY) {
+                edits.addFirst(DiffLine(DiffLineKind.SAME, new[y - 1], oldStartLine + x - 1, newStartLine + y - 1))
+                x--; y--
+            }
+            if (x == prevX) {
+                edits.addFirst(DiffLine(DiffLineKind.NEW, new[y - 1], null, newStartLine + y - 1))
+                y--
+            } else {
+                edits.addFirst(DiffLine(DiffLineKind.OLD, old[x - 1], oldStartLine + x - 1, null))
+                x--
+            }
+        }
+        while (x > 0 && y > 0) {
+            edits.addFirst(DiffLine(DiffLineKind.SAME, new[y - 1], oldStartLine + x - 1, newStartLine + y - 1))
+            x--; y--
+        }
+        return edits.toList()
     }
 
     private fun splitSourceLines(source: String): List<String> {
@@ -927,6 +1135,13 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
     private fun sqlStringLiteral(value: String): String = "'" + value.replace("'", "''") + "'"
 
     private companion object {
-        const val MAX_LCS_CELLS = 4_000_000L
+        // LCS fallback matrix cap. Only reached when Myers bails (a near-total reformat); raised from
+        // 4M so the fallback still produces a real diff for the largest MC classes (~5k×5k = 25M)
+        // before the last-resort whole-file -/+ dump. 40M ints ≈ 160 MB transient, GC'd per call.
+        const val MAX_LCS_CELLS = 40_000_000L
+        // Memory budget for the Myers trace (ints). ~64 MB caps how many edit rounds we keep before
+        // giving up and falling back — comfortably covers every realistic semantic diff.
+        const val MYERS_TRACE_BUDGET_INTS = 16_000_000L
+        val WS_RUN = Regex("\\s+")
     }
 }

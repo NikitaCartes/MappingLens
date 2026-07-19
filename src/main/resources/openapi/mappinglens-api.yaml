@@ -14,6 +14,7 @@ tags:
   - name: Compare
   - name: Hierarchy
   - name: References
+  - name: Exists
   - name: Docs
 paths:
   /api/v1/versions:
@@ -123,6 +124,15 @@ paths:
             type: string
           description: Package/path prefix filter such as `net/minecraft/block`.
         - in: query
+          name: class
+          schema:
+            type: string
+          description: >
+            Diff exactly one class (internal name in `namespace`, e.g.
+            `net/minecraft/world/entity/Entity`), listing added/removed/renamed members by name.
+            Unlike `package=` (a package-path prefix), this targets a single class; its summary
+            counts match `/diff/files` for the same class. Takes precedence over `package`.
+        - in: query
           name: changeType
           schema:
             type: string
@@ -197,6 +207,14 @@ paths:
             default: 5000
           description: Maximum files included when `format=patch`.
         - in: query
+          name: ignoreWhitespace
+          schema:
+            type: boolean
+            default: false
+          description: >
+            When `format=patch`/`git`, collapse hunks that differ only in whitespace, line breaks
+            or reindentation (decompiler cosmetics), leaving only real changes.
+        - in: query
           name: format
           schema:
             type: string
@@ -267,6 +285,15 @@ paths:
             maximum: 50000
             default: 5000
           description: Maximum files included in the generated patch.
+        - in: query
+          name: ignoreWhitespace
+          schema:
+            type: boolean
+            default: false
+          description: >
+            Collapse hunks that differ only in whitespace, line breaks or reindentation
+            (decompiler cosmetics), leaving only real changes. A class with no semantic change
+            yields an empty patch instead of a full-file rewrite.
         - in: query
           name: format
           schema:
@@ -569,6 +596,34 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+  /api/v1/exists/{version}:
+    post:
+      tags: [Exists]
+      summary: Batch-check whether classes/members exist in a version
+      description: >
+        Validates a batch of class/member keys against a version's named jar (mojmap or yarn),
+        returning one boolean per key. A key is a class internal name (`net/minecraft/.../ChunkMap`)
+        or a member `owner:name:descriptor`. Descriptors are in the requested namespace. Intended
+        for validating mixin/shadow targets when updating a mod to a new version.
+      parameters:
+        - $ref: "#/components/parameters/VersionPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExistsRequest"
+      responses:
+        "200":
+          description: One existence result per requested key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExistsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /openapi.json:
     get:
       tags: [Docs]
@@ -782,6 +837,8 @@ components:
         intermediary:
           type: [string, "null"]
         owner:
+          type: [string, "null"]
+        descriptor:
           type: [string, "null"]
         oldName:
           type: [string, "null"]
@@ -1086,6 +1143,43 @@ components:
         kind:
           type: string
           enum: [class, method, field]
+    ExistsRequest:
+      type: object
+      required: [members]
+      properties:
+        namespace:
+          type: string
+          enum: [yarn, mojmap]
+          default: mojmap
+        members:
+          type: array
+          maxItems: 2000
+          items:
+            type: string
+          description: "Class internal names (`owner`) or member keys `owner:name:descriptor`."
+    ExistsResult:
+      type: object
+      required: [key, exists]
+      properties:
+        key:
+          type: string
+        exists:
+          type: boolean
+        renamedTo:
+          type: [string, "null"]
+    ExistsResponse:
+      type: object
+      required: [version, namespace, results]
+      properties:
+        version:
+          type: string
+        namespace:
+          type: string
+          enum: [yarn, mojmap]
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExistsResult"
     ReferenceResponse:
       type: object
       required: [version, namespace, query, references]

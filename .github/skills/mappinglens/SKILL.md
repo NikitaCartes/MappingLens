@@ -21,6 +21,7 @@ For the full OpenAPI contract in this repository, see `../../../src/main/resourc
 - Fetch git-like/unified source patches between Minecraft versions.
 - Fetch indexed decompiled source or ASM textified bytecode for a class.
 - Inspect a class's inheritance hierarchy (supertypes/subtypes), find all references to a class or member, or resolve source identifiers to owner/name/descriptor tokens.
+- Batch-validate that classes/members still exist with the same signature in a target version (e.g. checking mixin/shadow targets before updating a mod).
 - Validate which Minecraft versions are indexed before answering mapping questions.
 
 Do not use MappingLens as an authority for general Minecraft gameplay facts; it is focused on names, mappings, source paths, diffs, and bytecode/source lookup.
@@ -67,10 +68,13 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 
 ### Diff
 
-- `GET 127.0.0.1:8080/api/v1/diff?from={fromVersion}&to={toVersion}&namespace={namespace}&type={type}&package={packagePrefix}&changeType={changeType}&limit={limit}`
+- `GET 127.0.0.1:8080/api/v1/diff?from={fromVersion}&to={toVersion}&namespace={namespace}&type={type}&package={packagePrefix}&class={classInternalName}&changeType={changeType}&limit={limit}`
 - `namespace`: `yarn`, `mojmap`, or `intermediary`. Defaults to `mojmap`.
 - `changeType`: `added`, `removed`, `renamed`, or `all`.
-- Use `package` for path/package prefix filters such as `net/minecraft/block`.
+- `package` vs `class` (mutually exclusive; `class` wins if both are given):
+  - `package` is a **package-path prefix** over the whole diff, e.g. `net/minecraft/block` matches every class under that package.
+  - `class` targets **exactly one class** by its internal name in `namespace`, e.g. `net/minecraft/world/entity/Entity`. It lists added/removed/renamed members by name, each with `owner`, `name`, and JVM `descriptor`. Its `summary.methodsAdded`/`fieldsAdded` (etc.) match `/diff/files` for the same class bit-for-bit — use it to answer "which methods/fields were added to this class, by name?".
+  - Note: a string like `net/minecraft/world/entity/Entity` is a class, not a package, so pass it as `class=`; using it as `package=` matches nothing (no class lives *under* a package named `Entity`).
 
 ### File Diff
 
@@ -88,8 +92,10 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 - `path` / `file`: optional folder or source file prefix such as `net/minecraft/block` or `net/minecraft/block/Block.java`.
 - `function`: optional method/function filter such as `getDefaultState` or `Block#getDefaultState`.
 - `context`: hunk context lines, 0-20; default 3.
+- `ignoreWhitespace` (default `false`): collapse hunks that differ only in whitespace, line breaks, or reindentation (decompiler cosmetics), leaving only real changes. Also available on `/diff/files?format=patch`.
 - `format`: `patch`/`git` returns `text/x-diff`; `json` returns metadata plus the patch string.
 - Use this endpoint for full real source diffs between versions; it compares actual decompiled source content, not only renamed mapping entries.
+- Patches are minimal by construction (Myers diff): a class with a handful of real changes yields a handful of hunks, not a whole-file rewrite. `ignoreWhitespace=true` additionally erases pure reformatting — use it when a decompiler reindent would otherwise add noise; a class with no semantic change then yields an empty patch.
 
 ### Compare
 
@@ -135,6 +141,14 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 - `namespace`: `yarn` or `mojmap`. Defaults to `mojmap`.
 - Returns each referencing site as `{owner, ownerSimple, member, descriptor, kind}` (the enclosing method, or the class header). Only references to Minecraft classes in the same jar are indexed; JDK/library targets are dropped.
 
+### Exists (batch member/class existence)
+
+- `POST 127.0.0.1:8080/api/v1/exists/{version}` with JSON body `{ "namespace": "mojmap", "members": ["net/minecraft/.../ChunkMap:move:(...)V", "net/minecraft/.../ChunkMap"] }`.
+- `namespace`: `yarn` or `mojmap`. Each key is either a class internal name (`owner`) or a member `owner:name:descriptor`; descriptors are in the requested namespace.
+- Returns `{version, namespace, results:[{key, exists, renamedTo}]}` — one boolean per key, in request order. `renamedTo` is reserved (currently always `null`; detecting a rename needs a source version to anchor against, which this single-version check does not take).
+- Batch up to 2000 keys per call. Checks the version's pre-remapped named jar via ASM (cached per version+namespace), so descriptors match exactly with no remapping. Returns `404` if that jar is absent for the version.
+- **Use it to validate mixin/shadow targets when updating a mod**: confirm every injected method and shadowed field still exists with the same signature in one request instead of many `search`/`source` calls. This is the only `POST` endpoint; it is not cached (results depend on the request body).
+
 ### Meta / Health
 
 - `GET 127.0.0.1:8080/health` — returns `ok`; not rate-limited.
@@ -157,15 +171,16 @@ If wrapping MappingLens as an MCP server, expose these read-only tools and map t
 | `mappinglens_list_classes` | List all classes for a version | `version` | none |
 | `mappinglens_search` | Search classes, methods, fields | `q` | `version`, `type`, `namespace`, `limit`, `offset`, `exact` |
 | `mappinglens_translate` | Translate a name between namespaces | `name`, `from`, `to` | `version`, `type` |
-| `mappinglens_diff` | Compare mapping elements between versions | `from`, `to` | `namespace`, `type`, `package`, `changeType`, `limit` |
-| `mappinglens_diff_files` | Compare indexed source files | `from`, `to` | `namespace`, `path`, `file`, `format` |
-| `mappinglens_diff_patch` | Return real unified source patch between versions | `from`, `to` | `namespace`, `path`, `file`, `function`, `context`, `limit`, `format` |
+| `mappinglens_diff` | Compare mapping elements between versions | `from`, `to` | `namespace`, `type`, `package`, `class`, `changeType`, `limit` |
+| `mappinglens_diff_files` | Compare indexed source files | `from`, `to` | `namespace`, `path`, `file`, `format`, `ignoreWhitespace` |
+| `mappinglens_diff_patch` | Return real unified source patch between versions | `from`, `to` | `namespace`, `path`, `file`, `function`, `context`, `limit`, `format`, `ignoreWhitespace` |
 | `mappinglens_compare` | Yarn↔Mojmap per-member correspondence table for a class | `version`, `className` | `from`, `to` |
 | `mappinglens_get_source` | Fetch decompiled source | `version`, `className` | `namespace` |
 | `mappinglens_get_tokens` | Resolve source identifiers to owner/name/descriptor tokens | `version`, `className` | `namespace` |
 | `mappinglens_get_bytecode` | Fetch bytecode/disassembly | `version`, `className` | `namespace`, `format` |
 | `mappinglens_hierarchy` | Class supertypes/subtypes graph | `version`, `className` | `namespace` |
 | `mappinglens_references` | Find references to a class or member | `version`, `q` | `namespace` |
+| `mappinglens_exists` | Batch-check class/member existence in a version | `version`, `members` | `namespace` |
 | `mappinglens_get_openapi` | Fetch the API specification | none | `format` |
 
 For MCP schemas, keep enum values identical to the REST API. Return the JSON body unchanged plus the request URL used when useful for debugging.

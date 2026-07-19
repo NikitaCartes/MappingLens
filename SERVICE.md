@@ -25,6 +25,7 @@ read-only GitCraft-стора, индекс открывается с `PRAGMA qu
 | Исходники | Декомпилированный `.java` класса из artifact-store (namespace yarn/mojmap) |
 | Иерархия наследования | Супертипы + подтипы класса (ASM-скан named-jar'а), для right-click «View Inheritance» в UI |
 | Find All References | Обратный индекс использований класса/метода/поля (on-demand ASM-скан named-jar'а, кэш per version/namespace) |
+| Проверка существования | Батч-проверка, что классы/члены живы в версии (`POST /exists`, ASM-скан named-jar'а) — валидация таргетов миксинов при апдейте мода |
 | Токены исходника | Резолв каждого идентификатора `.java` в owner/name/descriptor (JavaParser symbol-solver) → `{source, tokens}`; питает member-level right-click (Copy AW/AT/Mixin) |
 | Версии | Список проиндексированных версий с флагами доступности неймспейсов и counts, порядок — semver (новые сверху) |
 | OpenAPI / Swagger | Машиночитаемая спецификация (`/openapi.json`, `/openapi.yaml`) + Swagger UI (`/docs`) |
@@ -149,7 +150,15 @@ npm run build                            # статика в dist/ (tsc + vite)
 | `GET /api/v1/diff/patch` | Unified/git-патч исходников (фильтры `path`/`file`/`function`, `context`, `limit`) или JSON с метаданными |
 
 Параметры diff: `from`, `to` (обяз.); `namespace` (для `/diff` — `yarn/mojmap/intermediary`, для
-`/diff/files` и `/diff/patch` — только `yarn/mojmap`); `type`, `package`, `changeType`, `limit`.
+`/diff/files` и `/diff/patch` — только `yarn/mojmap`); `type`, `package`, `class`, `changeType`, `limit`.
+
+- `package` — префикс пакета над всем diff'ом; `class` — ровно один класс по внутреннему имени в
+  `namespace` (перечисляет добавленные/удалённые/переименованные члены по имени с `owner`/`descriptor`;
+  `summary` совпадает с `/diff/files` для того же класса). `class` приоритетнее `package`.
+- `/diff/files?format=patch` и `/diff/patch` принимают `ignoreWhitespace` (по умолч. `false`):
+  схлопывает ханки, отличающиеся только пробелами/переносами/переотступами. Патчи минимальны по
+  построению (Myers O(ND)) — класс с парой правок даёт пару ханков, а не переписанный целиком файл;
+  прежний LCS-путь остаётся лишь фолбэком для почти полностью переформатированных файлов.
 
 ### Compare
 
@@ -174,6 +183,13 @@ npm run build                            # статика в dist/ (tsc + vite)
 |---|---|
 | `GET /api/v1/hierarchy/{version}/{className...}` | Супертипы+подтипы класса (nodes/edges, ASM-скан named-jar'а); `namespace=yarn/mojmap` |
 | `GET /api/v1/references/{version}?q=<key>` | Использования класса/члена (`q` = `owner` или `owner:name:descriptor`); `namespace=yarn/mojmap` |
+| `POST /api/v1/exists/{version}` | Батч-проверка существования классов/членов; тело `{namespace, members[]}` (ключи = `owner` или `owner:name:descriptor`); ответ `{results:[{key, exists, renamedTo}]}` |
+
+`exists`: сканирует named-jar версии через ASM (кэш per version/namespace), поэтому дескрипторы
+совпадают без ремаппинга; до 2000 ключей за запрос; `404`, если named-jar для версии отсутствует.
+Единственный `POST`-эндпоинт, **не кэшируется** (ответ зависит от тела). `renamedTo` зарезервировано
+(пока всегда `null` — определение переименования требует исходной версии-якоря, которой у одноверсионной
+проверки нет). Назначение — валидация таргетов миксинов/shadow при апдейте мода одним вызовом.
 
 ---
 

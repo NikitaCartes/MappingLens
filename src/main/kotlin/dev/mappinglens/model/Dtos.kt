@@ -94,6 +94,7 @@ data class DiffEntryItem(
     val name: String? = null,
     val intermediary: String? = null,
     val owner: String? = null,
+    val descriptor: String? = null,
     @SerialName("oldName") val oldName: String? = null,
     @SerialName("newName") val newName: String? = null,
 )
@@ -247,6 +248,26 @@ data class ReferenceResponse(
     val namespace: String,
     val query: String,
     val references: List<ReferenceItem>,
+)
+
+@Serializable
+data class ExistsRequest(
+    val namespace: String = "mojmap",
+    val members: List<String> = emptyList(),
+)
+
+@Serializable
+data class ExistsResult(
+    val key: String,
+    val exists: Boolean,
+    val renamedTo: String? = null,
+)
+
+@Serializable
+data class ExistsResponse(
+    val version: String,
+    val namespace: String,
+    val results: List<ExistsResult>,
 )
 
 @Serializable

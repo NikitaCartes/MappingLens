@@ -3,6 +3,27 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [8]
+
+### Added
+- `POST /api/v1/exists/{version}` — batch-check whether classes/members exist in a version.
+  Body `{namespace, members[]}` (keys are a class internal name or `owner:name:descriptor`);
+  returns one boolean per key. Descriptors are matched against the version's named jar, so they
+  need no remapping. Intended for validating mixin/shadow targets when updating a mod.
+- `GET /api/v1/diff?class={classInternalName}` — diff exactly one class, listing added/removed/
+  renamed members by name (with `owner` and JVM `descriptor`). Its summary counts match
+  `/diff/files` for the same class bit-for-bit. Distinct from `package=` (a package-path prefix).
+  `DiffEntryItem` now carries an optional `descriptor` field.
+- `ignoreWhitespace` (default `false`) on `/diff/patch` and `/diff/files?format=patch` — collapse
+  hunks that differ only in whitespace, line breaks, or reindentation (decompiler cosmetics).
+
+### Changed
+- Source patches (`/diff/patch`, `/diff/files?format=patch`) are now generated with a Myers O(ND)
+  diff instead of a bounded-LCS matrix. A class with a few real changes no longer degrades into a
+  full-file rewrite when one early edit broke the old prefix/suffix fast path (e.g. a ~4k-line class
+  dropped from a ~240 KB "everything changed" patch to a few KB of actual changes). The old LCS
+  path remains only as a fallback for near-total reformats.
+
 ## [7.1]
 
 ### Fixed

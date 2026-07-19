@@ -90,6 +90,7 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
     install(CORS) {
         anyHost()
         allowMethod(HttpMethod.Get)
+        allowMethod(HttpMethod.Post)
         allowHeader(HttpHeaders.ContentType)
     }
 
@@ -104,7 +105,9 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
     // errors keep an explicit non-2xx status so a 404 for a not-yet-indexed class isn't frozen for weeks.
     install(createApplicationPlugin("ApiCacheHeaders") {
         onCallRespond { call ->
-            if (call.request.path().startsWith("/api/v1")) {
+            // GET only: POST /exists is keyed on its request body, which a URL-keyed shared cache
+            // ignores — freezing one batch's answers for a different batch. Never cache it.
+            if (call.request.httpMethod == HttpMethod.Get && call.request.path().startsWith("/api/v1")) {
                 val status = call.response.status()
                 if (status == null || status.isSuccess()) {
                     call.response.headers.append(HttpHeaders.CacheControl, "public, max-age=2592000, immutable")
@@ -132,6 +135,7 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
     val compareService = CompareService(database, versionService)
     val hierarchyService = HierarchyService(appConfig)
     val referenceService = ReferenceService(appConfig)
+    val existsService = ExistsService(appConfig)
     val tokenService = TokenService(appConfig, bytecodeService)
 
     routing {
@@ -144,6 +148,7 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
             compareRoutes(compareService)
             hierarchyRoutes(hierarchyService)
             referenceRoutes(referenceService)
+            existsRoutes(existsService)
             tokenRoutes(tokenService)
         }
 
