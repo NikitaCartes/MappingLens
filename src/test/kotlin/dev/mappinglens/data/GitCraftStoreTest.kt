@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import java.nio.file.Files
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -26,6 +27,18 @@ class GitCraftStoreTest {
         src.mojmaps.forEach { assertTrue(Files.exists(it), "mojmap exists: $it") }
         assertNotNull(src.intermediary, "intermediary tiny"); assertTrue(Files.exists(src.intermediary!!))
         assertTrue(src.hasYarn && src.hasMojmap && src.hasIntermediary)
+    }
+
+    @Test
+    fun `a yarn version carries intermediary names without a standalone intermediary tiny`() {
+        val s = store()
+        val src = s.resolve("1.21")
+        assumeTrue(src.hasYarn, "1.21 yarn missing")
+        // Yarn's merged tiny v2 is official->intermediary->named, so losing the standalone
+        // intermediary file must not clear the flag the indexer writes to versions.has_intermediary.
+        val yarnOnly = src.copy(intermediary = null)
+        assertFalse(yarnOnly.hasIntermediary)
+        assertTrue(yarnOnly.hasIntermediaryNames)
     }
 
     @Test

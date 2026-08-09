@@ -19,6 +19,7 @@ import dev.mappinglens.service.VersionService
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
@@ -108,6 +109,47 @@ class RealDataRoutesAndOpenApiTest {
         val sourceBody = source.body<SourceResponse>()
         assertEquals(classCase.yarn, sourceBody.`class`)
         assertTrue(sourceBody.source.contains("public class BlockState extends AbstractBlock.AbstractBlockState"))
+    }
+
+    @Test
+    fun `source resolves a class by simple name and serves raw text`(@TempDir tmp: Path) = testApplication {
+        val db = Fixtures.newDb(tmp)
+        RealDataTestConfig.seedMappingSlice(db)
+        val config = RealDataTestConfig.appConfig(tmp.resolve("db.sqlite"))
+        val bytecodeService = BytecodeService(config, db)
+
+        application {
+            installJson()
+            routing { bytecodeRoutes(bytecodeService) }
+        }
+        val client = createClient {
+            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+        }
+
+        val classCase = RealDataTestConfig.blockStateClasses.single { it.version == RealDataTestConfig.V_1_21_1 }
+        val simpleName = classCase.yarn.substringAfterLast('/')
+
+        // A bare simple name resolves to the one class of that version carrying it.
+        val bySimpleName = client.get("/api/v1/source/${classCase.version}/$simpleName?namespace=yarn")
+        assertEquals(HttpStatusCode.OK, bySimpleName.status)
+        val body = bySimpleName.body<SourceResponse>()
+        assertEquals(classCase.yarn, body.`class`, "response must name the class it actually served")
+
+        // The same holds for a class asked for under a package it no longer lives in.
+        val movedPackage = client.get("/api/v1/source/${classCase.version}/net/minecraft/gone/$simpleName?namespace=yarn")
+        assertEquals(HttpStatusCode.OK, movedPackage.status)
+        assertEquals(classCase.yarn, movedPackage.body<SourceResponse>().`class`)
+
+        // format=text is the same source without the JSON envelope.
+        val asText = client.get("/api/v1/source/${classCase.version}/$simpleName?namespace=yarn&format=text")
+        assertEquals(HttpStatusCode.OK, asText.status)
+        assertEquals(body.source, asText.bodyAsText())
+
+        // A name that matches nothing stays a 404, and offers no candidate.
+        val unknown = client.get("/api/v1/source/${classCase.version}/net/minecraft/block/NoSuchClassHere?namespace=yarn")
+        assertEquals(HttpStatusCode.NotFound, unknown.status)
+        assertEquals(emptyList(), bytecodeService.classCandidates(classCase.version, "NoSuchClassHere", "yarn"))
+        assertEquals(listOf(classCase.yarn), bytecodeService.classCandidates(classCase.version, simpleName, "yarn"))
     }
 
     @Test

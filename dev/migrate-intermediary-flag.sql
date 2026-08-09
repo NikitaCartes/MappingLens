@@ -1,0 +1,15 @@
+-- Marks every yarn version as carrying intermediary names.
+--
+-- Yarn's merged tiny v2 is official->intermediary->named. The indexer therefore always wrote
+-- classes.intermediary_name, methods.intermediary_name and fields.intermediary_name for a yarn
+-- version. The versions.has_intermediary flag, however, was set only when a standalone intermediary
+-- tiny file existed. The artifact store holds those up to 20w09a only, so on a full index 446 of 511
+-- versions claimed to have no intermediary while the names were in the tables. Two read paths use
+-- the flag, and both gave wrong answers:
+--   * /translate with to=intermediary answered 422 namespace_unavailable.
+--   * /diff fell back to mojmap_name as its cross-version identity. A rename changes that name, so
+--     every rename came back as one added plus one removed entry, and renamed was always 0.
+--
+-- Run this against an existing index instead of re-indexing. Stop the server first, because it opens
+-- the database read-only. An index built after this change sets the flag correctly on its own.
+UPDATE versions SET has_intermediary = 1 WHERE has_yarn = 1;

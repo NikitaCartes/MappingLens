@@ -174,8 +174,14 @@ npm run build                            # статика в dist/ (tsc + vite)
 | Эндпоинт | Описание |
 |---|---|
 | `GET /api/v1/bytecode/{version}/{className...}` | Дизассемблированный байткод (ASM Textifier); `namespace`, `format=text/json` |
-| `GET /api/v1/source/{version}/{className...}` | Декомпилированный `.java` класса; `namespace=yarn/mojmap` |
-| `GET /api/v1/tokens/{version}/{className...}` | `{source, tokens}`: каждый идентификатор `.java` резолвится в owner/name/descriptor (JavaParser); `namespace=yarn/mojmap` |
+| `GET /api/v1/source/{version}/{className...}` | Декомпилированный `.java` класса; `namespace=yarn/mojmap`, `format=text/json` |
+| `GET /api/v1/tokens/{version}/{className...}` | `{source, tokens}`: каждый идентификатор `.java` резолвится в owner/name/descriptor (JavaParser); `namespace=yarn/mojmap`, `format=text/json` |
+
+`source`: если точного совпадения имени нет, берётся единственный класс версии с таким простым
+именем. Так резолвятся и короткое имя (`ZombifiedPiglin`), и класс, переехавший в другой пакет.
+Поле `class` в ответе — то имя, которое реально отдано. Простых имён несколько или ни одного →
+`404`, а в `message` перечислены кандидаты. `format=text` отдаёт исходник как `text/plain`,
+`format=text` у `tokens` — TSV с шапкой `#startLine…declaration`, по токену на строку.
 
 ### Иерархия и ссылки
 
@@ -199,7 +205,9 @@ npm run build                            # статика в dist/ (tsc + vite)
 - **Версия по умолчанию** (search/translate) — последний `release` по semver-порядку.
 - **Ошибки** — единый `ApiError { error, message, status }`, где `status` дублирует HTTP-код:
   `400 invalid_query` (валидация), `404 not_found`, `422 namespace_unavailable` (версия не имеет запрошенного неймспейса).
-- **Форматы ответов:** JSON по умолчанию; `bytecode?format=text` → `text/plain`; `diff` патч (`format=patch/git`) → `text/x-diff`.
+- **Форматы ответов:** JSON по умолчанию; `bytecode/source/tokens?format=text` → `text/plain`; `diff` патч (`format=patch/git`) → `text/x-diff`.
+- **`hasIntermediary`** — версия имеет intermediary-имена, а не отдельный intermediary-файл. Yarn tiny v2
+  устроен как `official->intermediary->named`, поэтому любая yarn-версия отдаёт intermediary.
 - **Rate limit:** 200 запросов / 60 с на группы `/api/v1` (мета-эндпоинты не лимитируются).
 
 ### Поведенческие замечания (важно для агентов)

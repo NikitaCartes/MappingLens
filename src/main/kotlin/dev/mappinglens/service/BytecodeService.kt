@@ -9,6 +9,7 @@ import dev.mappinglens.ingestion.GitSourceRepository
 import dev.mappinglens.ingestion.JarAnalyzer
 import dev.mappinglens.model.BytecodeResponse
 import dev.mappinglens.model.SourceResponse
+import org.jetbrains.exposed.sql.Column
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
@@ -62,14 +63,14 @@ class BytecodeService(private val config: AppConfig, private val db: Database) {
         // "$Inner" suffix to find the file. Try {root}/{version}/{file} first, then {root}/{file}.
         val rel = "${sourceClassName.substringBefore('$')}.java"
         readSourceFromArtifactStore(versionId, mappingType, rel)?.let { source ->
-            return SourceResponse(versionId, className, mappingType, source, rel)
+            return SourceResponse(versionId, sourceClassName, mappingType, source, rel)
         }
 
         if (!rootPath.exists()) return null
         val gitSource = GitSourceRepository(rootPath)
         if (gitSource.isGitWorkTree()) {
             val source = gitSource.read(versionId, rel) ?: return null
-            return SourceResponse(versionId, className, mappingType, source, rel)
+            return SourceResponse(versionId, sourceClassName, mappingType, source, rel)
         }
 
         val sourceRoot = GitSourceRepository.filesystemSourceRoot(rootPath) ?: return null
@@ -77,7 +78,18 @@ class BytecodeService(private val config: AppConfig, private val db: Database) {
         if (!Files.isRegularFile(match)) return null
         val source = Files.readString(match)
         val pathRel = sourceRoot.relativize(match).toString().replace('\\', '/')
-        return SourceResponse(versionId, className, mappingType, source, pathRel)
+        return SourceResponse(versionId, sourceClassName, mappingType, source, pathRel)
+    }
+
+    /**
+     * Class names in [versionId] and [namespace] whose simple name is the simple name of [className].
+     * A 404 hint for a class that moved package (`.../monster/ZombifiedPiglin` became
+     * `.../monster/zombie/ZombifiedPiglin` in 1.21.11) or for an ambiguous simple name.
+     */
+    fun classCandidates(versionId: String, className: String, namespace: String, limit: Int = 10): List<String> = transaction(db) {
+        val versionRowId = versionRowId(versionId) ?: return@transaction emptyList()
+        val nameCol = nameColumn(namespace)
+        sameSimpleName(versionRowId, nameCol, className).mapNotNull { it[nameCol] }.take(limit)
     }
 
     private fun readSourceFromArtifactStore(versionId: String, mappingType: String, relativePath: String): String? {
@@ -89,35 +101,47 @@ class BytecodeService(private val config: AppConfig, private val db: Database) {
     }
 
     private fun resolveSourceClassName(versionId: String, className: String, fromNamespace: String, toMappingType: String): String? = transaction(db) {
-        val versionRow = VersionTable.selectAll().where { VersionTable.versionId eq versionId }
-            .singleOrNull() ?: return@transaction null
-        val versionRowId = versionRow[VersionTable.id].value
-        val fromCol = when (fromNamespace) {
-            "mojmap" -> ClassTable.mojmapName
-            "intermediary" -> ClassTable.intermediaryName
-            "obfuscated", "obf" -> ClassTable.obfName
-            else -> ClassTable.yarnName
-        }
+        val versionRowId = versionRowId(versionId) ?: return@transaction null
+        val fromCol = nameColumn(fromNamespace)
         val toCol = if (toMappingType == "mojmap") ClassTable.mojmapName else ClassTable.yarnName
         ClassTable.selectAll()
             .where { (ClassTable.versionId eq versionRowId) and (fromCol eq className) }
             .firstOrNull()
             ?.get(toCol)
+        // A class that moved package misses on its full name, and a bare simple name never matches
+        // one. Both resolve when exactly one class of this version carries that simple name.
+            ?: sameSimpleName(versionRowId, fromCol, className).singleOrNull()?.get(toCol)
     }
 
     private fun resolveObfName(versionId: String, className: String, namespace: String): String? = transaction(db) {
-        val versionRow = VersionTable.selectAll().where { VersionTable.versionId eq versionId }
-            .singleOrNull() ?: return@transaction null
-        val versionRowId = versionRow[VersionTable.id].value
-        val nameCol = when (namespace) {
-            "mojmap" -> ClassTable.mojmapName
-            "intermediary" -> ClassTable.intermediaryName
-            "obfuscated", "obf" -> ClassTable.obfName
-            else -> ClassTable.yarnName
-        }
+        val versionRowId = versionRowId(versionId) ?: return@transaction null
+        val nameCol = nameColumn(namespace)
         ClassTable.selectAll()
             .where { (ClassTable.versionId eq versionRowId) and (nameCol eq className) }
             .firstOrNull()?.get(ClassTable.obfName)
+    }
+
+    private fun versionRowId(versionId: String): Int? =
+        VersionTable.selectAll().where { VersionTable.versionId eq versionId }
+            .singleOrNull()?.get(VersionTable.id)?.value
+
+    private fun nameColumn(namespace: String) = when (namespace) {
+        "mojmap" -> ClassTable.mojmapName
+        "intermediary" -> ClassTable.intermediaryName
+        "obfuscated", "obf" -> ClassTable.obfName
+        else -> ClassTable.yarnName
+    }
+
+    /**
+     * Rows of [versionRowId] whose [nameCol] ends in the simple name of [className]. The LIKE only
+     * narrows the scan to one version's classes, because `_` is a SQL wildcard and a legal character
+     * in a class name. The tail is therefore compared exactly in Kotlin.
+     */
+    private fun sameSimpleName(versionRowId: Int, nameCol: org.jetbrains.exposed.sql.Column<String?>, className: String): List<ResultRow> {
+        val simple = className.substringAfterLast('/')
+        return ClassTable.selectAll()
+            .where { (ClassTable.versionId eq versionRowId) and (nameCol like "%/$simple") }
+            .filter { it[nameCol]?.substringAfterLast('/') == simple }
     }
 
     private data class BytecodeNameMaps(

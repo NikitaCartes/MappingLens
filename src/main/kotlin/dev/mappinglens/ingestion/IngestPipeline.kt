@@ -114,7 +114,7 @@ class IngestPipeline(private val config: AppConfig) {
                     it[sortIndex] = sortRank
                     it[hasYarn] = src.hasYarn
                     it[hasMojmap] = src.hasMojmap
-                    it[hasIntermediary] = src.hasIntermediary
+                    it[hasIntermediary] = src.hasIntermediaryNames
                 }
                 existingId
             } else {
@@ -126,7 +126,7 @@ class IngestPipeline(private val config: AppConfig) {
                     it[sortIndex] = sortRank
                     it[hasYarn] = src.hasYarn
                     it[hasMojmap] = src.hasMojmap
-                    it[hasIntermediary] = src.hasIntermediary
+                    it[hasIntermediary] = src.hasIntermediaryNames
                 }.value
             }
 

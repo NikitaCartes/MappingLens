@@ -43,6 +43,7 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 
 - `GET 127.0.0.1:8080/api/v1/versions`
   - Lists indexed versions with counts and namespace availability.
+  - `hasIntermediary` means the version carries intermediary names, not that a separate intermediary file was downloaded. Every yarn version has them, because yarn's merged tiny v2 is `official->intermediary->named`. Versions without yarn (Mojang's unobfuscated releases) have none.
 - `GET 127.0.0.1:8080/api/v1/versions/{version}`
   - Gets metadata for one indexed version.
 - `GET 127.0.0.1:8080/api/v1/classes/{version}`
@@ -108,10 +109,13 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 
 ### Source
 
-- `GET 127.0.0.1:8080/api/v1/source/{version}/{className}?namespace={namespace}`
+- `GET 127.0.0.1:8080/api/v1/source/{version}/{className}?namespace={namespace}&format={format}`
 - `namespace`: `yarn` or `mojmap`. Defaults to `mojmap`, falling back to `yarn` when the version has no mojmap source. An explicit `namespace` is used as-is (no fallback).
+- `format`: `json` (default) or `text`. Use `text` to get the `.java` as `text/plain`, with no JSON envelope to unpack.
 - Returns decompiled source text and the indexed source path.
 - `className` accepts a slash-separated internal name (`net/minecraft/block/Block`) or a dot-separated FQN (`net.minecraft.block.Block`).
+- A name that matches no class exactly falls back to the one class of that version with the same simple name. A bare simple name (`ZombifiedPiglin`) and a class that moved package between versions both resolve this way, so do not loop over candidate packages. The response `class` field names the class actually served.
+- When the simple name is ambiguous or unknown the call is a `404`, and its `message` lists the candidate names.
 
 ### Bytecode
 
@@ -123,8 +127,9 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 
 ### Source Tokens
 
-- `GET 127.0.0.1:8080/api/v1/tokens/{version}/{className}?namespace={namespace}`
+- `GET 127.0.0.1:8080/api/v1/tokens/{version}/{className}?namespace={namespace}&format={format}`
 - `namespace`: `yarn` or `mojmap`. Defaults to `mojmap`.
+- `format`: `json` (default) or `text`. `text` returns one token per line as TSV in the column order below, with a `#`-prefixed header line and empty fields for `null`.
 - Returns `{source, tokens}`, where each token resolves one class/method/field identifier in the decompiled `.java` to `{startLine, startColumn, endLine, endColumn, type, className, name, descriptor, declaration}` (Monaco 1-based range, `endColumn` exclusive).
 - Use to map a cursor position to an exact symbol (owner/name/descriptor). Identifiers the symbol solver cannot resolve are omitted; a partial file still returns its resolvable tokens.
 

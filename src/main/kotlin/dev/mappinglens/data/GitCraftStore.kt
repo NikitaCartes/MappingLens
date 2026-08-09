@@ -56,6 +56,14 @@ class GitCraftStore(
     ) {
         val hasYarn get() = yarn != null
         val hasIntermediary get() = intermediary != null
+
+        /**
+         * True when intermediary names are available for this version — what `versions.has_intermediary`
+         * records. Yarn's merged tiny v2 is official->intermediary->named, so a yarn file carries the
+         * intermediary namespace even when no standalone intermediary tiny was downloaded (the artifact
+         * store only holds those up to 20w09a). [CorrespondenceResolver] reads that column already.
+         */
+        val hasIntermediaryNames get() = intermediary != null || yarn != null
         val hasMojmap get() = mojmaps.isNotEmpty() || unobfuscated
         val hasAny get() = hasYarn || hasIntermediary || mojmaps.isNotEmpty() || (unobfuscated && unobfuscatedJar != null)
     }

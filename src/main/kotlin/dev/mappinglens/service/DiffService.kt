@@ -894,17 +894,17 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
     /**
      * Returns the column name that uniquely identifies a class/member across the two given
      * versions: `intermediary_name` (the indexed default) when both versions carry intermediary
-     * mappings, `mojmap_name` when neither does (Mojang's unobfuscated releases), or null when
-     * the two versions live in incompatible worlds and cannot be diffed.
+     * mappings, `mojmap_name` when one of them does not (Mojang's unobfuscated releases have no
+     * intermediary), or null when the two versions share no namespace and cannot be diffed.
      */
     private fun stableIdentityColumn(fromId: Int, toId: Int): String? {
         val rows = VersionTable.selectAll().where { VersionTable.id inList listOf(fromId, toId) }
-            .associate { it[VersionTable.id].value to it[VersionTable.hasIntermediary] }
-        val fromHas = rows[fromId] ?: false
-        val toHas = rows[toId] ?: false
+            .associate { it[VersionTable.id].value to Pair(it[VersionTable.hasIntermediary], it[VersionTable.hasMojmap]) }
+        val (fromIntermediary, fromMojmap) = rows[fromId] ?: Pair(false, false)
+        val (toIntermediary, toMojmap) = rows[toId] ?: Pair(false, false)
         return when {
-            fromHas && toHas -> "intermediary_name"
-            !fromHas && !toHas -> "mojmap_name"
+            fromIntermediary && toIntermediary -> "intermediary_name"
+            fromMojmap && toMojmap -> "mojmap_name"
             else -> null
         }
     }

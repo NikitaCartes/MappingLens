@@ -3,6 +3,37 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.0]
+
+### Fixed
+- `versions.has_intermediary` is now set for every version that has yarn mappings. Yarn's merged
+  tiny v2 is `official->intermediary->named`, so the indexer always wrote intermediary names for
+  those versions, but the flag was set only when a standalone intermediary tiny file existed (the
+  artifact store holds those up to 20w09a). On a full index that left 446 of 511 versions claiming
+  no intermediary while the names sat in the tables. Two endpoints read the flag and both answered
+  wrongly:
+  - `GET /api/v1/translate?to=intermediary` returned `422 namespace_unavailable` on every modern
+    version.
+  - `GET /api/v1/diff` fell back to `mojmap_name` as its cross-version identity. A rename changes
+    that name, so renames could not be detected: `1.21.10 -> 1.21.11` reported 1026 classes added
+    and 704 removed with `renamed: 0`, listing both sides of one rename as separate entries.
+
+  Existing indexes are corrected without a re-index by `dev/migrate-intermediary-flag.sql`.
+- `GET /api/v1/diff` now falls back to `mojmap_name` whenever the two versions do not both carry
+  intermediary, instead of only when neither does. A diff across the unobfuscated boundary
+  (`1.21.11 -> 26.1`) keeps comparing classes rather than returning an empty result.
+
+### Added
+- `format=text` on `GET /api/v1/source/{version}/{className}` (raw `.java` as `text/plain`) and on
+  `GET /api/v1/tokens/{version}/{className}` (one token per line as TSV, with a `#`-prefixed header
+  line). Both endpoints previously served JSON only, so reading a file meant unwrapping the envelope
+  first.
+- `GET /api/v1/source/{version}/{className}` resolves a class name that matches nothing exactly to
+  the one class of that version with the same simple name. A bare simple name (`ZombifiedPiglin`)
+  and a class that moved package between versions both resolve, instead of 404ing per package
+  candidate. The response `class` field names the class actually served. When the simple name is
+  ambiguous or unknown, the `404` message lists the candidates.
+
 ## [8]
 
 ### Added
