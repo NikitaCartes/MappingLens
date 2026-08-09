@@ -58,6 +58,13 @@ object RealDataTestConfig {
         env = "MAPPINGLENS_TEST_ARTIFACT_STORE",
         defaultValue = "c:/important/GitCraft/artifact-store",
     )
+
+    /** Optional: absent on a machine that has not cloned the unobfuscated-intermediary repository. */
+    val unobfuscatedIntermediary: Path = configuredPath(
+        property = "mappinglens.test.unobfuscatedIntermediary",
+        env = "MAPPINGLENS_TEST_UNOBFUSCATED_INTERMEDIARY",
+        defaultValue = "c:/important/GitCraft/RelativityMC_intermediary/intermediary/mappings",
+    )
     val mappingFilesDir: Path = artifactStore.resolve("mappings")
     val minecraftVersionsDir: Path = artifactStore.resolve("mc-versions")
 
@@ -255,6 +262,8 @@ object RealDataTestConfig {
         mojmapRepo = mojmapRepo.toString(),
         intermediaryMappings = intermediaryMappings.toString(),
         artifactStore = artifactStore.toString(),
+        unobfuscatedIntermediaryMappings =
+            if (Files.isDirectory(unobfuscatedIntermediary)) unobfuscatedIntermediary.toString() else "",
     )
 
     fun appConfig(databasePath: Path, initialVersions: List<String> = versions): AppConfig = AppConfig(

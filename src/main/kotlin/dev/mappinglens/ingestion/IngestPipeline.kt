@@ -23,6 +23,8 @@ class IngestPipeline(private val config: AppConfig) {
     private val store = GitCraftStore(
         artifactStore = Paths.get(config.sources.artifactStore),
         intermediaryMappingsDir = Paths.get(config.sources.intermediaryMappings),
+        unobfuscatedIntermediaryDir = config.sources.unobfuscatedIntermediaryMappings
+            .takeIf { it.isNotBlank() }?.let { Paths.get(it) },
     )
 
     fun run(force: Boolean = false) {

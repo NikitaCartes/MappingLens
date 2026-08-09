@@ -118,12 +118,39 @@ class RealUnobfuscatedVersionTest {
         val byId = resp.versions.associateBy { it.id }
         assertTrue(from in byId, "version $from missing")
         assertTrue(to in byId, "version $to missing")
+        // These versions ship no mappings of their own; intermediary is only there when the separate
+        // unobfuscated-intermediary source is configured.
+        val expectIntermediary = Files.isDirectory(RealDataTestConfig.unobfuscatedIntermediary)
         for (v in listOf(from, to)) {
             val info = byId.getValue(v)
             assertTrue(info.hasMojmap, "version $v must be marked hasMojmap")
             assertFalse(info.hasYarn, "version $v must be marked !hasYarn")
-            assertFalse(info.hasIntermediary, "version $v must be marked !hasIntermediary")
+            assertEquals(expectIntermediary, info.hasIntermediary, "version $v hasIntermediary")
             assertTrue(info.classCount > 0, "version $v must have classes ingested")
+        }
+    }
+
+    @Test
+    fun `intermediary names come from the unobfuscated source and continue the Fabric chain`() {
+        assumeTrue(
+            Files.isDirectory(RealDataTestConfig.unobfuscatedIntermediary),
+            "unobfuscated-intermediary repository missing",
+        )
+        transaction(db) {
+            val versionRowId = VersionTable.selectAll().where { VersionTable.versionId eq from }
+                .single()[VersionTable.id].value
+            // `com/mojang/math/Axis` is class_7833 in 1.21.11 as well: the chain is continuous, so a
+            // history query crosses the unobfuscated boundary on the intermediary name alone.
+            val row = ClassTable.selectAll()
+                .where { (ClassTable.versionId eq versionRowId) and (ClassTable.mojmapName eq "com/mojang/math/Axis") }
+                .single()
+            assertEquals("net/minecraft/class_7833", row[ClassTable.intermediaryName])
+
+            val named = ClassTable.selectAll()
+                .where { (ClassTable.versionId eq versionRowId) and ClassTable.intermediaryName.isNotNull() }
+                .count()
+            val total = ClassTable.selectAll().where { ClassTable.versionId eq versionRowId }.count()
+            assertTrue(named > total * 9 / 10, "expected most classes named, got $named of $total")
         }
     }
 

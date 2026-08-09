@@ -3,6 +3,51 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.1]
+
+### Added
+- `GET /api/v1/history?q={key}` — one class or member across every indexed version in a single
+  request, answered from the mapping tables alone. Consecutive versions with the same answer collapse
+  into one span (`{from, to, versions, present, ...}`), so a 511-version index returns a handful of
+  entries instead of 511 rows. `q` takes a class internal name or a member `owner:name` key, and is
+  repeatable (up to 50), which covers batching a few keys over many versions without a second
+  endpoint. `from`/`to` narrow the version walk; `namespace` is `yarn`, `mojmap`, or `intermediary`.
+  - The class is followed by the intermediary name of its newest match rather than by the string
+    queried, so a rename or a package move stays one history and the name from any version returns
+    the same answer. `ZombifiedPiglin` (moved to `…/monster/zombie/` in 1.21.11-pre1) reads as one
+    continuous history over all 511 versions, from either name.
+  - Mojang's unobfuscated releases (everything after 1.21.11) carry intermediary only when the new
+    `unobfuscated-intermediary-mappings` source below is configured. Without it a name taken from one
+    of them is also looked up in the newest mapped version before it, by the simple name that a
+    package move preserves. Without that step 16% of the newest version's classes answered only for
+    the unobfuscated versions themselves. Two names alive in the same version are never linked, since
+    a class carries one name per version — so `virtualfilesystem/Node` is not joined to
+    `world/level/pathfinder/Node`, and a class *renamed* (not moved) after 1.21.11 then keeps only
+    its post-1.21.11 history.
+  - Named descriptors are not indexed, so a signature change is visible as a changed
+    `members[].intermediaryDescriptor`, and only on versions that carry intermediary.
+  - `present: false` with a non-null `owner` means the class is still there and the member is gone;
+    `owner: null` means the class itself is gone.
+- `mappinglens.sources.unobfuscated-intermediary-mappings` (env `MAPPINGLENS_UNOBFUSCATED_INTERMEDIARY`,
+  empty by default) — a directory of `<version>.tiny` intermediary mappings for Mojang's unobfuscated
+  releases, whose `official` namespace holds the unobfuscated name rather than an obfuscated one.
+  Those versions ship no mappings of their own, so the indexer ASM-scans their jar; with this source
+  it also writes the intermediary name of every class and member it finds. The setting is separate
+  from `intermediary-mappings` on purpose: a `<version>.tiny` under that directory means "this version
+  is obfuscated", which is exactly what these versions are not. The mappings are not part of the
+  artifact store — point the setting at a checkout that has them.
+
+  What it changes for versions after 1.21.11, once they are re-indexed:
+  - `GET /api/v1/history` follows a class across the 1.21.11 boundary and between unobfuscated
+    versions by intermediary name, so a rename is one history instead of two. 77 classes were renamed
+    between 26.1 and the newest indexed 26.3 snapshot, `Gui` -> `Hud` among them. A query in the yarn
+    namespace works the same way, even though the unobfuscated versions have no yarn names of their
+    own.
+  - `GET /api/v1/diff` stops falling back to `mojmap_name` as its cross-version identity, so a diff
+    between two unobfuscated versions reports renames instead of always `renamed: 0`.
+  - `GET /api/v1/translate?to=intermediary` answers instead of `422 namespace_unavailable`, and
+    `hasIntermediary` is true for those versions in `GET /api/v1/versions`.
+
 ## [9.0]
 
 ### Fixed

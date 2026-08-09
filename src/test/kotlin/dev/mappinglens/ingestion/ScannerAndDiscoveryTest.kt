@@ -107,6 +107,71 @@ class SourceScannerTest {
     }
 }
 
+class UnobfuscatedJarScannerTest {
+
+    private val cls = "net/minecraft/client/gui/Gui"
+
+    @Test
+    fun `names classes and members from the unobfuscated intermediary tiny`(@TempDir tmp: Path) {
+        val jar = tmp.resolve("merged-remapped-map_mojmap-test.jar")
+        JarOutputStream(Files.newOutputStream(jar)).use { output ->
+            output.putNextEntry(ZipEntry("$cls.class"))
+            output.write(classBytes())
+            output.closeEntry()
+        }
+        val tiny = tmp.resolve("26.1.tiny")
+        tiny.writeText(
+            listOf(
+                "v1\tofficial\tintermediary",
+                "CLASS\t$cls\tnet/minecraft/class_329",
+                "METHOD\t$cls\t(L$cls;)V\trender\tmethod_1786",
+                "FIELD\t$cls\tL$cls;\tINSTANCE\tfield_2035",
+            ).joinToString("\n") + "\n",
+        )
+
+        val entry = UnobfuscatedJarScanner.scan(jar, TinyV2Parser.parse(tiny)).single()
+
+        assertEquals("net/minecraft/class_329", entry.intermediaryName)
+        assertEquals(cls, entry.mojmapName)
+        val method = entry.methods.single { it.mojmapName == "render" }
+        assertEquals("method_1786", method.intermediaryName)
+        // The tiny states descriptors in official terms only; mapping-io remaps them for us.
+        assertEquals("(Lnet/minecraft/class_329;)V", method.intermediaryDesc)
+        val field = entry.fields.single { it.mojmapName == "INSTANCE" }
+        assertEquals("field_2035", field.intermediaryName)
+        assertEquals("Lnet/minecraft/class_329;", field.intermediaryDesc)
+        // A member the mappings do not name keeps the jar's own name and no intermediary.
+        val unmapped = entry.methods.single { it.mojmapName == "tick" }
+        assertNull(unmapped.intermediaryName)
+    }
+
+    @Test
+    fun `scans without mappings as before`(@TempDir tmp: Path) {
+        val jar = tmp.resolve("merged-remapped-map_mojmap-test.jar")
+        JarOutputStream(Files.newOutputStream(jar)).use { output ->
+            output.putNextEntry(ZipEntry("$cls.class"))
+            output.write(classBytes())
+            output.closeEntry()
+        }
+
+        val entry = UnobfuscatedJarScanner.scan(jar).single()
+
+        assertEquals(cls, entry.mojmapName)
+        assertNull(entry.intermediaryName)
+        assertTrue(entry.methods.all { it.intermediaryName == null })
+    }
+
+    private fun classBytes(): ByteArray {
+        val writer = org.objectweb.asm.ClassWriter(0)
+        writer.visit(org.objectweb.asm.Opcodes.V21, org.objectweb.asm.Opcodes.ACC_PUBLIC, cls, null, "java/lang/Object", null)
+        writer.visitField(org.objectweb.asm.Opcodes.ACC_PUBLIC, "INSTANCE", "L$cls;", null, null).visitEnd()
+        writer.visitMethod(org.objectweb.asm.Opcodes.ACC_PUBLIC, "render", "(L$cls;)V", null, null).visitEnd()
+        writer.visitMethod(org.objectweb.asm.Opcodes.ACC_PUBLIC, "tick", "()V", null, null).visitEnd()
+        writer.visitEnd()
+        return writer.toByteArray()
+    }
+}
+
 class VersionDiscoveryTest {
 
     private fun sourcesOn(tmp: Path, intermediaryDir: String, artifactStoreDir: String) = SourcesConfig(

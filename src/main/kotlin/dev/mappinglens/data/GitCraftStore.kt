@@ -28,6 +28,8 @@ import kotlin.io.path.name
 class GitCraftStore(
     val artifactStore: Path,
     val intermediaryMappingsDir: Path,
+    /** Intermediary for the unobfuscated releases; see `SourcesConfig.unobfuscatedIntermediaryMappings`. */
+    val unobfuscatedIntermediaryDir: Path? = null,
     val catalog: VersionCatalog = VersionCatalog.load(artifactStore),
 ) {
     private val log = LoggerFactory.getLogger(GitCraftStore::class.java)
@@ -40,6 +42,9 @@ class GitCraftStore(
     // The mappings dir holds thousands of files for ~600 versions; list it once.
     private val mappingNames: Set<String> by lazy { listNames(mappingsDir) }
     private val intermediaryNames: Set<String> by lazy { listNames(intermediaryMappingsDir) }
+    private val unobfuscatedIntermediaryNames: Set<String> by lazy {
+        unobfuscatedIntermediaryDir?.let { listNames(it) } ?: emptySet()
+    }
 
     private val jarCache = ConcurrentHashMap<String, Optional<Path>>()
 
@@ -53,6 +58,12 @@ class GitCraftStore(
         val unobfuscated: Boolean,
         val unobfuscatedJar: Path?,
         val meta: VersionMeta?,
+        /**
+         * Intermediary tiny for an [unobfuscated] version, whose `official` namespace is the
+         * unobfuscated name. It names the jar rather than replacing it, so it decorates the scan
+         * instead of taking the mapping path.
+         */
+        val unobfuscatedIntermediary: Path? = null,
     ) {
         val hasYarn get() = yarn != null
         val hasIntermediary get() = intermediary != null
@@ -63,7 +74,7 @@ class GitCraftStore(
          * intermediary namespace even when no standalone intermediary tiny was downloaded (the artifact
          * store only holds those up to 20w09a). [CorrespondenceResolver] reads that column already.
          */
-        val hasIntermediaryNames get() = intermediary != null || yarn != null
+        val hasIntermediaryNames get() = intermediary != null || yarn != null || unobfuscatedIntermediary != null
         val hasMojmap get() = mojmaps.isNotEmpty() || unobfuscated
         val hasAny get() = hasYarn || hasIntermediary || mojmaps.isNotEmpty() || (unobfuscated && unobfuscatedJar != null)
     }
@@ -77,6 +88,15 @@ class GitCraftStore(
         if ("$version-intermediary.tiny" in mappingNames) return mappingsDir.resolve("$version-intermediary.tiny")
         return null
     }
+
+    /**
+     * Intermediary tiny for an unobfuscated version (tiny v1, `official`->`intermediary`, where
+     * `official` is the unobfuscated name). Kept apart from [intermediaryTiny] because the two come
+     * from different repositories and mean different things for the same version id.
+     */
+    fun unobfuscatedIntermediaryTiny(version: String): Path? =
+        unobfuscatedIntermediaryDir?.takeIf { "$version.tiny" in unobfuscatedIntermediaryNames }
+            ?.resolve("$version.tiny")
 
     /** Yarn merged mappings (tiny v2, official->intermediary->named), highest build number. */
     fun yarnTiny(version: String): Path? {
@@ -148,7 +168,11 @@ class GitCraftStore(
         if (intermediary == null && yarn == null && mojmaps.isEmpty()) {
             val jar = unobfuscatedJar(version)
             if (jar != null) {
-                return VersionSources(version, null, null, emptyList(), unobfuscated = true, unobfuscatedJar = jar, meta = catalog.get(version))
+                return VersionSources(
+                    version, null, null, emptyList(),
+                    unobfuscated = true, unobfuscatedJar = jar, meta = catalog.get(version),
+                    unobfuscatedIntermediary = unobfuscatedIntermediaryTiny(version),
+                )
             }
         }
         return VersionSources(version, intermediary, yarn, mojmaps, unobfuscated = false, unobfuscatedJar = null, meta = catalog.get(version))
@@ -166,7 +190,10 @@ class GitCraftStore(
     fun parseUnified(version: String): List<UnifiedClassEntry> {
         val src = resolve(version)
         if (src.unobfuscated && src.unobfuscatedJar != null) {
-            return UnobfuscatedJarScanner.scan(src.unobfuscatedJar)
+            return UnobfuscatedJarScanner.scan(
+                src.unobfuscatedJar,
+                src.unobfuscatedIntermediary?.let { TinyV2Parser.parse(it) },
+            )
         }
         val intermediary = src.intermediary?.let { TinyV2Parser.parse(it) }
         val yarn = src.yarn?.let { TinyV2Parser.parse(it) }

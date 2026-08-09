@@ -22,6 +22,14 @@ data class SourcesConfig(
     val mojmapRepo: String,
     val intermediaryMappings: String,
     val artifactStore: String,
+    /**
+     * Intermediary mappings for Mojang's unobfuscated releases (the versions after 1.21.11), whose
+     * `official` namespace is the unobfuscated name rather than an obfuscated one. They come from a
+     * separate repository than [intermediaryMappings] and must stay separate: a `<version>.tiny`
+     * found under [intermediaryMappings] means "this version is obfuscated and has mappings", which
+     * is exactly what these versions are not. Empty disables the source.
+     */
+    val unobfuscatedIntermediaryMappings: String = "",
 ) {
     // Resolving the decompiled / remapped jar requires a Files.list on every call.
     // Diff/source endpoints invoke it per file; cache the result per (version, key).
@@ -144,6 +152,8 @@ data class AppConfig(
                     mojmapRepo = ml.property("sources.mojmap-repo").getString(),
                     intermediaryMappings = ml.property("sources.intermediary-mappings").getString(),
                     artifactStore = ml.property("sources.artifact-store").getString(),
+                    unobfuscatedIntermediaryMappings =
+                        ml.propertyOrNull("sources.unobfuscated-intermediary-mappings")?.getString().orEmpty(),
                 ),
                 indexing = IndexingConfig(
                     pollIntervalSeconds = ml.property("indexing.poll-interval-seconds").getString().toInt(),

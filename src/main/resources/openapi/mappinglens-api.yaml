@@ -12,6 +12,7 @@ tags:
   - name: Translation
   - name: Bytecode
   - name: Compare
+  - name: History
   - name: Hierarchy
   - name: References
   - name: Exists
@@ -558,6 +559,67 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+  /api/v1/history:
+    get:
+      tags: [History]
+      summary: Track a class or member across every indexed version
+      description: >
+        Answers "which versions have this, and under what name?" from the mapping tables alone.
+        Consecutive versions with the same answer collapse into one span, so a 500-version index
+        returns a handful of entries. The class is followed by the intermediary name of its newest
+        match rather than by the string queried, so a rename or a package move stays one history and
+        the name from any version gives the same answer. Mojang's unobfuscated releases carry
+        intermediary only when the indexer was given a separate source for them; without it a name
+        taken from one of them is also looked up in the newest mapped version before it, by the
+        simple name a package move preserves, and two names alive in the same version are never
+        linked, as a class carries one name per version.
+        Named descriptors are not indexed, so a signature change shows as a changed
+        `intermediaryDescriptor`. Repeat `q` to follow several keys in one request.
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema:
+            type: array
+            items:
+              type: string
+            maxItems: 50
+          explode: true
+          style: form
+          description: >
+            A class internal name (dot-separated FQN also accepted) or a member key `owner:name`.
+            A third `:descriptor` segment is accepted for compatibility with `/references` and
+            `/exists` keys but does not filter — overloads are returned together. Repeatable.
+        - in: query
+          name: namespace
+          schema:
+            type: string
+            enum: [yarn, mojmap, intermediary]
+            default: mojmap
+        - in: query
+          name: from
+          schema:
+            type: string
+          description: Limit the version walk. Either bound may be the older one.
+        - in: query
+          name: to
+          schema:
+            type: string
+      responses:
+        "200":
+          description: One entry per query, in the order given.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HistoryResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: "`from` or `to` names a version that is not indexed."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /api/v1/hierarchy/{version}/{className}:
     get:
       tags: [Hierarchy]
@@ -755,7 +817,8 @@ components:
           description: >
             True when the version carries intermediary names, not when a separate intermediary file
             exists. Yarn's merged tiny v2 is official->intermediary->named, so every yarn version
-            has them.
+            has them. Mojang's unobfuscated releases have no yarn, so they carry intermediary only
+            when the indexer was given a separate source for them.
         classCount:
           type: integer
           format: int64
@@ -1211,6 +1274,76 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ExistsResult"
+    HistoryMember:
+      type: object
+      description: One member matched in a span. Overloads share a name, so a span can hold several.
+      properties:
+        intermediary:
+          type: [string, "null"]
+        yarn:
+          type: [string, "null"]
+        mojmap:
+          type: [string, "null"]
+        intermediaryDescriptor:
+          type: [string, "null"]
+          description: Named descriptors are not indexed; this one answers whether the signature changed.
+    HistorySpan:
+      type: object
+      description: A run of consecutive versions that answer the query identically.
+      required: [from, to, versions, present]
+      properties:
+        from:
+          type: string
+          description: Oldest version of the run.
+        to:
+          type: string
+          description: Newest version of the run.
+        versions:
+          type: integer
+        present:
+          type: boolean
+        intermediary:
+          type: [string, "null"]
+          description: Class queries only.
+        yarn:
+          type: [string, "null"]
+        mojmap:
+          type: [string, "null"]
+        owner:
+          type: [string, "null"]
+          description: >
+            Member queries only: the owner class in the requested namespace. Set even when the
+            member is absent, so a removed member (owner present) and a removed class (owner null)
+            are distinguishable.
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/HistoryMember"
+    HistoryEntry:
+      type: object
+      required: [query, type, spans]
+      properties:
+        query:
+          type: string
+          description: The requested key, echoed verbatim.
+        type:
+          type: string
+          enum: [class, method, field, unknown]
+        spans:
+          type: array
+          items:
+            $ref: "#/components/schemas/HistorySpan"
+    HistoryResponse:
+      type: object
+      required: [namespace, results]
+      properties:
+        namespace:
+          type: string
+          enum: [yarn, mojmap, intermediary]
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/HistoryEntry"
     ReferenceResponse:
       type: object
       required: [version, namespace, query, references]

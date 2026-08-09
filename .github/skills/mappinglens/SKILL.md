@@ -17,6 +17,7 @@ For the full OpenAPI contract in this repository, see `../../../src/main/resourc
 - Translate class, method, or field names between `yarn`, `mojmap`, `intermediary`, and `obfuscated` namespaces.
 - Search for Minecraft classes, methods, and fields by mapped names, intermediary IDs, descriptors, or owner/member expressions.
 - Compare mapping changes between Minecraft versions.
+- Track one class or member across every indexed version at once (when it appeared, when it was renamed or moved, when it disappeared) instead of querying version by version.
 - Align a single class across Yarn and Mojmap with a per-member correspondence table.
 - Fetch git-like/unified source patches between Minecraft versions.
 - Fetch indexed decompiled source or ASM textified bytecode for a class.
@@ -43,7 +44,7 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 
 - `GET 127.0.0.1:8080/api/v1/versions`
   - Lists indexed versions with counts and namespace availability.
-  - `hasIntermediary` means the version carries intermediary names, not that a separate intermediary file was downloaded. Every yarn version has them, because yarn's merged tiny v2 is `official->intermediary->named`. Versions without yarn (Mojang's unobfuscated releases) have none.
+  - `hasIntermediary` means the version carries intermediary names, not that a separate intermediary file was downloaded. Every yarn version has them, because yarn's merged tiny v2 is `official->intermediary->named`. Mojang's unobfuscated releases have no yarn, so they carry intermediary only when the indexer was given a separate source for them (`mappinglens.sources.unobfuscated-intermediary-mappings`).
 - `GET 127.0.0.1:8080/api/v1/versions/{version}`
   - Gets metadata for one indexed version.
 - `GET 127.0.0.1:8080/api/v1/classes/{version}`
@@ -97,6 +98,21 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 - `format`: `patch`/`git` returns `text/x-diff`; `json` returns metadata plus the patch string.
 - Use this endpoint for full real source diffs between versions; it compares actual decompiled source content, not only renamed mapping entries.
 - Patches are minimal by construction (Myers diff): a class with a handful of real changes yields a handful of hunks, not a whole-file rewrite. `ignoreWhitespace=true` additionally erases pure reformatting — use it when a decompiler reindent would otherwise add noise; a class with no semantic change then yields an empty patch.
+
+### History (one key across all versions)
+
+- `GET 127.0.0.1:8080/api/v1/history?q={key}&namespace={namespace}&from={version}&to={version}`
+- `q` (required, repeatable): a class internal name (dot-separated FQN also accepted) or a member key `owner:name`. A third `:descriptor` segment is accepted so `/references` and `/exists` keys paste in unchanged, but it does not filter — overloads come back together.
+- `namespace`: `yarn`, `mojmap`, or `intermediary`. Defaults to `mojmap`.
+- `from` / `to`: limit the version walk; either bound may be the older one. An unindexed version id returns `404`.
+- Returns `{namespace, results[]}` — one entry per `q`, in request order, each `{query, type, spans[]}`. `type` is `class`, `method`, `field`, or `unknown` when nothing matched.
+- Each span is a run of consecutive versions with the same answer: `{from, to, versions, present}` plus `intermediary`/`yarn`/`mojmap` for a class, or `owner` and `members[]` (one per overload) for a member. `from` is the older bound.
+- **Use it instead of looping `/translate` or `/exists` over versions**: a few keys against 500 versions is one request. Repeat `q` to batch several keys.
+- The class is followed by its intermediary name, not by the string queried, so a rename or a package move stays one history and the name from any version returns the same answer.
+- Mojang's unobfuscated releases (everything after 1.21.11) ship no mappings of their own. When the indexer has the separate intermediary source for them, they carry intermediary like any other version and nothing below applies. Check `hasIntermediary` on `/api/v1/versions` to see which case the index is in.
+- Without that source, a name taken from one of those versions is also looked up in the newest mapped version before it, by simple name, which a package move preserves — that is what recovers the rest of the history. Two names alive in the same version are never linked (a class has one name per version), so a class *renamed* after 1.21.11 then keeps only its post-1.21.11 history.
+- Named descriptors are not indexed, so a signature change shows up as a changed `members[].intermediaryDescriptor`, and only on versions that have intermediary.
+- `present: false` with a non-null `owner` means the class is still there and the member is gone; `owner: null` means the class itself is gone.
 
 ### Compare
 

@@ -137,6 +137,7 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
     val referenceService = ReferenceService(appConfig)
     val existsService = ExistsService(appConfig)
     val tokenService = TokenService(appConfig, bytecodeService)
+    val historyService = HistoryService(database)
 
     routing {
         rateLimit {
@@ -150,6 +151,7 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
             referenceRoutes(referenceService)
             existsRoutes(existsService)
             tokenRoutes(tokenService)
+            historyRoutes(historyService)
         }
 
         get("/") {

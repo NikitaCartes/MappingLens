@@ -270,6 +270,46 @@ data class ExistsResponse(
     val results: List<ExistsResult>,
 )
 
+/** One member matched in a history span. Overloads share a name, so a span can hold several. */
+@Serializable
+data class HistoryMember(
+    val intermediary: String? = null,
+    val yarn: String? = null,
+    val mojmap: String? = null,
+    // Named descriptors are not indexed; the intermediary one answers "did the signature change?".
+    val intermediaryDescriptor: String? = null,
+)
+
+/** A run of consecutive versions (oldest [from] to newest [to]) that answer the query identically. */
+@Serializable
+data class HistorySpan(
+    val from: String,
+    val to: String,
+    val versions: Int,
+    val present: Boolean,
+    // Class queries: the class in each namespace.
+    val intermediary: String? = null,
+    val yarn: String? = null,
+    val mojmap: String? = null,
+    // Member queries: the owner in the requested namespace (set even when the member is absent, so
+    // a removed member and a removed class are distinguishable), and one entry per overload.
+    val owner: String? = null,
+    val members: List<HistoryMember> = emptyList(),
+)
+
+@Serializable
+data class HistoryEntry(
+    val query: String,
+    val type: String, // class | method | field | unknown
+    val spans: List<HistorySpan>,
+)
+
+@Serializable
+data class HistoryResponse(
+    val namespace: String,
+    val results: List<HistoryEntry>,
+)
+
 @Serializable
 data class CompareMember(
     val kind: String, // method | field
