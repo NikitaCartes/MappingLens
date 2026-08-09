@@ -7,6 +7,7 @@ import dev.mappinglens.db.tables.MethodTable
 import dev.mappinglens.db.tables.VersionTable
 import dev.mappinglens.ingestion.GitSourceRepository
 import dev.mappinglens.ingestion.JarAnalyzer
+import dev.mappinglens.model.BlameResponse
 import dev.mappinglens.model.BytecodeResponse
 import dev.mappinglens.model.SourceResponse
 import org.jetbrains.exposed.sql.Column
@@ -79,6 +80,24 @@ class BytecodeService(private val config: AppConfig, private val db: Database) {
         val source = Files.readString(match)
         val pathRel = sourceRoot.relativize(match).toString().replace('\\', '/')
         return SourceResponse(versionId, sourceClassName, mappingType, source, pathRel)
+    }
+
+    /**
+     * Version that last changed each line of the class source, line 1 first.
+     *
+     * ponytail: the git worktree answers this, the decompiled-source jars cannot. A version that is
+     * indexed from the artifact store alone therefore has no blame.
+     */
+    fun blame(versionId: String, className: String, namespace: String): BlameResponse? {
+        val mappingType = if (namespace == "mojmap") "mojmap" else "yarn"
+        val rootPath = Paths.get(if (mappingType == "yarn") config.sources.yarnRepo else config.sources.mojmapRepo)
+        if (!rootPath.exists()) return null
+        val sourceClassName = resolveSourceClassName(versionId, className, namespace, mappingType) ?: className
+        val rel = "${sourceClassName.substringBefore('$')}.java"
+        val perLine = GitSourceRepository(rootPath).blame(versionId, rel) ?: return null
+        val versions = perLine.distinct()
+        val index = versions.withIndex().associate { (i, v) -> v to i }
+        return BlameResponse(versionId, sourceClassName, mappingType, rel, versions, perLine.map { index.getValue(it) })
     }
 
     /**

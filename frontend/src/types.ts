@@ -86,6 +86,17 @@ export interface BytecodeResponse {
   bytecode: string;
 }
 
+export interface BlameResponse {
+  version: string;
+  class: string;
+  namespace: string;
+  path: string;
+  /** Versions referenced by `lines`, each listed once. */
+  versions: string[];
+  /** Index into `versions` for each line of the file, line 1 first. */
+  lines: number[];
+}
+
 export interface DiffEntryItem {
   type: string;
   name?: string | null;

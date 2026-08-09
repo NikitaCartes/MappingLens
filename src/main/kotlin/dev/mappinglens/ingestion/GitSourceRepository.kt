@@ -85,6 +85,37 @@ class GitSourceRepository(private val repoRoot: Path) {
         return bytes.toString(StandardCharsets.UTF_8)
     }
 
+    /**
+     * Version that last changed each line of [relativePath] as of [versionId], line 1 first.
+     *
+     * One `git blame` walks the whole history in a single process: Git compares blob ids through
+     * the trees and reads content only where a commit changed the file. Each version is one commit
+     * whose subject is the canonical version id, so `--porcelain` reports the answer in its
+     * `summary` lines and no ref lookup is needed.
+     */
+    fun blame(versionId: String, relativePath: String): List<String>? {
+        if (!isGitWorkTree()) return null
+        val path = normalizeRelativePath(relativePath)
+        // Tags replace spaces with underscores, as VersionMeta.gitTagYarn does; a ref cannot hold a space.
+        val tag = versionId.replace(' ', '_')
+        val output = runGitBytes("blame", "--porcelain", tag, "--", "$SOURCE_TREE/$path") ?: return null
+        val summaries = mutableMapOf<String, String>()
+        val lines = mutableListOf<String>()
+        var commit = ""
+        for (raw in output.toString(StandardCharsets.UTF_8).lineSequence()) {
+            when {
+                // A tab starts the blamed line itself and closes the header block before it.
+                raw.startsWith("\t") -> lines += summaries[commit].orEmpty()
+                raw.startsWith("summary ") -> summaries[commit] = raw.removePrefix("summary ").trim()
+                else -> raw.substringBefore(' ').let { if (isCommitId(it)) commit = it }
+            }
+        }
+        return lines.takeIf { it.isNotEmpty() }
+    }
+
+    private fun isCommitId(token: String): Boolean =
+        (token.length == 40 || token.length == 64) && token.all { it in '0'..'9' || it in 'a'..'f' }
+
     private fun listSourceEntries(versionId: String): List<GitTreeEntry>? {
         val output = runGitBytes("ls-tree", "-r", "-z", "$versionId:$SOURCE_TREE") ?: return null
         if (output.isEmpty()) return emptyList()

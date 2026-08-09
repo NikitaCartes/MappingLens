@@ -284,6 +284,16 @@ code,
 .codeview-message {
   padding: 1rem;
 }
+/* Blame gutter: Monaco injected text, one fixed-width column before every line. */
+.blame-anno {
+  display: inline-block;
+  width: 13ch;
+  overflow: hidden;
+  white-space: nowrap;
+  margin-right: 1ch;
+  border-right: 1px solid var(--border);
+  color: var(--text-dim);
+}
 
 /* ---- compare ---- */
 .compareview {

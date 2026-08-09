@@ -473,6 +473,40 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+  /api/v1/blame/{version}/{className}:
+    get:
+      tags: [Bytecode]
+      summary: Version that last changed each line of a class source
+      description: >
+        One `git blame` over the source repository of the namespace. The class name resolves as it
+        does for `/source`. `lines` holds one entry per line of the file, line 1 first, and each
+        entry indexes `versions`. A version indexed from the artifact store alone has no source
+        repository and gives a `404`.
+      parameters:
+        - $ref: "#/components/parameters/VersionPath"
+        - in: path
+          name: className
+          required: true
+          schema:
+            type: string
+          description: Slash-separated internal name (`net/minecraft/Foo`), dot-separated FQN (`net.minecraft.Foo`), or a bare simple name (`Foo`). Accepts catch-all path segments.
+        - in: query
+          name: namespace
+          schema:
+            type: string
+            enum: [yarn, mojmap]
+            default: mojmap
+      responses:
+        "200":
+          description: Per-line attribution for the class source.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlameResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /api/v1/compare/{version}/{className}:
     get:
       tags: [Compare]
@@ -1091,6 +1125,29 @@ components:
           type: string
         path:
           type: string
+    BlameResponse:
+      type: object
+      required: [version, class, namespace, path, versions, lines]
+      properties:
+        version:
+          type: string
+        class:
+          type: string
+        namespace:
+          type: string
+          enum: [yarn, mojmap]
+        path:
+          type: string
+        versions:
+          type: array
+          description: Versions referenced by `lines`, each listed once.
+          items:
+            type: string
+        lines:
+          type: array
+          description: Index into `versions` for each line of the file, line 1 first.
+          items:
+            type: integer
     CompareMember:
       type: object
       required: [kind, status]

@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Editor } from "@monaco-editor/react";
-import { App, Segmented, Spin } from "antd";
+import type { editor as MonacoEditor } from "monaco-editor";
+import { App, Button, Segmented, Spin } from "antd";
 import type { CodeTab } from "../tabs";
 import { nameIn } from "../tabs";
-import type { SourceNamespace } from "../types";
-import { fetchBytecode, fetchSource, fetchTokens, ApiRequestError } from "../api";
+import type { BlameResponse, SourceNamespace, VersionInfo } from "../types";
+import { fetchBlame, fetchBytecode, fetchSource, fetchTokens, fetchVersions, ApiRequestError } from "../api";
 import { simpleClassName } from "../util";
 import { useOpenHierarchy, useOpenReferences } from "../openClass";
 import type { SourceToken } from "../types";
@@ -23,6 +24,12 @@ interface EditorContext {
 
 type Mode = "source" | "bytecode";
 
+/** Blame labels each line with a release date, and the version list is the same for every tab. */
+let versionsOnce: Promise<VersionInfo[]> | null = null;
+const allVersions = () => (versionsOnce ??= fetchVersions());
+
+const messageOf = (err: unknown) => (err instanceof ApiRequestError || err instanceof Error ? err.message : String(err));
+
 const EDITOR_OPTIONS = {
   readOnly: true,
   domReadOnly: true,
@@ -39,6 +46,12 @@ export function CodeView({ tab }: { tab: CodeTab }) {
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
+
+  const [codeEditor, setCodeEditor] = useState<MonacoEditor.IStandaloneCodeEditor | null>(null);
+  const [blameOn, setBlameOn] = useState(false);
+  const [blame, setBlame] = useState<BlameResponse | null>(null);
+  const [blameError, setBlameError] = useState<string | undefined>(undefined);
+  const [versions, setVersions] = useState<VersionInfo[] | null>(null);
 
   const openHierarchy = useOpenHierarchy();
   const openReferences = useOpenReferences();
@@ -105,6 +118,49 @@ export function CodeView({ tab }: { tab: CodeTab }) {
     return () => controller.abort();
   }, [tab.version, className, namespace, mode]);
 
+  // --- blame: which version last changed each line ---
+
+  // The release dates shown in the hover; the annotation itself needs only the blame response.
+  useEffect(() => {
+    if (!blameOn || versions) return;
+    allVersions().then(setVersions, () => setVersions([]));
+  }, [blameOn, versions]);
+
+  useEffect(() => {
+    setBlame(null);
+    setBlameError(undefined);
+    if (!blameOn || mode !== "source" || !className) return;
+    const controller = new AbortController();
+    fetchBlame(tab.version, className, namespace, controller.signal)
+      .then(setBlame)
+      .catch((err: unknown) => {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setBlameError(messageOf(err));
+      });
+    return () => controller.abort();
+  }, [blameOn, tab.version, className, namespace, mode]);
+
+  // The annotation column itself: injected text before each line, so it scrolls with the code and
+  // stays out of anything copied from the editor.
+  useEffect(() => {
+    if (!codeEditor || !blameOn || !blame || mode !== "source") return;
+    const byId = new Map(versions?.map((ver) => [ver.id, ver]));
+    const collection = codeEditor.createDecorationsCollection(
+      blame.lines.map((idx, i) => {
+        const version = blame.versions[idx];
+        const released = byId.get(version)?.releaseTime?.slice(0, 10);
+        return {
+          range: { startLineNumber: i + 1, startColumn: 1, endLineNumber: i + 1, endColumn: 1 },
+          options: {
+            before: { content: version, inlineClassName: "blame-anno" },
+            hoverMessage: { value: `Last changed in **${version}**${released ? ` (${released})` : ""}` },
+          },
+        };
+      }),
+    );
+    return () => collection.clear();
+  }, [codeEditor, blameOn, blame, versions, mode]);
+
   const hasYarn = !!tab.names.yarn;
   const hasMojmap = !!tab.names.mojmap;
 
@@ -133,6 +189,16 @@ export function CodeView({ tab }: { tab: CodeTab }) {
               { label: "Bytecode", value: "bytecode" },
             ]}
           />
+          <Button
+            size="small"
+            type={blameOn ? "primary" : "default"}
+            disabled={mode !== "source"}
+            loading={blameOn && !blame && !blameError}
+            onClick={() => setBlameOn((on) => !on)}
+          >
+            Blame
+          </Button>
+          {blameError && <span className="hint error">{blameError}</span>}
         </div>
       </div>
       <div className="codeview-body">
@@ -147,6 +213,7 @@ export function CodeView({ tab }: { tab: CodeTab }) {
               value={content}
               options={EDITOR_OPTIONS}
               onMount={(editor) => {
+                setCodeEditor(editor);
                 // The class/member under the cursor, or the whole class when no token is resolved there.
                 const targetAt = (): Target | null => {
                   const c = ctxRef.current;

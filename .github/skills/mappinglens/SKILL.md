@@ -133,6 +133,15 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 - A name that matches no class exactly falls back to the one class of that version with the same simple name. A bare simple name (`ZombifiedPiglin`) and a class that moved package between versions both resolve this way, so do not loop over candidate packages. The response `class` field names the class actually served.
 - When the simple name is ambiguous or unknown the call is a `404`, and its `message` lists the candidate names.
 
+### Blame
+
+- `GET 127.0.0.1:8080/api/v1/blame/{version}/{className}?namespace={namespace}`
+- `namespace`: `yarn` or `mojmap`. Defaults to `mojmap`.
+- Returns the version that last changed each line of the class source. `lines` holds one entry per line, line 1 first, and each entry indexes `versions`.
+- `className` resolves as it does for `/source`.
+- One `git blame` over the source repository answers the whole file, so use this instead of walking `/diff/patch` version by version.
+- A version indexed from the artifact store alone has no source repository and gives a `404`.
+
 ### Bytecode
 
 - `GET 127.0.0.1:8080/api/v1/bytecode/{version}/{className}?format={format}&namespace={namespace}`

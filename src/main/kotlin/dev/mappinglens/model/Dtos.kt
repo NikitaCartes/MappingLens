@@ -188,6 +188,18 @@ data class SourceResponse(
 )
 
 @Serializable
+data class BlameResponse(
+    val version: String,
+    val `class`: String,
+    val namespace: String,
+    val path: String,
+    /** Versions referenced by [lines], each listed once. */
+    val versions: List<String>,
+    /** Index into [versions] for each line of the file, line 1 first. */
+    val lines: List<Int>,
+)
+
+@Serializable
 data class HierarchyNode(
     val name: String,
     val simpleName: String,

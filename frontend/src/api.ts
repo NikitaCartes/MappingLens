@@ -1,4 +1,5 @@
 import type {
+  BlameResponse,
   BytecodeResponse,
   ClassEntry,
   ClassListResponse,
@@ -137,6 +138,16 @@ export function fetchBytecode(
   signal?: AbortSignal,
 ): Promise<BytecodeResponse> {
   return getJson<BytecodeResponse>(`${BASE}/bytecode/${v(version)}/${cls(className)}?namespace=${namespace}`, signal);
+}
+
+/** Version that last changed each line of the class source. */
+export function fetchBlame(
+  version: string,
+  className: string,
+  namespace: SourceNamespace,
+  signal?: AbortSignal,
+): Promise<BlameResponse> {
+  return getJson<BlameResponse>(`${BASE}/blame/${v(version)}/${cls(className)}?namespace=${namespace}`, signal);
 }
 
 export function fetchDiff(

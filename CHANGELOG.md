@@ -3,6 +3,23 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.2]
+
+### Added
+- `GET /api/v1/blame/{version}/{className}?namespace={yarn|mojmap}` — the version that last changed
+  each line of a class source. `lines` holds one entry per line, line 1 first, and each entry indexes
+  `versions`, so a 606-line file with 44 contributing versions is 7.9 KB rather than a version name
+  repeated 606 times. `className` resolves as it does for `/source`.
+  - One `git blame` over the source repository answers the whole file: Git compares blob ids through
+    the trees and reads content only where a commit changed the file. Measured on the 461-version
+    mojmap repository, `net/minecraft/world/entity/monster/EnderMan` takes 72 ms in one request.
+    Walking `/diff/patch` version by version to the same answer needs about 460 requests at 32 ms
+    each, which the 200-requests-a-minute rate limit spreads over more than two minutes.
+  - Each version is one commit whose subject is the canonical version id, so no ref lookup is needed.
+    Tags replace spaces with underscores, as `VersionMeta.gitTagYarn` does.
+  - A version indexed from the decompiled-source jars alone has no source repository, and gives a
+    `404`. The jars carry no history.
+
 ## [9.1]
 
 ### Added
