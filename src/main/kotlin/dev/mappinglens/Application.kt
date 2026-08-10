@@ -57,7 +57,11 @@ private fun runIndex(args: Array<String>, log: Logger) {
     log.info("Building index at {} (config {})", startup.appConfig.databasePath, startup.configPath)
     DatabaseFactory.init(startup.appConfig.databasePath)
     val force = args.any { it == "-force" || it == "--force" }
-    IngestPipeline(startup.appConfig).run(force)
+    // -versions=1.21.4,26.2 rebuilds a subset without editing the config file. A version that GitCraft
+    // refreshed is already indexed, so a rebuild of it needs -force as well.
+    val only = args.firstOrNull { it.startsWith("-versions=") || it.startsWith("--versions=") }
+        ?.substringAfter('=')?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
+    IngestPipeline(startup.appConfig).run(force, only)
     log.info("Index build complete.")
 }
 

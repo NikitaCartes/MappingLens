@@ -3,6 +3,14 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.3]
+
+### Added
+- `index -versions=1.21.4,26.2` builds only the versions given, overriding
+  `mappinglens.indexing.initial-versions`. A version that GitCraft rebuilt on a newer yarn build is
+  already in the database, and a plain run skips it, so a rebuild of it takes `-force` as well.
+  Before, the same run needed a second config file holding nothing but the version list.
+
 ## [9.2]
 
 ### Added

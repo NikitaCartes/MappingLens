@@ -87,6 +87,11 @@ CallLogging, CORS (`anyHost`, метод GET, заголовок `Content-Type`)
 # 1. Собрать read-only индекс (единственный писатель БД)
 ./gradlew run --args="index"
 
+# 1a. Пересобрать только указанные версии (например, после того как GitCraft перестроил
+#     версию на новом билде yarn). `-versions` перекрывает `indexing.initial-versions`;
+#     уже проиндексированная версия пересобирается только вместе с `-force`.
+./gradlew run --args="index -force -versions=1.21.4,26.2"
+
 # 2. Запустить сервер (stateless, RO). serve — команда по умолчанию,
 #    если первый аргумент отсутствует или начинается с '-'.
 ./gradlew run --args="serve"            # слушает :8080

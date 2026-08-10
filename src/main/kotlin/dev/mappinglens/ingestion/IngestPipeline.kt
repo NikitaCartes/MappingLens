@@ -27,10 +27,14 @@ class IngestPipeline(private val config: AppConfig) {
             .takeIf { it.isNotBlank() }?.let { Paths.get(it) },
     )
 
-    fun run(force: Boolean = false) {
+    /** [only] restricts the run to the given version ids, overriding `indexing.initial-versions`. */
+    fun run(force: Boolean = false, only: List<String> = emptyList()) {
         val allSorted = store.versionIds()
         val rankOf = allSorted.withIndex().associate { (i, v) -> v to i }
-        val filterList = config.indexing.initialVersions.takeIf { it.isNotEmpty() }?.toSet()
+        val filterList = (only.takeIf { it.isNotEmpty() } ?: config.indexing.initialVersions)
+            .takeIf { it.isNotEmpty() }?.toSet()
+        filterList?.minus(allSorted.toSet())?.takeIf { it.isNotEmpty() }
+            ?.let { log.warn("Requested versions are not in the store: {}", it.joinToString()) }
         var targets = allSorted.filter { filterList == null || it in filterList }
 
         if (!force) {
