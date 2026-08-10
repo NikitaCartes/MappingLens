@@ -38,7 +38,7 @@ read-only GitCraft-стора, индекс открывается с `PRAGMA qu
 ## Требования
 
 - **JDK 21** (Gradle toolchain `languageVersion 21`, `jvmTarget JVM_21`). Стек: Kotlin 2.2.20, Ktor 3.2.3, Exposed 0.56, sqlite-jdbc.
-- **Node.js** (для frontend; у пользователя установлен в `C:\MyPrograms\Node`).
+- **Node.js** (для frontend).
 - **Данные на диске:**
   - Для `index` — источники: `artifact-store` (с подпапками `mappings/`, `mc-versions/`, `decompiled/<ver>/`, `remapped-mc/<ver>/`), `yarn`, `mojmap`, `intermediary`.
   - Для `serve` — **готовый индекс** по пути `database.path` (иначе сервер падает на старте с подсказкой запустить `index`). Источники репозиториев на старте не нужны, но `diff`/`bytecode`/`source` лениво читают jar'ы из `artifact-store` во время запроса.
@@ -107,6 +107,60 @@ npm run build                            # статика в dist/ (tsc + vite)
 `index` (пишет БД) и `serve` (RO). Любой другой токен печатает usage и выходит с кодом 2.
 
 Прод-вариант frontend: задеплоить `dist/` как статику и проксировать `/api` на работающий `serve`.
+
+---
+
+## Docker
+
+Папка `docker/` собирает образ, который держит `serve` запущенным и сам достраивает данные:
+GitCraft пополняет артефакт-стор и репозитории исходников, `index` обновляет индекс.
+
+```sh
+docker compose -f docker/docker-compose.yml up -d --build
+```
+
+В образе: fat jar MappingLens (собирается отдельным слоем на JDK 21), GitCraft (требует JDK 25),
+чекауты `FabricMC/intermediary`, `RelativityMC/intermediary`, `FabricMC/yarn`, `RelativityMC/yarn`
+и пресеты GitCraft. `VOLUME` в Dockerfile нет, тома объявлены в compose-файле.
+
+| Каталог в томе `/data` | Что лежит |
+|---|---|
+| `artifact-store/` | Артефакт-стор GitCraft (`mappings/`, `mc-versions/`, `decompiled/`, ...) |
+| `repos/yarn`, `repos/mojmap` | Git-репозитории декомпилированных исходников |
+| `index/mappinglens.db` | SQLite-индекс |
+| `state/` | Маркеры цикла обновления |
+| `gradle/` | Gradle home для прогонов GitCraft |
+
+Цикл `docker/entrypoint.sh`, интервал `UPDATE_INTERVAL_SECONDS`:
+
+1. Обновляет четыре чекаута и считает один отпечаток по их refs (`git ls-remote`).
+2. В манифесте Mojang новая версия → пресет `mojmap`, затем `index`. Версия попадает в поиск сразу,
+   не дожидаясь yarn.
+3. Опубликованный билд yarn выше того, что лежит в артефакт-сторе, либо на диске его вообще нет →
+   пресет `yarn`, при необходимости с `--refresh-only-version`. Дальше `index -force -versions=<...>`
+   ровно по тем версиям, у которых сменился файл `<ver>-yarn-build.N.tiny`.
+4. Индекс изменился → рестарт `serve`: сервер мемоизирует счётчики версий и пути к jar'ам.
+
+Сравниваются все версии, а не только свежие. Если набор несобираемых версий не изменился и ни один
+mapping-репозиторий не двигался, прогон GitCraft пропускается: версия ждёт публикации intermediary
+или yarn.
+
+Пресеты `docker/presets/mojmap.args` и `docker/presets/yarn.args` — по одному аргументу в строке,
+строки с `#` игнорируются; передаются GitCraft как `--preset=<файл>`.
+
+| Переменная | По умолчанию | Назначение |
+|---|---|---|
+| `UPDATE_INTERVAL_SECONDS` | `3600` | Пауза между проверками |
+| `PORT` | `8080` | Порт `serve` |
+| `MAPPINGLENS_*` | пути внутри `/data` | Те же переменные, что и вне контейнера |
+| `JAVA_TOOL_OPTIONS` | — | Например `-Xmx8g`, если индексатору не хватает heap |
+
+Build-args `GITCRAFT_REPO` и `GITCRAFT_REF` указывают, откуда брать GitCraft. Нужны опции
+`--preset`, `--artifact-store-path`, `--override-repo-target` и `--fabric-intermediary-repo`.
+
+> ⚠️ На пустом томе первый прогон строит все версии с нуля и занимает дни, `serve` поднимется
+> только после появления индекса. Готовый артефакт-стор монтируется поверх `/data/artifact-store`
+> (пример закомментирован в compose-файле).
 
 ---
 

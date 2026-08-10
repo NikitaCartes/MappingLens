@@ -3,6 +3,28 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.4]
+
+### Added
+- `docker/` builds an image that serves the API and keeps its own data current. It carries the
+  MappingLens fat jar, GitCraft and the four mapping checkouts (`FabricMC/intermediary`,
+  `RelativityMC/intermediary`, `FabricMC/yarn`, `RelativityMC/yarn`). The compose file declares the
+  volumes, the Dockerfile declares none, and one volume holds the artifact store, both source
+  repositories, the index and the update markers.
+  - Every `UPDATE_INTERVAL_SECONDS` the entrypoint reads the Mojang manifest and both yarn
+    publishers. A new Minecraft version is built with mojmap and indexed at once, so it is
+    searchable without waiting for yarn or intermediary.
+  - Yarn that appears later, and a new yarn build for a version already built, are found by
+    comparing the build number in the artifact store file name with the published one, over every
+    version rather than the newest. GitCraft rebuilds those versions, and only the versions whose
+    mappings file actually changed are re-indexed with `-force -versions=…`, followed by a restart
+    of `serve`.
+  - A version whose intermediary or yarn is not published yet fails to build, and is retried when
+    any of the four mapping repositories gets a commit. Until then the same set is not rebuilt.
+
+  `SERVICE.md` documents the volume layout, the environment variables and the presets.
+
+
 ## [9.3]
 
 ### Added

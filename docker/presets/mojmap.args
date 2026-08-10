@@ -1,0 +1,11 @@
+# GitCraft preset: decompiled Minecraft with Mojang mappings.
+# One argument per line. Paths follow the container layout (see docker/Dockerfile).
+# Plain "mojmap" also covers the unobfuscated releases (26.x), so no second profile is needed.
+--mappings=mojmap
+--manifest-source=mojang
+--artifact-store-path=/data/artifact-store
+--override-repo-target=/data/repos/mojmap
+# MappingLens indexes mappings and source code, not game data.
+--no-assets
+--no-datapack
+--no-datagen-report

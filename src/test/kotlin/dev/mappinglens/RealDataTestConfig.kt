@@ -25,11 +25,14 @@ import java.time.Instant
 /**
  * Centralized real-data paths and stable fixtures used by integration tests.
  *
- * Override paths without editing tests via either JVM system properties or environment variables:
+ * The defaults are the same relative paths as `mappinglens-defaults.conf`, so a store that lives
+ * elsewhere is pointed at with either JVM system properties or environment variables. Tests that
+ * call [assumeAvailable] are skipped while the paths do not exist.
  * - mappinglens.test.yarnRepo / MAPPINGLENS_TEST_YARN_REPO
  * - mappinglens.test.mojmapRepo / MAPPINGLENS_TEST_MOJMAP_REPO
  * - mappinglens.test.intermediaryMappings / MAPPINGLENS_TEST_INTERMEDIARY
  * - mappinglens.test.artifactStore / MAPPINGLENS_TEST_ARTIFACT_STORE
+ * - mappinglens.test.unobfuscatedIntermediary / MAPPINGLENS_TEST_UNOBFUSCATED_INTERMEDIARY
  */
 object RealDataTestConfig {
     const val V_1_20_6 = "1.20.6"
@@ -41,29 +44,29 @@ object RealDataTestConfig {
     val yarnRepo: Path = configuredPath(
         property = "mappinglens.test.yarnRepo",
         env = "MAPPINGLENS_TEST_YARN_REPO",
-        defaultValue = "c:/important/GitCraft/yarn",
+        defaultValue = "data/yarn",
     )
     val mojmapRepo: Path = configuredPath(
         property = "mappinglens.test.mojmapRepo",
         env = "MAPPINGLENS_TEST_MOJMAP_REPO",
-        defaultValue = "c:/important/GitCraft/mojmap",
+        defaultValue = "data/mojmap",
     )
     val intermediaryMappings: Path = configuredPath(
         property = "mappinglens.test.intermediaryMappings",
         env = "MAPPINGLENS_TEST_INTERMEDIARY",
-        defaultValue = "c:/important/GitCraft/intermediary/mappings",
+        defaultValue = "data/intermediary",
     )
     val artifactStore: Path = configuredPath(
         property = "mappinglens.test.artifactStore",
         env = "MAPPINGLENS_TEST_ARTIFACT_STORE",
-        defaultValue = "c:/important/GitCraft/artifact-store",
+        defaultValue = "data/artifact-store",
     )
 
     /** Optional: absent on a machine that has not cloned the unobfuscated-intermediary repository. */
     val unobfuscatedIntermediary: Path = configuredPath(
         property = "mappinglens.test.unobfuscatedIntermediary",
         env = "MAPPINGLENS_TEST_UNOBFUSCATED_INTERMEDIARY",
-        defaultValue = "c:/important/GitCraft/RelativityMC_intermediary/intermediary/mappings",
+        defaultValue = "data/unobfuscated-intermediary",
     )
     val mappingFilesDir: Path = artifactStore.resolve("mappings")
     val minecraftVersionsDir: Path = artifactStore.resolve("mc-versions")

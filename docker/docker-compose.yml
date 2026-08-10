@@ -1,0 +1,29 @@
+# The compose file lives in docker/, so the project is named here rather than after the folder.
+name: mappinglens
+
+services:
+  mappinglens:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      UPDATE_INTERVAL_SECONDS: 3600
+      # Raise if the indexer runs out of heap. The JVM reads this variable itself.
+      # JAVA_TOOL_OPTIONS: -Xmx8g
+    volumes:
+      - data:/data
+      # An existing GitCraft store can be mounted over the matching subdirectory, which skips the
+      # first build (a full build from an empty volume takes days). The layout under /data is:
+      #   /data/artifact-store  GitCraft artifact store (mappings, mc-versions, decompiled, ...)
+      #   /data/repos/yarn      decompiled sources, yarn
+      #   /data/repos/mojmap    decompiled sources, mojmap
+      #   /data/index           mappinglens.db
+      #   /data/state           update markers
+      #   /data/gradle          gradle home for the GitCraft runs
+      # - /path/to/artifact-store:/data/artifact-store
+    restart: unless-stopped
+
+volumes:
+  data:

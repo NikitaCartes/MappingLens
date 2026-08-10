@@ -1,0 +1,14 @@
+# GitCraft preset: decompiled Minecraft with Yarn mappings.
+# One argument per line. Paths follow the container layout (see docker/Dockerfile).
+# Yarn needs intermediary. Both checkouts are read from disk, in order: FabricMC covers the
+# obfuscated versions, RelativityMC continues after 1.21.11. Versions in neither checkout fail,
+# which is what makes the container wait and retry until the mappings are published.
+--mappings=yarn
+--manifest-source=mojang
+--artifact-store-path=/data/artifact-store
+--override-repo-target=/data/repos/yarn
+--fabric-intermediary-repo=/opt/mappings/intermediary,/opt/mappings/relativity-intermediary
+# MappingLens indexes mappings and source code, not game data.
+--no-assets
+--no-datapack
+--no-datagen-report
