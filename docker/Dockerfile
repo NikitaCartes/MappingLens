@@ -49,7 +49,10 @@ ENV MAPPINGLENS_DB_PATH=/data/index/mappinglens.db \
     MAPPINGLENS_UNOBFUSCATED_INTERMEDIARY=/opt/mappings/relativity-intermediary/mappings \
     GRADLE_USER_HOME=/data/gradle \
     UPDATE_INTERVAL_SECONDS=3600 \
-    PORT=8080
+    PORT=8080 \
+    GITCRAFT_JAVA_OPTS= \
+    INDEX_JAVA_OPTS= \
+    SERVE_JAVA_OPTS=
 
 EXPOSE 8080
 # GitCraft resolves config.json and its temporary files against the working directory.

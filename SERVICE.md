@@ -166,7 +166,9 @@ mapping-репозиторий не двигался, прогон GitCraft пр
 | `UPDATE_INTERVAL_SECONDS` | `3600` | Пауза между проверками |
 | `PORT` | `8080` | Порт `serve` |
 | `MAPPINGLENS_*` | пути внутри `/data` | Те же переменные, что и вне контейнера |
-| `JAVA_TOOL_OPTIONS` | — | Например `-Xmx8g`, если индексатору не хватает heap |
+| `GITCRAFT_JAVA_OPTS` | — | Опции JVM для прогона GitCraft, например `-Xmx16g` |
+| `INDEX_JAVA_OPTS` | — | Опции JVM для `index`, например `-Xmx4g` |
+| `SERVE_JAVA_OPTS` | — | Опции JVM для `serve`, например `-Xmx4g` |
 
 Build-args `GITCRAFT_REPO` и `GITCRAFT_REF` указывают, откуда брать GitCraft. Нужны опции
 `--preset`, `--artifact-store-path`, `--override-repo-target` и `--fabric-intermediary-repo`.

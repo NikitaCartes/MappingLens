@@ -11,8 +11,16 @@ services:
     user: "1000:1000"
     environment:
       UPDATE_INTERVAL_SECONDS: 3600
-      # Raise if the indexer runs out of heap. The JVM reads this variable itself.
-      # JAVA_TOOL_OPTIONS: -Xmx8g
+      # GitCraft's forked run JVM does the decompile and remap work. 8g was not enough for
+      # 1.20-pre1, so GITCRAFT_JAVA_OPTS starts at 16g.
+      GITCRAFT_JAVA_OPTS: -Xmx16g
+      # The index command processes one version per run no matter how many versions are targeted.
+      # Heap needs do not grow with the version count.
+      INDEX_JAVA_OPTS: -Xmx4g
+      # Serve keeps a cache per class and version for the life of the process
+      # (FUTURE_IMPROVEMENTS.md). Size SERVE_JAVA_OPTS for API use between restarts, not for the
+      # 35GB db file.
+      SERVE_JAVA_OPTS: -Xmx4g
     volumes:
       - /mnt/cache/MappinLens:/data
       # An existing GitCraft store can be mounted over the matching subdirectory, which skips the

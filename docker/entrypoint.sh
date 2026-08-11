@@ -39,7 +39,7 @@ serve_start() {
 		log "no index at $MAPPINGLENS_DB_PATH, serve starts after the first index build"
 		return
 	fi
-	java -jar "$JAR" serve -config="$CONF" &
+	java $SERVE_JAVA_OPTS -jar "$JAR" serve -config="$CONF" &
 	serve_pid=$!
 	log "serve runs as pid $serve_pid on port $PORT"
 }
@@ -77,17 +77,17 @@ run_gitcraft() {
 	preset=$1
 	shift
 	log "gitcraft $preset $*"
-	run ./gradlew --no-daemon run --args="--preset=/opt/presets/$preset.args $*"
+	run env JAVA_TOOL_OPTIONS="$GITCRAFT_JAVA_OPTS" ./gradlew --no-daemon run --args="--preset=/opt/presets/$preset.args $*"
 }
 
 # The indexer skips versions that are already in the database, so a plain run picks up exactly
 # the new Minecraft versions.
-reindex() { run java -jar "$JAR" index -config="$CONF"; }
+reindex() { run java $INDEX_JAVA_OPTS -jar "$JAR" index -config="$CONF"; }
 
 # A version already in the database is not re-read by a plain run, so a rebuilt version needs
 # -force, and -versions restricts the rebuild to the versions given.
 reindex_versions() {
-	run java -jar "$JAR" index -config="$CONF" -force "-versions=$(printf '%s' "$1" | paste -sd, -)"
+	run java $INDEX_JAVA_OPTS -jar "$JAR" index -config="$CONF" -force "-versions=$(printf '%s' "$1" | paste -sd, -)"
 }
 
 # Latest release/snapshot ids, the same manifest GitCraft reads.
