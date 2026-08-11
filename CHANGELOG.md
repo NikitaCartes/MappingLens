@@ -3,6 +3,14 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.5]
+
+### Added
+- A second compose service, `frontend`: `npm run build` on Node 24, and the bundle served by nginx
+  on host port 3000. The bundle calls the API on its own origin, so `docker/nginx.conf` proxies
+  `/api/` to `http://mappinglens:8080`. Both images build from `docker/` with the project root as
+  their context, and `.dockerignore` now drops only `frontend/node_modules` and `frontend/dist`.
+
 ## [9.4]
 
 ### Added

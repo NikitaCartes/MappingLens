@@ -20,7 +20,8 @@ RUN apt-get update \
 
 ARG GITCRAFT_REPO=https://github.com/NikitaCartes-forks/GitCraft.git
 ARG GITCRAFT_REF=my-changes-v2
-RUN git clone --depth 1 --branch "${GITCRAFT_REF}" "${GITCRAFT_REPO}" /opt/gitcraft
+RUN git clone --depth 1 --branch "${GITCRAFT_REF}" "${GITCRAFT_REPO}" /opt/gitcraft \
+    && chown -R 1000:1000 /opt/gitcraft
 
 # Mapping repositories. GitCraft reads intermediary from these checkouts instead of the GitHub
 # API, and MappingLens indexes the same tiny files. The entrypoint updates all four each cycle and
@@ -30,7 +31,8 @@ RUN git clone --depth 1 --branch "${GITCRAFT_REF}" "${GITCRAFT_REPO}" /opt/gitcr
 RUN git clone --depth 1 https://github.com/FabricMC/intermediary /opt/mappings/intermediary \
     && git clone --depth 1 https://github.com/RelativityMC/intermediary /opt/mappings/relativity-intermediary \
     && git clone --depth 1 https://github.com/FabricMC/yarn /opt/mappings/yarn \
-    && git clone --depth 1 https://github.com/RelativityMC/yarn /opt/mappings/relativity-yarn
+    && git clone --depth 1 https://github.com/RelativityMC/yarn /opt/mappings/relativity-yarn \
+    && chown -R 1000:1000 /opt/mappings
 
 COPY --from=mappinglens-build /src/build/libs/mappinglens-all.jar /opt/mappinglens/mappinglens.jar
 COPY docker/presets /opt/presets

@@ -1,0 +1,14 @@
+# The static frontend bundle behind nginx, which also proxies /api to the API container.
+# Build context is the MappingLens project root, as for docker/Dockerfile:
+#   docker build -f docker/Dockerfile.frontend -t mappinglens-frontend .
+
+FROM node:24-alpine AS build
+WORKDIR /app
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+FROM nginx:alpine
+COPY --from=build /app/dist /usr/share/nginx/html
+COPY docker/nginx.conf /etc/nginx/conf.d/default.conf

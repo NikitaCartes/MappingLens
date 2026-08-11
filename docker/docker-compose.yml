@@ -7,13 +7,14 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     ports:
-      - "8080:8080"
+      - "10096:8080"
+    user: "1000:1000"
     environment:
       UPDATE_INTERVAL_SECONDS: 3600
       # Raise if the indexer runs out of heap. The JVM reads this variable itself.
       # JAVA_TOOL_OPTIONS: -Xmx8g
     volumes:
-      - data:/data
+      - /mnt/cache/MappinLens:/data
       # An existing GitCraft store can be mounted over the matching subdirectory, which skips the
       # first build (a full build from an empty volume takes days). The layout under /data is:
       #   /data/artifact-store  GitCraft artifact store (mappings, mc-versions, decompiled, ...)
@@ -25,5 +26,13 @@ services:
       # - /path/to/artifact-store:/data/artifact-store
     restart: unless-stopped
 
-volumes:
-  data:
+  # The static bundle plus the nginx that proxies /api to the service above.
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+    ports:
+      - "22441:80"
+    depends_on:
+      - mappinglens
+    restart: unless-stopped

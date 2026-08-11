@@ -106,20 +106,33 @@ npm run build                            # статика в dist/ (tsc + vite)
 `main()` берёт `args[0]` как подкоманду только если она не начинается с `-`; известные команды —
 `index` (пишет БД) и `serve` (RO). Любой другой токен печатает usage и выходит с кодом 2.
 
-Прод-вариант frontend: задеплоить `dist/` как статику и проксировать `/api` на работающий `serve`.
+Прод-вариант frontend: задеплоить `dist/` как статику и проксировать `/api` на работающий `serve`
+(в compose это делает контейнер `frontend`, см. ниже).
 
 ---
 
 ## Docker
 
-Папка `docker/` собирает образ, который держит `serve` запущенным и сам достраивает данные:
-GitCraft пополняет артефакт-стор и репозитории исходников, `index` обновляет индекс.
+Compose-файл поднимает два сервиса: `mappinglens` держит `serve` запущенным и сам достраивает
+данные (GitCraft пополняет артефакт-стор и репозитории исходников, `index` обновляет индекс),
+`frontend` отдаёт собранный бандл.
 
 ```sh
 docker compose -f docker/docker-compose.yml up -d --build
 ```
 
-В образе: fat jar MappingLens (собирается отдельным слоем на JDK 21), GitCraft (требует JDK 25),
+| Сервис        | Порт на хосте                         | Dockerfile                   |
+|---------------|---------------------------------------|------------------------------|
+| `mappinglens` | `10096` → API и Swagger UI на `/docs` | `docker/Dockerfile`          |
+| `frontend`    | `22441` → UI                          | `docker/Dockerfile.frontend` |
+
+Контекст сборки у обоих образов — корень проекта. `.dockerignore` исключает `frontend/node_modules`
+и `frontend/dist`, сами исходники frontend остаются в контексте. Сборка frontend — `npm ci` и
+`npm run build` на Node 24, дальше `dist/` отдаётся nginx. Бандл ходит в API по своему же origin
+(`/api/v1/…`), поэтому `docker/nginx.conf` проксирует `/api/` на `http://mappinglens:8080`; наружу
+порт `8080` открыт только для прямых запросов к API.
+
+В образе API: fat jar MappingLens (собирается отдельным слоем на JDK 21), GitCraft (требует JDK 25),
 чекауты `FabricMC/intermediary`, `RelativityMC/intermediary`, `FabricMC/yarn`, `RelativityMC/yarn`
 и пресеты GitCraft. `VOLUME` в Dockerfile нет, тома объявлены в compose-файле.
 
