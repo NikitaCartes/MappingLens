@@ -143,12 +143,14 @@ check_yarn() {
 
 	# Versions whose store copy is older than the published build. GitCraft rebuilds a version it
 	# already has only when the version is named explicitly.
-	stale=$(awk -F'\t' 'NR == FNR { local[$1] = $2; next } ($1 in local) && local[$1] + 0 < $2 + 0 { print $1 }' \
+	# The two-file joins below test FILENAME, not NR == FNR: an empty first file is never read, so
+	# NR == FNR would stay true over the second file and swallow every record.
+	stale=$(awk -F'\t' 'FILENAME == ARGV[1] { local[$1] = $2; next } ($1 in local) && local[$1] + 0 < $2 + 0 { print $1 }' \
 		/tmp/yarn.before /tmp/yarn.upstream)
 	# Versions with published yarn and nothing in the store: yarn released after the Minecraft
 	# version lands here. A version the store does not know is skipped, because GitCraft rejects a
 	# version name that its manifest does not contain.
-	missing=$(awk -F'\t' 'NR == FNR { local[$1]; next } !($1 in local) { print $1 }' \
+	missing=$(awk -F'\t' 'FILENAME == ARGV[1] { local[$1]; next } !($1 in local) { print $1 }' \
 		/tmp/yarn.before /tmp/yarn.upstream \
 		| while read -r version; do
 			[ -d "$MAPPINGLENS_ARTIFACT_STORE/mc-versions/$version" ] && printf '%s\n' "$version"
@@ -179,7 +181,7 @@ check_yarn() {
 	# What the run actually produced. A version whose mappings are still unpublished changes nothing
 	# and stays out of the index until a later cycle builds it.
 	yarn_local > /tmp/yarn.after
-	landed=$(awk -F'\t' 'NR == FNR { before[$1] = $2; next } !($1 in before) || before[$1] != $2 { print $1 }' \
+	landed=$(awk -F'\t' 'FILENAME == ARGV[1] { before[$1] = $2; next } !($1 in before) || before[$1] != $2 { print $1 }' \
 		/tmp/yarn.before /tmp/yarn.after)
 	if [ -z "$landed" ]; then
 		log "no yarn build landed, retrying when a mapping repository moves"

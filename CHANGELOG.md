@@ -3,6 +3,15 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.5.2]
+
+### Fixed
+- `docker/entrypoint.sh` never built yarn on an artifact store that held no yarn mappings. The three
+  two-file joins in `check_yarn` selected the first file with `NR == FNR`. awk does not read an empty
+  file, so the condition stayed true over the second file and every record was swallowed: the list of
+  versions to build came out empty, and `check_yarn` returned without a log line. The joins now test
+  `FILENAME == ARGV[1]`.
+
 ## [9.5]
 
 ### Added
