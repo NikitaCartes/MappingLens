@@ -3,6 +3,17 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.6]
+
+### Fixed
+- The Blame button in the frontend annotated no line. Monaco discards an injected-text decoration on
+  an empty range unless the decoration sets `showIfCollapsed`, and the blame column puts every
+  annotation on the empty range at column 1. The decorations now set `showIfCollapsed`, and
+  `inlineClassNameAffectsLetterSpacing`, because the `.blame-anno` class gives the injected text a
+  width of `13ch` that Monaco must count when it maps a pixel position to a column.
+- The Blame button kept a loading indicator forever in the bytecode view. Blame applies to source
+  only, so no request was sent and the response that the indicator waited for never arrived.
+
 ## [9.5.2]
 
 ### Fixed

@@ -152,7 +152,9 @@ export function CodeView({ tab }: { tab: CodeTab }) {
         return {
           range: { startLineNumber: i + 1, startColumn: 1, endLineNumber: i + 1, endColumn: 1 },
           options: {
-            before: { content: version, inlineClassName: "blame-anno" },
+            // Monaco drops injected text on an empty range unless showIfCollapsed is set.
+            showIfCollapsed: true,
+            before: { content: version, inlineClassName: "blame-anno", inlineClassNameAffectsLetterSpacing: true },
             hoverMessage: { value: `Last changed in **${version}**${released ? ` (${released})` : ""}` },
           },
         };
@@ -193,7 +195,7 @@ export function CodeView({ tab }: { tab: CodeTab }) {
             size="small"
             type={blameOn ? "primary" : "default"}
             disabled={mode !== "source"}
-            loading={blameOn && !blame && !blameError}
+            loading={blameOn && mode === "source" && !blame && !blameError}
             onClick={() => setBlameOn((on) => !on)}
           >
             Blame
