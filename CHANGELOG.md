@@ -3,6 +3,14 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.6.1]
+
+### Fixed
+- `GITCRAFT_JAVA_OPTS` had no effect on the heap of a GitCraft run. GitCraft puts `-Xmx12G` on the
+  command line of the run task, and the JVM reads `JAVA_TOOL_OPTIONS` before the command line, so
+  the command line won. The entrypoint now passes the options in `_JAVA_OPTIONS`, which the JVM
+  reads after the command line.
+
 ## [9.6]
 
 ### Fixed

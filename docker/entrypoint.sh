@@ -77,7 +77,11 @@ run_gitcraft() {
 	preset=$1
 	shift
 	log "gitcraft $preset $*"
-	run env JAVA_TOOL_OPTIONS="$GITCRAFT_JAVA_OPTS" ./gradlew --no-daemon run --args="--preset=/opt/presets/$preset.args $*"
+	# GitCraft puts -Xmx12G on the command line of the run task, through applicationDefaultJvmArgs.
+	# The JVM reads JAVA_TOOL_OPTIONS before the command line, so the command line wins and the
+	# options given here are lost. The JVM reads _JAVA_OPTIONS after the command line, so the
+	# options given here win.
+	run env _JAVA_OPTIONS="$GITCRAFT_JAVA_OPTS" ./gradlew --no-daemon run --args="--preset=/opt/presets/$preset.args $*"
 }
 
 # The indexer skips versions that are already in the database, so a plain run picks up exactly
