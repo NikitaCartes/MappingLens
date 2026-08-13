@@ -65,6 +65,12 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
+// SKILL.md stays at .github/skills/mappinglens so GitHub finds it; the jar carries the same file
+// on the classpath root, which /skill.md serves.
+sourceSets.main {
+    resources.srcDir(".github/skills/mappinglens")
+}
+
 kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)

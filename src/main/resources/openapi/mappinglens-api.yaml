@@ -769,6 +769,18 @@ paths:
             application/yaml:
               schema:
                 type: string
+  /skill.md:
+    get:
+      tags: [Docs]
+      summary: Agent skill document
+      description: The MappingLens skill in Markdown, the same file as .github/skills/mappinglens/SKILL.md.
+      responses:
+        "200":
+          description: SKILL.md document.
+          content:
+            text/markdown:
+              schema:
+                type: string
   /docs:
     get:
       tags: [Docs]

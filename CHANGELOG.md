@@ -3,6 +3,13 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.7.2]
+
+### Added
+- `GET /skill.md` serves the agent skill document, the same file as
+  `.github/skills/mappinglens/SKILL.md`. The build bundles that file into the jar, so a client can
+  fetch the skill from a running server instead of the repository.
+
 ## [9.7]
 
 ### Fixed

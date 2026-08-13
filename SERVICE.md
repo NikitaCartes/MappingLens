@@ -43,6 +43,7 @@ read-only GitCraft-стора, индекс открывается с `PRAGMA qu
   - Для `index` — источники: `artifact-store` (с подпапками `mappings/`, `mc-versions/`, `decompiled/<ver>/`, `remapped-mc/<ver>/`), `yarn`, `mojmap`, `intermediary`.
   - Для `serve` — **готовый индекс** по пути `database.path` (иначе сервер падает на старте с подсказкой запустить `index`). Источники репозиториев на старте не нужны, но `diff`/`bytecode`/`source` лениво читают jar'ы из `artifact-store` во время запроса.
   - Для `/openapi.*` и `/docs` — ресурс `openapi/mappinglens-api.yaml` на classpath (поставляется в jar).
+  - Для `/skill.md` — ресурс `SKILL.md` на classpath: Gradle кладёт в jar файл `.github/skills/mappinglens/SKILL.md`.
 
 > ⚠️ **Совместимость схемы.** Индекс, собранный до переписывания, не содержит колонок `versions.sort_index` / `classes.presence`, и `serve` на нём вернёт 500 `no such column: versions.sort_index` — лечится пересборкой через `index`.
 >
@@ -198,6 +199,7 @@ Build-args `GITCRAFT_REPO` и `GITCRAFT_REF` указывают, откуда б
 | `GET /health` | Liveness, отвечает `ok` |
 | `GET /openapi.json` | OpenAPI 3.1 как **настоящий JSON** (YAML парсится SnakeYAML и реэкспортируется) |
 | `GET /openapi.yaml` | OpenAPI 3.1 в YAML |
+| `GET /skill.md` | Skill-документ в Markdown (тот же файл, что `.github/skills/mappinglens/SKILL.md`) |
 | `GET /docs` | Swagger UI (включён по умолчанию, `includeDocs=true`) |
 
 ### Версии

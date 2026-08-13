@@ -42,5 +42,11 @@ class OpenApiJsonTest {
         val root = Json.parseToJsonElement(body).jsonObject
         assertTrue(root.containsKey("paths"), "spec has paths")
         assertTrue(body.contains("/api/v1/compare/"), "spec documents compare endpoint")
+
+        // Guards the packaging: SKILL.md reaches the classpath only through the resources srcDir
+        // that build.gradle.kts adds for .github/skills/mappinglens.
+        val skill = client.get("/skill.md")
+        assertEquals(HttpStatusCode.OK, skill.status)
+        assertTrue(skill.bodyAsText().contains("# MappingLens"), "skill document is served")
     }
 }

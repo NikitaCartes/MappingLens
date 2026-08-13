@@ -159,7 +159,7 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
         }
 
         get("/") {
-            call.respondText("MappingLens API. See /docs for Swagger UI, /openapi.json for spec.")
+            call.respondText("MappingLens API. See /docs for Swagger UI, /openapi.json for spec, /skill.md for the agent skill.")
         }
         get("/health") { call.respondText("ok") }
         get("/openapi.json") {
@@ -167,6 +167,9 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
         }
         get("/openapi.yaml") {
             call.respondText(openApiSpec(), ContentType.parse("application/yaml"))
+        }
+        get("/skill.md") {
+            call.respondText(resourceText("SKILL.md"), ContentType.parse("text/markdown"))
         }
 
         if (includeDocs) {
@@ -176,9 +179,11 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
     }
 }
 
-private fun openApiSpec(): String = checkNotNull(
-    Thread.currentThread().contextClassLoader.getResource("openapi/mappinglens-api.yaml"),
-) { "OpenAPI resource not found" }.readText()
+private fun resourceText(path: String): String = checkNotNull(
+    Thread.currentThread().contextClassLoader.getResource(path),
+) { "Resource not found: $path" }.readText()
+
+private fun openApiSpec(): String = resourceText("openapi/mappinglens-api.yaml")
 
 // The spec is authored in YAML; /openapi.json serves the same document as real JSON. Converted once.
 private val openApiJsonCache: String by lazy {
