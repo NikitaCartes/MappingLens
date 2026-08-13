@@ -166,6 +166,8 @@ class VersionDiscovery(private val sources: SourcesConfig) {
     }
 
     private fun resolveMojmaps(artifactDir: Path, artifactNames: Set<String>, version: String): List<Path> {
+        // The combined `-moj` comes from a store built before GitCraft's pipeline refactor; current
+        // GitCraft writes the client+server pair only. See GitCraftStore.mojmapTinies.
         val candidates = listOf(
             "$version-moj.tiny",
             "$version-client-moj.tiny",

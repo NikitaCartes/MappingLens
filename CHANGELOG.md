@@ -3,6 +3,31 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.7]
+
+### Fixed
+- Mojang's unobfuscated releases lost their mojmap namespace as soon as yarn covered them: every
+  version from `1.21.11_unobfuscated` on came out of the indexer with yarn names alone, and
+  `hasMojmap` false. Those releases publish no obfuscation mappings, so no `-moj.tiny` reaches the
+  artifact store and the Mojang names live in the jar itself. The indexer read them by ASM-scanning
+  the jar, but only while the version had no mappings at all, and RelativityMC then published yarn
+  and intermediary for the whole family. The `official` namespace of that yarn tiny is the Mojang
+  name, so the indexer now reads the mojmap namespace off `official`, and marks the class
+  `presence: both`. Membership in the unobfuscated-intermediary repository is what tells such a
+  version apart from an obfuscated one that Mojang published no mappings for (everything before
+  19w36a), which keeps `hasMojmap` false as before.
+- `check_minecraft` ran the index only when the mojmap build exited 0, so one version GitCraft could
+    not build kept every version it did build out of the index, cycle after cycle.
+- A version indexed before its mojmap landed stayed without mojmap for good. `check_yarn` indexed
+  the versions its own build produced, and every later plain run skipped them as already indexed, so
+  nothing ever read their mojmap. Deleting `index/` and `state/` reproduced it for the whole
+  catalog: the yarn build landed first and the index came out with yarn alone.
+- Indexing no longer follows a build. `docker/entrypoint.sh` keeps a listing of the mapping files of
+  the artifact store in `state/store.files`, written only after an index run succeeds. Each cycle
+  builds first, then indexes the versions whose files differ from that listing, then every version
+  the database still lacks. A container restart between a build and its index run therefore loses
+  nothing, and a deleted `index/` is rebuilt in full.
+
 ## [9.6.1]
 
 ### Fixed

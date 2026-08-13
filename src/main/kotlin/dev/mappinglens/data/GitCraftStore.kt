@@ -75,7 +75,15 @@ class GitCraftStore(
          * store only holds those up to 20w09a). [CorrespondenceResolver] reads that column already.
          */
         val hasIntermediaryNames get() = intermediary != null || yarn != null || unobfuscatedIntermediary != null
-        val hasMojmap get() = mojmaps.isNotEmpty() || unobfuscated
+
+        /**
+         * True when the `official` namespace already holds the Mojang name. Mojang's unobfuscated
+         * releases publish no obfuscation mappings, so no mojmap tiny exists and none is needed.
+         * The intermediary of those releases comes from its own repository, and membership in that
+         * repository is what marks a version as unobfuscated once yarn covers it too.
+         */
+        val officialIsMojmap get() = unobfuscated || unobfuscatedIntermediary != null
+        val hasMojmap get() = mojmaps.isNotEmpty() || officialIsMojmap
         val hasAny get() = hasYarn || hasIntermediary || mojmaps.isNotEmpty() || (unobfuscated && unobfuscatedJar != null)
     }
 
@@ -107,7 +115,12 @@ class GitCraftStore(
             ?.let { mappingsDir.resolve(it) }
     }
 
-    /** Mojmap tiny files (official->named): a combined `-moj` or the separate client+server pair. */
+    /**
+     * Mojmap tiny files (official->named): the combined `-moj`, or the separate client+server pair.
+     * Current GitCraft writes the pair only, because it names the file after the jar it maps. The
+     * combined name stays supported: a store built before GitCraft's pipeline refactor holds those
+     * files, and such a store must stay readable.
+     */
     fun mojmapTinies(version: String): List<Path> =
         listOf("$version-moj.tiny", "$version-client-moj.tiny", "$version-server-moj.tiny")
             .filter { it in mappingNames }
@@ -165,17 +178,24 @@ class GitCraftStore(
         val intermediary = intermediaryTiny(version)
         val yarn = yarnTiny(version)
         val mojmaps = mojmapTinies(version)
+        // Resolved for every version, not only the ones without tiny mappings: yarn now covers the
+        // unobfuscated releases too, and this file is what tells them apart from an obfuscated
+        // version that Mojang published no mappings for (everything before 19w36a).
+        val unobfuscatedIntermediary = unobfuscatedIntermediaryTiny(version)
         if (intermediary == null && yarn == null && mojmaps.isEmpty()) {
             val jar = unobfuscatedJar(version)
             if (jar != null) {
                 return VersionSources(
                     version, null, null, emptyList(),
                     unobfuscated = true, unobfuscatedJar = jar, meta = catalog.get(version),
-                    unobfuscatedIntermediary = unobfuscatedIntermediaryTiny(version),
+                    unobfuscatedIntermediary = unobfuscatedIntermediary,
                 )
             }
         }
-        return VersionSources(version, intermediary, yarn, mojmaps, unobfuscated = false, unobfuscatedJar = null, meta = catalog.get(version))
+        return VersionSources(
+            version, intermediary, yarn, mojmaps, unobfuscated = false, unobfuscatedJar = null,
+            meta = catalog.get(version), unobfuscatedIntermediary = unobfuscatedIntermediary,
+        )
     }
 
     private fun unobfuscatedJar(version: String): Path? =
@@ -198,8 +218,21 @@ class GitCraftStore(
         val intermediary = src.intermediary?.let { TinyV2Parser.parse(it) }
         val yarn = src.yarn?.let { TinyV2Parser.parse(it) }
         val mojmap = MojmapMerge.merge(src.mojmaps.map { TinyV2Parser.parse(it) })
-        return CorrespondenceResolver.resolve(intermediary, yarn, mojmap)
+        val unified = CorrespondenceResolver.resolve(intermediary, yarn, mojmap)
+        if (!src.officialIsMojmap || src.mojmaps.isNotEmpty()) return unified
+        // An unobfuscated release that yarn covers: the `official` namespace of the yarn tiny holds
+        // the Mojang name, and no mojmap tiny exists to carry it. Read the mojmap namespace off
+        // official, otherwise the version reaches the index with yarn names alone.
+        return unified.map(::mojmapFromOfficial)
     }
+
+    /** Every class of an unobfuscated release exists in both namespaces, hence `PRESENCE_BOTH`. */
+    private fun mojmapFromOfficial(cls: UnifiedClassEntry): UnifiedClassEntry = cls.copy(
+        mojmapName = cls.obfName,
+        methods = cls.methods.map { it.copy(mojmapName = it.obfName) },
+        fields = cls.fields.map { it.copy(mojmapName = it.obfName) },
+        presence = CorrespondenceResolver.PRESENCE_BOTH,
+    )
 
     // ---------------------------------------------------------------- helpers
 

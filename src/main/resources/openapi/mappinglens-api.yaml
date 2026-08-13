@@ -846,13 +846,17 @@ components:
           type: boolean
         hasMojmap:
           type: boolean
+          description: >
+            True on Mojang's unobfuscated releases too. Those publish no mappings of their own, and
+            the jar already carries the Mojang names, so the official namespace is the mojmap
+            namespace and the two return the same name.
         hasIntermediary:
           type: boolean
           description: >
             True when the version carries intermediary names, not when a separate intermediary file
             exists. Yarn's merged tiny v2 is official->intermediary->named, so every yarn version
-            has them. Mojang's unobfuscated releases have no yarn, so they carry intermediary only
-            when the indexer was given a separate source for them.
+            has them. A Mojang unobfuscated release that yarn does not cover carries intermediary
+            only when the indexer was given a separate source for it.
         classCount:
           type: integer
           format: int64

@@ -44,7 +44,8 @@ Do not use MappingLens as an authority for general Minecraft gameplay facts; it 
 
 - `GET 127.0.0.1:8080/api/v1/versions`
   - Lists indexed versions with counts and namespace availability.
-  - `hasIntermediary` means the version carries intermediary names, not that a separate intermediary file was downloaded. Every yarn version has them, because yarn's merged tiny v2 is `official->intermediary->named`. Mojang's unobfuscated releases have no yarn, so they carry intermediary only when the indexer was given a separate source for them (`mappinglens.sources.unobfuscated-intermediary-mappings`).
+  - `hasIntermediary` means the version carries intermediary names, not that a separate intermediary file was downloaded. Every yarn version has them, because yarn's merged tiny v2 is `official->intermediary->named`. A Mojang unobfuscated release that yarn does not cover carries intermediary only when the indexer was given a separate source for it (`mappinglens.sources.unobfuscated-intermediary-mappings`).
+  - `hasMojmap` is true on Mojang's unobfuscated releases, which publish no mappings of their own: the jar already carries the Mojang names, so the `official` namespace is the mojmap namespace. On those versions `obfuscated` and `mojmap` return the same name.
 - `GET 127.0.0.1:8080/api/v1/versions/{version}`
   - Gets metadata for one indexed version.
 - `GET 127.0.0.1:8080/api/v1/classes/{version}`

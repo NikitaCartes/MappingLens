@@ -4,10 +4,13 @@ import dev.mappinglens.RealDataTestConfig
 import dev.mappinglens.ingestion.CorrespondenceResolver
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
+import java.nio.file.Path
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class GitCraftStoreTest {
@@ -73,5 +76,53 @@ class GitCraftStoreTest {
         assertNotNull(block, "Block class")
         assertEquals("net/minecraft/world/level/block/Block", block.mojmapName)
         assertEquals(CorrespondenceResolver.PRESENCE_BOTH, block.presence)
+    }
+
+    @Test
+    fun `an unobfuscated release covered by yarn takes its mojmap names from official`(@TempDir tmp: Path) {
+        // Mojang's unobfuscated releases publish no obfuscation mappings, so the store holds no
+        // `-moj.tiny` for them and the `official` column of the yarn tiny is the Mojang name.
+        val mappings = Files.createDirectories(tmp.resolve("artifact-store/mappings"))
+        Files.writeString(
+            mappings.resolve("26.3-yarn-build.4.tiny"),
+            "tiny\t2\t0\tofficial\tintermediary\tnamed\n" +
+                "c\tnet/minecraft/world/level/block/Block\tnet/minecraft/class_2248\tnet/minecraft/block/Block\n" +
+                "\tm\t()Lnet/minecraft/world/level/block/state/BlockState;\tdefaultBlockState\tmethod_9564\tgetDefaultState\n",
+        )
+        val unobfuscatedIntermediary = Files.createDirectories(tmp.resolve("relativity/mappings"))
+        Files.writeString(unobfuscatedIntermediary.resolve("26.3.tiny"), "v1\tofficial\tintermediary\n")
+
+        val s = GitCraftStore(
+            artifactStore = tmp.resolve("artifact-store"),
+            intermediaryMappingsDir = tmp.resolve("no-intermediary"),
+            unobfuscatedIntermediaryDir = unobfuscatedIntermediary,
+        )
+        assertTrue(s.resolve("26.3").hasMojmap, "an unobfuscated release must be marked hasMojmap")
+
+        val block = s.parseUnified("26.3").single()
+        assertEquals("net/minecraft/world/level/block/Block", block.mojmapName)
+        assertEquals("net/minecraft/block/Block", block.yarnName)
+        assertEquals(CorrespondenceResolver.PRESENCE_BOTH, block.presence)
+        assertEquals("defaultBlockState", block.methods.single().mojmapName)
+    }
+
+    @Test
+    fun `a version Mojang published no mappings for stays without mojmap`(@TempDir tmp: Path) {
+        // Same shape as above minus the unobfuscated-intermediary file: an obfuscated version from
+        // before 19w36a. Its `official` column is the obfuscated name and must not become mojmap.
+        val mappings = Files.createDirectories(tmp.resolve("artifact-store/mappings"))
+        Files.writeString(
+            mappings.resolve("18w43b-yarn-build.4.tiny"),
+            "tiny\t2\t0\tofficial\tintermediary\tnamed\n" +
+                "c\tdnv\tnet/minecraft/class_2248\tnet/minecraft/block/Block\n",
+        )
+
+        val s = GitCraftStore(
+            artifactStore = tmp.resolve("artifact-store"),
+            intermediaryMappingsDir = tmp.resolve("no-intermediary"),
+            unobfuscatedIntermediaryDir = tmp.resolve("relativity/mappings"),
+        )
+        assertFalse(s.resolve("18w43b").hasMojmap)
+        assertNull(s.parseUnified("18w43b").single().mojmapName)
     }
 }

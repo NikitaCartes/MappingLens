@@ -43,15 +43,15 @@ import org.junit.jupiter.api.TestInstance
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * Verifies end-to-end behavior for Mojang's unobfuscated releases (26.x): these versions ship
- * without tiny mappings, so the pipeline ingests them by ASM-scanning the mojmap jar. They must
- * appear in /api/v1/versions, allow source/diff retrieval under namespace=mojmap, and produce a
- * clean "namespace_unavailable" error for yarn <-> mojmap translation (yarn doesn't exist for them).
+ * Verifies end-to-end behavior for Mojang's unobfuscated releases (26.x). These versions publish no
+ * obfuscation mappings of their own, so the pipeline reads their mojmap namespace off the jar: by
+ * ASM-scanning it while nothing else covers the version, and off the `official` column of the yarn
+ * tiny once yarn does. Either way they must appear in /api/v1/versions marked `hasMojmap`, and allow
+ * source and diff retrieval under namespace=mojmap.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class RealUnobfuscatedVersionTest {
@@ -111,22 +111,21 @@ class RealUnobfuscatedVersionTest {
     }
 
     @Test
-    fun `both unobfuscated versions are ingested as mojmap-only`() = testApplication {
+    fun `both unobfuscated versions are ingested with mojmap names`() = testApplication {
         application { installRoutes() }
         val client = createClient { install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) } }
         val resp = client.get("/api/v1/versions").body<VersionListResponse>()
         val byId = resp.versions.associateBy { it.id }
         assertTrue(from in byId, "version $from missing")
         assertTrue(to in byId, "version $to missing")
-        // These versions ship no mappings of their own; intermediary is only there when the separate
-        // unobfuscated-intermediary source is configured.
-        val expectIntermediary = Files.isDirectory(RealDataTestConfig.unobfuscatedIntermediary)
         for (v in listOf(from, to)) {
             val info = byId.getValue(v)
             assertTrue(info.hasMojmap, "version $v must be marked hasMojmap")
-            assertFalse(info.hasYarn, "version $v must be marked !hasYarn")
-            assertEquals(expectIntermediary, info.hasIntermediary, "version $v hasIntermediary")
             assertTrue(info.classCount > 0, "version $v must have classes ingested")
+            // These versions ship no mappings of their own. Intermediary is there when yarn covers
+            // the version, or when the separate unobfuscated-intermediary source is configured.
+            val expectIntermediary = info.hasYarn || Files.isDirectory(RealDataTestConfig.unobfuscatedIntermediary)
+            assertEquals(expectIntermediary, info.hasIntermediary, "version $v hasIntermediary")
         }
     }
 
@@ -184,7 +183,8 @@ class RealUnobfuscatedVersionTest {
     }
 
     @Test
-    fun `translate yarn to mojmap returns 422 namespace_unavailable for unobfuscated version`() = testApplication {
+    fun `translate yarn to mojmap returns 422 namespace_unavailable while yarn is absent`() = testApplication {
+        assumeTrue(!hasYarn(from), "yarn covers $from in this store, so both namespaces are available")
         application { installRoutes() }
         val client = createClient { install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) } }
         val resp = client.get(
@@ -200,6 +200,10 @@ class RealUnobfuscatedVersionTest {
                 "&from=mojmap&to=yarn&version=$from&type=class",
         )
         assertEquals(HttpStatusCode.UnprocessableEntity, reverse.status)
+    }
+
+    private fun hasYarn(version: String): Boolean = transaction(db) {
+        VersionTable.selectAll().where { VersionTable.versionId eq version }.single()[VersionTable.hasYarn]
     }
 
     private fun pickSourceClass(version: String): String = transaction(db) {
