@@ -27,17 +27,7 @@ data class VersionMeta(
     val releaseType: String?,
     /** ISO-8601 `releaseTime` from mc-meta; null if no mc-meta found. */
     val releaseTime: String?,
-) {
-    /**
-     * Best-effort git tag in the yarn repo. Yarn tags replace spaces with underscores
-     * (`1.14 Pre-Release 1` -> `1.14_Pre-Release_1`); hyphen forms (`1.14.3-pre1`) are unchanged.
-     * Only the optional commit-accurate git path needs this; the hot path reads jars (section 6).
-     */
-    val gitTagYarn: String get() = canonical.replace(' ', '_')
-
-    /** Best-effort git tag in the mojmap repo (same transform; mojmap only exists from 1.14.4+). */
-    val gitTagMojmap: String get() = canonical.replace(' ', '_')
-}
+)
 
 /**
  * Read-only catalog of version identities built from the GitCraft artifact store. The single source
@@ -74,11 +64,6 @@ class VersionCatalog(private val metaByCanonical: Map<String, VersionMeta>) {
     }
 
     fun sorted(canonicalIds: Collection<String>): List<String> = canonicalIds.sortedWith(order)
-
-    /** Latest stable release (semver with no pre-release component) among the given ids. */
-    fun latestRelease(canonicalIds: Collection<String>): String? = canonicalIds
-        .filter { semverOf(it)?.preRelease?.isEmpty() == true }
-        .maxWithOrNull(order)
 
     companion object {
         private val log = LoggerFactory.getLogger(VersionCatalog::class.java)

@@ -1,7 +1,6 @@
 package dev.mappinglens
 
 import dev.mappinglens.config.AppConfig
-import dev.mappinglens.config.IndexingConfig
 import dev.mappinglens.config.SearchConfig
 import dev.mappinglens.config.SourcesConfig
 import dev.mappinglens.db.DatabaseFactory
@@ -28,7 +27,7 @@ class OpenApiJsonTest {
                 AppConfig(
                     databasePath = dbPath,
                     sources = SourcesConfig(tmp.toString(), tmp.toString(), tmp.toString(), tmp.toString()),
-                    indexing = IndexingConfig(0, emptyList(), false),
+                    initialVersions = emptyList(),
                     search = SearchConfig(200, 50),
                 ),
                 includeDocs = false,

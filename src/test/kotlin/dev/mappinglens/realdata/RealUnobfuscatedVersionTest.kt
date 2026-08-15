@@ -2,7 +2,6 @@ package dev.mappinglens.realdata
 
 import dev.mappinglens.RealDataTestConfig
 import dev.mappinglens.config.AppConfig
-import dev.mappinglens.config.IndexingConfig
 import dev.mappinglens.config.SearchConfig
 import dev.mappinglens.db.DatabaseFactory
 import dev.mappinglens.db.tables.ClassTable
@@ -80,22 +79,14 @@ class RealUnobfuscatedVersionTest {
         config = AppConfig(
             databasePath = dbPath.toString(),
             sources = RealDataTestConfig.sourcesConfig(),
-            indexing = IndexingConfig(
-                pollIntervalSeconds = 0,
-                initialVersions = listOf(from, to),
-                indexOnStartup = false,
-            ),
+            initialVersions = listOf(from, to),
             search = SearchConfig(maxResults = 200, defaultResults = 50),
         )
-        val discovered = dev.mappinglens.ingestion.VersionDiscovery(config.sources).discover()
-        val targetDiag = discovered.filter { it.versionId in setOf(from, to) }
-            .map { "${it.versionId} unobf=${it.unobfuscated} jar=${it.unobfuscatedJar}" }
-        check(targetDiag.size == 2) { "DIAG discovery: total=${discovered.size}, targets=$targetDiag" }
         IngestPipeline(config).run()
         transaction(db) {
             val rows = VersionTable.selectAll().where { VersionTable.versionId inList listOf(from, to) }
                 .map { "${it[VersionTable.versionId]} hasMojmap=${it[VersionTable.hasMojmap]}" }
-            check(rows.size == 2) { "DIAG db: targets=$targetDiag, rows=$rows" }
+            check(rows.size == 2) { "DIAG db: rows=$rows" }
         }
     }
 

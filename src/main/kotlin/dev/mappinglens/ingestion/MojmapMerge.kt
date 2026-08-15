@@ -36,39 +36,25 @@ object MojmapMerge {
 
     private fun mergeClass(left: ParsedClass, right: ParsedClass): ParsedClass = ParsedClass(
         names = mergeNullableLists(left.names, right.names),
-        methods = mergeMethods(left.methods, right.methods),
-        fields = mergeFields(left.fields, right.fields),
+        methods = mergeMembers(left.methods, right.methods, ::ParsedMethod),
+        fields = mergeMembers(left.fields, right.fields, ::ParsedField),
     )
 
-    private fun mergeMethods(left: List<ParsedMethod>, right: List<ParsedMethod>): List<ParsedMethod> {
-        val merged = linkedMapOf<Pair<String, String>, ParsedMethod>()
-        fun add(method: ParsedMethod) {
-            val key = memberKey(method.names, method.descs)
-            merged[key] = merged[key]?.let {
-                ParsedMethod(
-                    names = mergeNullableLists(it.names, method.names),
-                    descs = mergeNullableLists(it.descs, method.descs),
-                )
-            } ?: method
+    /** Methods and fields carry the same names+descs shape, so one merge serves both. */
+    private fun <T : HasNamesDescs> mergeMembers(
+        left: List<T>,
+        right: List<T>,
+        create: (List<String?>, List<String?>) -> T,
+    ): List<T> {
+        val merged = linkedMapOf<Pair<String, String>, T>()
+        for (member in left + right) {
+            val key = memberKey(member.names, member.descs)
+            val previous = merged[key]
+            merged[key] = if (previous == null) member else create(
+                mergeNullableLists(previous.names, member.names),
+                mergeNullableLists(previous.descs, member.descs),
+            )
         }
-        left.forEach(::add)
-        right.forEach(::add)
-        return merged.values.toList()
-    }
-
-    private fun mergeFields(left: List<ParsedField>, right: List<ParsedField>): List<ParsedField> {
-        val merged = linkedMapOf<Pair<String, String>, ParsedField>()
-        fun add(field: ParsedField) {
-            val key = memberKey(field.names, field.descs)
-            merged[key] = merged[key]?.let {
-                ParsedField(
-                    names = mergeNullableLists(it.names, field.names),
-                    descs = mergeNullableLists(it.descs, field.descs),
-                )
-            } ?: field
-        }
-        left.forEach(::add)
-        right.forEach(::add)
         return merged.values.toList()
     }
 

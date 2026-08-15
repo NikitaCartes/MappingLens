@@ -7,6 +7,8 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
@@ -104,6 +106,40 @@ class GitCraftStoreTest {
         assertEquals("net/minecraft/block/Block", block.yarnName)
         assertEquals(CorrespondenceResolver.PRESENCE_BOTH, block.presence)
         assertEquals("defaultBlockState", block.methods.single().mojmapName)
+    }
+
+    @Test
+    fun `picks the highest yarn build and keeps both mojmap halves`(@TempDir tmp: Path) {
+        val mappings = Files.createDirectories(tmp.resolve("artifact-store/mappings"))
+        for (name in listOf(
+            "1.21-yarn-build.5.tiny",
+            "1.21-yarn-build.12.tiny",
+            "1.21-yarn-build.12-constants.tiny",
+            "1.21-yarn-build.12-unpick.tiny",
+            "1.21-client-moj.tiny",
+            "1.21-server-moj.tiny",
+        )) Files.writeString(mappings.resolve(name), "")
+
+        val s = GitCraftStore(tmp.resolve("artifact-store"), tmp.resolve("no-intermediary"))
+        assertEquals(mappings.resolve("1.21-yarn-build.12.tiny"), s.yarnTiny("1.21"))
+        assertEquals(
+            listOf(mappings.resolve("1.21-client-moj.tiny"), mappings.resolve("1.21-server-moj.tiny")),
+            s.mojmapTinies("1.21"),
+        )
+    }
+
+    @Test
+    fun `protocol version comes from the version json inside the jar`(@TempDir tmp: Path) {
+        val versionDir = Files.createDirectories(tmp.resolve("artifact-store/mc-versions/1.21"))
+        ZipOutputStream(Files.newOutputStream(versionDir.resolve("merged-1.21-id_abc.jar"))).use { zip ->
+            zip.putNextEntry(ZipEntry("version.json"))
+            zip.write("""{"id":"1.21","protocol_version":767}""".toByteArray())
+            zip.closeEntry()
+        }
+
+        val s = GitCraftStore(tmp.resolve("artifact-store"), tmp.resolve("no-intermediary"))
+        assertEquals(767, s.protocolVersion("1.21"))
+        assertNull(s.protocolVersion("1.20.6"), "a version with no jar has no protocol version")
     }
 
     @Test

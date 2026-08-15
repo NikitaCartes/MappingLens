@@ -3,6 +3,20 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.7.5]
+
+### Fixed
+- `protocolVersion` in `GET /api/v1/versions` and `GET /api/v1/versions/{version}` was always null,
+  because no command wrote the column. The indexer now reads the number from the `version.json` that
+  the Minecraft jar carries at its root. Versions published before 18w47b carry no such file and stay
+  null. Re-index a version to fill the column.
+
+### Removed
+- The config keys `mappinglens.indexing.poll-interval-seconds` and
+  `mappinglens.indexing.index-on-startup`. Neither was read by any command. An existing
+  `application.conf` that still sets them keeps working, because the keys are simply ignored.
+  `mappinglens.indexing.initial-versions` stays and still restricts the `index` command.
+
 ## [9.7.3]
 
 ### Fixed

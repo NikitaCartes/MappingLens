@@ -2,7 +2,6 @@ package dev.mappinglens.routes
 
 import dev.mappinglens.Fixtures
 import dev.mappinglens.config.AppConfig
-import dev.mappinglens.config.IndexingConfig
 import dev.mappinglens.config.SearchConfig
 import dev.mappinglens.config.SourcesConfig
 import dev.mappinglens.model.ClassListResponse
@@ -40,7 +39,7 @@ class RoutesTest {
             intermediaryMappings = tmp.toString(),
             artifactStore = tmp.toString(),
         ),
-        indexing = IndexingConfig(0, emptyList(), false),
+        initialVersions = emptyList(),
         search = SearchConfig(maxResults = 100, defaultResults = 20),
     )
 

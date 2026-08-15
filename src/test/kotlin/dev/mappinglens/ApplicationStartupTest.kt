@@ -1,7 +1,6 @@
 package dev.mappinglens
 
 import dev.mappinglens.config.AppConfig
-import dev.mappinglens.config.IndexingConfig
 import dev.mappinglens.config.SearchConfig
 import dev.mappinglens.config.SourcesConfig
 import io.ktor.client.request.get
@@ -26,7 +25,7 @@ class ApplicationStartupTest {
             intermediaryMappings = tmp.resolve("intermediary").toString(),
             artifactStore = tmp.resolve("artifact-store").toString(),
         ),
-        indexing = IndexingConfig(pollIntervalSeconds = 3600, initialVersions = emptyList(), indexOnStartup = false),
+        initialVersions = emptyList(),
         search = SearchConfig(maxResults = 200, defaultResults = 50),
     )
 

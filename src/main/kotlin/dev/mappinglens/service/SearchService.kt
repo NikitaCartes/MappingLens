@@ -106,7 +106,7 @@ class SearchService(private val db: Database, private val versionService: Versio
             while (rs.next()) {
                 val rank = rs.getDouble("rank")
                 // FTS5 bm25 returns negative-ish lower=better; convert to positive score
-                val score = scoreFromBm25(rank, q, rs.getString("element_type"))
+                val score = scoreFromBm25(rank)
                 rows += Triple(rs.getString("element_type"), rs.getInt("element_id"), score)
             }
         }
@@ -167,7 +167,7 @@ class SearchService(private val db: Database, private val versionService: Versio
                 val rank = rs.getDouble("rank")
                 val classId = lookupOwnerClassId(etype, eid) ?: continue
                 if (classId !in classIdSet) continue
-                val entry = hydrate(etype, eid, scoreFromBm25(rank, memberPart, etype)) ?: continue
+                val entry = hydrate(etype, eid, scoreFromBm25(rank)) ?: continue
                 results += entry
                 if (results.size >= limit) break
             }
@@ -202,79 +202,45 @@ class SearchService(private val db: Database, private val versionService: Versio
         return if (column != null) "$column:$token" else token
     }
 
-    private fun scoreFromBm25(rank: Double, query: String, type: String): Double {
-        // bm25 returns lower=better (negative-ish). Convert to a [0..1+] score.
-        val base = 1.0 / (1.0 + Math.abs(rank))
-        return base
-    }
+    /** bm25 returns lower=better (negative-ish). Convert to a [0..1+] score. */
+    private fun scoreFromBm25(rank: Double): Double = 1.0 / (1.0 + Math.abs(rank))
 
     private fun hydrate(elementType: String, elementId: Int, score: Double): SearchResultEntry? {
-        return when (elementType) {
-            "class" -> {
-                val r = ClassTable.selectAll().where { ClassTable.id eq elementId }.singleOrNull() ?: return null
-                SearchResultEntry(
-                    type = "class",
-                    intermediary = r[ClassTable.intermediaryName],
-                    yarn = r[ClassTable.yarnName],
-                    mojmap = r[ClassTable.mojmapName],
-                    obfuscated = r[ClassTable.obfName],
-                    score = score,
-                )
-            }
-            "method" -> {
-                val r = MethodTable.selectAll().where { MethodTable.id eq elementId }.singleOrNull() ?: return null
-                val classRow = ClassTable.selectAll().where { ClassTable.id eq r[MethodTable.classId] }.singleOrNull()
-                val owner = classRow?.let {
-                    ClassRef(
-                        intermediary = it[ClassTable.intermediaryName],
-                        yarn = it[ClassTable.yarnName],
-                        mojmap = it[ClassTable.mojmapName],
-                        obfuscated = it[ClassTable.obfName],
-                    )
-                }
-                val yarnFqn = combine(classRow?.get(ClassTable.yarnName), r[MethodTable.yarnName])
-                val mojFqn = combine(classRow?.get(ClassTable.mojmapName), r[MethodTable.mojmapName])
-                val intermFqn = combine(classRow?.get(ClassTable.intermediaryName), r[MethodTable.intermediaryName])
-                val obfFqn = combine(classRow?.get(ClassTable.obfName), r[MethodTable.obfName])
-                SearchResultEntry(
-                    type = "method",
-                    intermediary = intermFqn,
-                    yarn = yarnFqn,
-                    mojmap = mojFqn,
-                    obfuscated = obfFqn,
-                    owner = owner,
-                    descriptor = r[MethodTable.intermediaryDesc] ?: r[MethodTable.obfDesc],
-                    score = score,
-                )
-            }
-            "field" -> {
-                val r = FieldTable.selectAll().where { FieldTable.id eq elementId }.singleOrNull() ?: return null
-                val classRow = ClassTable.selectAll().where { ClassTable.id eq r[FieldTable.classId] }.singleOrNull()
-                val owner = classRow?.let {
-                    ClassRef(
-                        intermediary = it[ClassTable.intermediaryName],
-                        yarn = it[ClassTable.yarnName],
-                        mojmap = it[ClassTable.mojmapName],
-                        obfuscated = it[ClassTable.obfName],
-                    )
-                }
-                val yarnFqn = combine(classRow?.get(ClassTable.yarnName), r[FieldTable.yarnName])
-                val mojFqn = combine(classRow?.get(ClassTable.mojmapName), r[FieldTable.mojmapName])
-                val intermFqn = combine(classRow?.get(ClassTable.intermediaryName), r[FieldTable.intermediaryName])
-                val obfFqn = combine(classRow?.get(ClassTable.obfName), r[FieldTable.obfName])
-                SearchResultEntry(
-                    type = "field",
-                    intermediary = intermFqn,
-                    yarn = yarnFqn,
-                    mojmap = mojFqn,
-                    obfuscated = obfFqn,
-                    owner = owner,
-                    descriptor = r[FieldTable.intermediaryDesc] ?: r[FieldTable.obfDesc],
-                    score = score,
-                )
-            }
-            else -> null
+        if (elementType == "class") {
+            val r = ClassTable.selectAll().where { ClassTable.id eq elementId }.singleOrNull() ?: return null
+            return SearchResultEntry(
+                type = "class",
+                intermediary = r[ClassTable.intermediaryName],
+                yarn = r[ClassTable.yarnName],
+                mojmap = r[ClassTable.mojmapName],
+                obfuscated = r[ClassTable.obfName],
+                score = score,
+            )
         }
+        val cols = when (elementType) {
+            "method" -> MemberCols.METHOD
+            "field" -> MemberCols.FIELD
+            else -> return null
+        }
+        val r = cols.table.selectAll().where { cols.table.id eq elementId }.singleOrNull() ?: return null
+        val classRow = ClassTable.selectAll().where { ClassTable.id eq r[cols.classId] }.singleOrNull()
+        return SearchResultEntry(
+            type = elementType,
+            intermediary = combine(classRow?.get(ClassTable.intermediaryName), r[cols.intermediaryName]),
+            yarn = combine(classRow?.get(ClassTable.yarnName), r[cols.yarnName]),
+            mojmap = combine(classRow?.get(ClassTable.mojmapName), r[cols.mojmapName]),
+            obfuscated = combine(classRow?.get(ClassTable.obfName), r[cols.obfName]),
+            owner = classRow?.let {
+                ClassRef(
+                    intermediary = it[ClassTable.intermediaryName],
+                    yarn = it[ClassTable.yarnName],
+                    mojmap = it[ClassTable.mojmapName],
+                    obfuscated = it[ClassTable.obfName],
+                )
+            },
+            descriptor = r[cols.intermediaryDesc] ?: r[cols.obfDesc],
+            score = score,
+        )
     }
 
     private fun combine(owner: String?, member: String?): String? {

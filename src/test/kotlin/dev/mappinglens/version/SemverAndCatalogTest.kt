@@ -55,18 +55,6 @@ class VersionCatalogTest {
     }
 
     @Test
-    fun `latestRelease ignores pre-releases and picks highest stable`() {
-        val cat = VersionCatalog(
-            mapOf(
-                "1.20.6" to VersionMeta("1.20.6", "1.20.6", "release", null),
-                "1.21" to VersionMeta("1.21", "1.21", "release", null),
-                "1.21-rc.1" to VersionMeta("1.21-rc.1", "1.21-rc.1", "snapshot", null),
-            )
-        )
-        assertEquals("1.21", cat.latestRelease(listOf("1.20.6", "1.21", "1.21-rc.1")))
-    }
-
-    @Test
     fun `ids with unknown semver sort last`() {
         val cat = catalog("1.21" to "1.21", "weird" to null)
         assertEquals(listOf("1.21", "weird"), cat.sorted(listOf("weird", "1.21")))
@@ -88,7 +76,6 @@ class VersionCatalogTest {
             listOf("26.2-snapshot-1", "26.2-pre-2", "26.2-pre-3", "26.2-rc-2", "26.2"),
             cat.sorted(ids),
         )
-        assertEquals("26.2", cat.latestRelease(ids))
     }
 
     @Test
@@ -104,6 +91,6 @@ class VersionCatalogTest {
         assertNotNull(v114.semver, "1.14 should have a semver")
 
         // The classic ordering bug: 1.9 must precede 1.10 by semver.
-        assertEquals("1.10", cat.latestRelease(listOf("1.9", "1.10")))
+        assertEquals(listOf("1.9", "1.10"), cat.sorted(listOf("1.10", "1.9")))
     }
 }

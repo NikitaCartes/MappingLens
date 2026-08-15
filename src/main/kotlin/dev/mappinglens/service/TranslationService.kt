@@ -65,8 +65,8 @@ class TranslationService(private val db: Database, private val versionService: V
     private fun lookup(versionRowId: Int, name: String, from: String, to: String, type: String): TranslateResponse? {
         return when (type) {
             "class" -> lookupClass(versionRowId, name, from, to)
-            "method" -> lookupMember(MethodTable, versionRowId, name, from, to, "method")
-            "field" -> lookupMember(FieldTable, versionRowId, name, from, to, "field")
+            "method" -> lookupMember(MemberCols.METHOD, versionRowId, name, from, to)
+            "field" -> lookupMember(MemberCols.FIELD, versionRowId, name, from, to)
             else -> null
         }
     }
@@ -88,73 +88,33 @@ class TranslationService(private val db: Database, private val versionService: V
     }
 
     private fun lookupMember(
-        table: org.jetbrains.exposed.dao.id.IntIdTable,
-        versionRowId: Int, name: String, from: String, to: String, kind: String,
+        cols: MemberCols,
+        versionRowId: Int, name: String, from: String, to: String,
     ): TranslateResponse? {
         // Splits owner#member
         val splitIdx = name.lastIndexOfAny(charArrayOf('#', '.'))
         val (owner, member) = if (splitIdx > 0) name.substring(0, splitIdx) to name.substring(splitIdx + 1) else null to name
 
-        val nameCol: Column<String?>
-        val ownerCol: Column<String?>
-        val intermCol: Column<String?>
-        val obfCol: Column<String?>
-        val toCol: Column<String?>
-        val versionCol: Column<org.jetbrains.exposed.dao.id.EntityID<Int>>
-        val classIdCol: Column<org.jetbrains.exposed.dao.id.EntityID<Int>>
+        val nameCol = nameColumnMember(cols, from)
+        val ownerCol = nameColumnClass(from)
+        val row = cols.table.innerJoin(ClassTable)
+            .selectAll()
+            .where {
+                (cols.versionId eq versionRowId) and (nameCol eq member) and
+                    (if (owner != null) (ownerCol eq owner) else Op.TRUE)
+            }
+            .limit(1).firstOrNull() ?: return null
 
-        if (kind == "method") {
-            nameCol = nameColumnMethod(from)
-            toCol = nameColumnMethod(to)
-            intermCol = MethodTable.intermediaryName
-            obfCol = MethodTable.obfName
-            versionCol = MethodTable.versionId
-            classIdCol = MethodTable.classId
-            ownerCol = nameColumnClass(from)
-        } else {
-            nameCol = nameColumnField(from)
-            toCol = nameColumnField(to)
-            intermCol = FieldTable.intermediaryName
-            obfCol = FieldTable.obfName
-            versionCol = FieldTable.versionId
-            classIdCol = FieldTable.classId
-            ownerCol = nameColumnClass(from)
-        }
+        fun qualify(ownerName: String?, memberName: String?): String? =
+            if (memberName != null && ownerName != null) "$ownerName#$memberName" else memberName
 
-        val rows = if (kind == "method") {
-            MethodTable.innerJoin(ClassTable)
-                .selectAll()
-                .where {
-                    (MethodTable.versionId eq versionRowId) and (nameCol eq member) and
-                        (if (owner != null) (ownerCol eq owner) else Op.TRUE)
-                }
-                .limit(1).toList()
-        } else {
-            FieldTable.innerJoin(ClassTable)
-                .selectAll()
-                .where {
-                    (FieldTable.versionId eq versionRowId) and (nameCol eq member) and
-                        (if (owner != null) (ownerCol eq owner) else Op.TRUE)
-                }
-                .limit(1).toList()
-        }
-        val row = rows.firstOrNull() ?: return null
-        val ownerOut = readClassName(row, to)
-        val memberOut = row[toCol]
-        val outFqn = if (memberOut != null && ownerOut != null) "$ownerOut#$memberOut" else memberOut
-        val intermOwner = row[ClassTable.intermediaryName]
-        val intermMember = row[intermCol]
-        val intermFqn = if (intermMember != null && intermOwner != null) "$intermOwner#$intermMember" else intermMember
-        val obfOwner = row[ClassTable.obfName]
-        val obfMember = row[obfCol]
-        val obfFqn = if (obfMember != null && obfOwner != null) "$obfOwner#$obfMember" else obfMember
         return TranslateResponse(
             input = TranslateInput(name, from),
-            output = TranslateOutput(outFqn, to),
-            intermediary = intermFqn,
-            obfuscated = obfFqn,
+            output = TranslateOutput(qualify(readClassName(row, to), row[nameColumnMember(cols, to)]), to),
+            intermediary = qualify(row[ClassTable.intermediaryName], row[cols.intermediaryName]),
+            obfuscated = qualify(row[ClassTable.obfName], row[cols.obfName]),
             version = "",
-            type = kind,
+            type = cols.kind,
         )
     }
 
@@ -174,19 +134,10 @@ class TranslationService(private val db: Database, private val versionService: V
         else -> ClassTable.yarnName
     }
 
-    private fun nameColumnMethod(ns: String): Column<String?> = when (ns) {
-        "yarn" -> MethodTable.yarnName
-        "mojmap" -> MethodTable.mojmapName
-        "intermediary" -> MethodTable.intermediaryName
-        "obfuscated", "obf" -> MethodTable.obfName
-        else -> MethodTable.yarnName
-    }
-
-    private fun nameColumnField(ns: String): Column<String?> = when (ns) {
-        "yarn" -> FieldTable.yarnName
-        "mojmap" -> FieldTable.mojmapName
-        "intermediary" -> FieldTable.intermediaryName
-        "obfuscated", "obf" -> FieldTable.obfName
-        else -> FieldTable.yarnName
+    private fun nameColumnMember(cols: MemberCols, ns: String): Column<String?> = when (ns) {
+        "mojmap" -> cols.mojmapName
+        "intermediary" -> cols.intermediaryName
+        "obfuscated", "obf" -> cols.obfName
+        else -> cols.yarnName
     }
 }

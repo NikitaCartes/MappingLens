@@ -1,6 +1,5 @@
 package dev.mappinglens.ingestion
 
-import dev.mappinglens.config.SourcesConfig
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
@@ -10,7 +9,6 @@ import java.util.zip.ZipEntry
 import kotlin.io.path.createDirectories
 import kotlin.io.path.writeText
 import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -172,102 +170,3 @@ class UnobfuscatedJarScannerTest {
     }
 }
 
-class VersionDiscoveryTest {
-
-    private fun sourcesOn(tmp: Path, intermediaryDir: String, artifactStoreDir: String) = SourcesConfig(
-        yarnRepo = tmp.resolve("yarn").toString(),
-        mojmapRepo = tmp.resolve("moj").toString(),
-        intermediaryMappings = intermediaryDir,
-        artifactStore = artifactStoreDir,
-    )
-
-    @Test
-    fun `discovers versions from intermediary and artifact-store directories`(@TempDir tmp: Path) {
-        val intermediary = tmp.resolve("intermediary").createDirectories()
-        val artifactStore = tmp.resolve("artifact-store").createDirectories()
-        val mappings = artifactStore.resolve("mappings").createDirectories()
-        // intermediary
-        intermediary.resolve("1.21.1.tiny").writeText("tiny\t2\t0\tofficial\tintermediary\n")
-        intermediary.resolve("1.21.tiny").writeText("tiny\t2\t0\tofficial\tintermediary\n")
-        intermediary.resolve("1.20-v1.tiny").writeText("ignored") // v1 must be skipped
-        // artifact-store: moj, multiple yarn builds (max wins), intermediary copy
-        mappings.resolve("1.21.1-moj.tiny").writeText("tiny\t2\t0\tofficial\tnamed\n")
-        mappings.resolve("1.21.1-yarn-build.5.tiny").writeText("yarn 5")
-        mappings.resolve("1.21.1-yarn-build.12.tiny").writeText("yarn 12")
-        mappings.resolve("1.21.1-yarn-build.12-constants.tiny").writeText("ignored constants")
-        mappings.resolve("1.21-moj.tiny").writeText("moj 1.21")
-
-        val discovery = VersionDiscovery(sourcesOn(tmp, intermediary.toString(), artifactStore.toString()))
-        val result = discovery.discover().associateBy { it.versionId }
-
-        assertEquals(setOf("1.21", "1.21.1"), result.keys)
-        val v1 = result["1.21.1"]!!
-        assertNotNull(v1.intermediary)
-        assertNotNull(v1.mojmap)
-        assertNotNull(v1.yarn)
-        assertTrue(v1.yarn!!.fileName.toString().contains("build.12"))
-    }
-
-    @Test
-    fun `returns empty list when no source directories exist`(@TempDir tmp: Path) {
-        val discovery = VersionDiscovery(
-            sourcesOn(tmp, tmp.resolve("nope1").toString(), tmp.resolve("nope2").toString())
-        )
-        assertEquals(emptyList(), discovery.discover())
-    }
-
-    @Test
-    fun `discovers mojmap-only version`(@TempDir tmp: Path) {
-        val artifactStore = tmp.resolve("artifact-store").createDirectories()
-        val mappings = artifactStore.resolve("mappings").createDirectories()
-        mappings.resolve("1.20.4-moj.tiny").writeText("moj")
-
-        val result = VersionDiscovery(sourcesOn(tmp, tmp.resolve("ix").toString(), artifactStore.toString())).discover()
-        assertEquals(listOf("1.20.4"), result.map { it.versionId })
-        val v = result.single()
-        assertNotNull(v.mojmap)
-        assertNull(v.yarn)
-        assertNull(v.intermediary)
-    }
-
-    @Test
-    fun `discovers client and server mojmap files as the base version`(@TempDir tmp: Path) {
-        val artifactStore = tmp.resolve("artifact-store").createDirectories()
-        val mappings = artifactStore.resolve("mappings").createDirectories()
-        mappings.resolve("1.21-client-moj.tiny").writeText("client")
-        mappings.resolve("1.21-server-moj.tiny").writeText("server")
-        mappings.resolve("1.21-yarn-build.9.tiny").writeText("yarn")
-
-        val result = VersionDiscovery(sourcesOn(tmp, tmp.resolve("ix").toString(), artifactStore.toString()))
-            .discover()
-            .associateBy { it.versionId }
-
-        assertEquals(setOf("1.21"), result.keys)
-        val v = result["1.21"]!!
-        assertNotNull(v.mojmap)
-        assertTrue(v.mojmap!!.fileName.toString().endsWith("-client-moj.tiny"))
-        assertEquals(2, v.mojmaps.size)
-        assertTrue(v.mojmaps.any { it.fileName.toString().endsWith("-server-moj.tiny") })
-        assertNotNull(v.yarn)
-    }
-
-    @Test
-    fun `artifact-store root supplies mappings when explicit mapping path is stale`(@TempDir tmp: Path) {
-        val artifactStore = tmp.resolve("artifact-store").createDirectories()
-        val mappings = artifactStore.resolve("mappings").createDirectories()
-        mappings.resolve("1.21.1-yarn-build.7.tiny").writeText("yarn")
-        mappings.resolve("1.21.1-client-moj.tiny").writeText("moj")
-
-        val sources = SourcesConfig(
-            yarnRepo = tmp.resolve("yarn").toString(),
-            mojmapRepo = tmp.resolve("moj").toString(),
-            intermediaryMappings = tmp.resolve("missing-intermediary").toString(),
-            artifactStore = artifactStore.toString(),
-        )
-
-        val version = VersionDiscovery(sources).discover().single()
-        assertEquals("1.21.1", version.versionId)
-        assertEquals(mappings.resolve("1.21.1-yarn-build.7.tiny"), version.yarn)
-        assertEquals(mappings.resolve("1.21.1-client-moj.tiny"), version.mojmap)
-    }
-}

@@ -31,7 +31,7 @@ class IngestPipeline(private val config: AppConfig) {
     fun run(force: Boolean = false, only: List<String> = emptyList()) {
         val allSorted = store.versionIds()
         val rankOf = allSorted.withIndex().associate { (i, v) -> v to i }
-        val filterList = (only.takeIf { it.isNotEmpty() } ?: config.indexing.initialVersions)
+        val filterList = (only.takeIf { it.isNotEmpty() } ?: config.initialVersions)
             .takeIf { it.isNotEmpty() }?.toSet()
         filterList?.minus(allSorted.toSet())?.takeIf { it.isNotEmpty() }
             ?.let { log.warn("Requested versions are not in the store: {}", it.joinToString()) }
@@ -99,6 +99,7 @@ class IngestPipeline(private val config: AppConfig) {
         val now = Instant.now().toString()
         val classifiedType = meta?.releaseType ?: classifyReleaseType(version)
         val release = meta?.releaseTime
+        val protocol = store.protocolVersion(version)
 
         val existingId = transaction {
             VersionTable.selectAll().where { VersionTable.versionId eq version }
@@ -116,6 +117,7 @@ class IngestPipeline(private val config: AppConfig) {
                 VersionTable.update({ VersionTable.id eq existingId }) {
                     it[releaseTime] = release
                     it[releaseType] = classifiedType
+                    it[protocolVersion] = protocol
                     it[indexedAt] = now
                     it[sortIndex] = sortRank
                     it[hasYarn] = src.hasYarn
@@ -128,6 +130,7 @@ class IngestPipeline(private val config: AppConfig) {
                     it[versionId] = version
                     it[releaseType] = classifiedType
                     it[releaseTime] = release
+                    it[protocolVersion] = protocol
                     it[indexedAt] = now
                     it[sortIndex] = sortRank
                     it[hasYarn] = src.hasYarn
@@ -154,8 +157,6 @@ class IngestPipeline(private val config: AppConfig) {
             // Methods + Fields
             unified.forEachIndexed { idx, cls ->
                 val classRowId = classIds[idx]
-                val nameForPath = cls.yarnName ?: cls.mojmapName ?: cls.intermediaryName
-                val classSimple = Names.simpleName(nameForPath)
                 if (cls.methods.isNotEmpty()) {
                     val methodIds = MethodTable.batchInsert(cls.methods, shouldReturnGeneratedValues = true) { m ->
                         this[MethodTable.classId] = classRowId
@@ -168,7 +169,7 @@ class IngestPipeline(private val config: AppConfig) {
                         this[MethodTable.mojmapName] = m.mojmapName
                         this[MethodTable.simpleName] = m.yarnName ?: m.mojmapName ?: m.intermediaryName
                     }.map { it[MethodTable.id].value }
-                    insertMethodFtsBatch(versionRowId, cls, methodIds, classSimple)
+                    insertMemberFtsBatch(versionRowId, cls, cls.methods, methodIds, "method")
                 }
                 if (cls.fields.isNotEmpty()) {
                     val fieldIds = FieldTable.batchInsert(cls.fields, shouldReturnGeneratedValues = true) { f ->
@@ -182,7 +183,7 @@ class IngestPipeline(private val config: AppConfig) {
                         this[FieldTable.mojmapName] = f.mojmapName
                         this[FieldTable.simpleName] = f.yarnName ?: f.mojmapName ?: f.intermediaryName
                     }.map { it[FieldTable.id].value }
-                    insertFieldFtsBatch(versionRowId, cls, fieldIds, classSimple)
+                    insertMemberFtsBatch(versionRowId, cls, cls.fields, fieldIds, "field")
                 }
             }
 
@@ -219,50 +220,29 @@ class IngestPipeline(private val config: AppConfig) {
         }
     }
 
-    private fun Transaction.insertMethodFtsBatch(versionRowId: Int, cls: UnifiedClassEntry, methodIds: List<Int>, classSimple: String?) {
-        if (cls.methods.isEmpty()) return
+    /** Method and field FTS rows differ only in [elementType], so one insert serves both. */
+    private fun Transaction.insertMemberFtsBatch(
+        versionRowId: Int,
+        cls: UnifiedClassEntry,
+        members: List<UnifiedMemberEntry>,
+        memberIds: List<Int>,
+        elementType: String,
+    ) {
+        if (members.isEmpty()) return
         val sb = StringBuilder("INSERT INTO search_index(element_type, element_id, version_id, yarn_name, mojmap_name, intermediary_name, obf_name, simple_name) VALUES ")
-        cls.methods.forEachIndexed { idx, m ->
+        members.forEachIndexed { idx, m ->
             if (idx > 0) sb.append(',')
-            val ownerYarn = cls.yarnName
-            val ownerMoj = cls.mojmapName
-            val ownerInterm = cls.intermediaryName
-            val yarn = if (m.yarnName != null && ownerYarn != null) "$ownerYarn#${m.yarnName}" else m.yarnName
-            val moj = if (m.mojmapName != null && ownerMoj != null) "$ownerMoj#${m.mojmapName}" else m.mojmapName
-            val interm = if (m.intermediaryName != null && ownerInterm != null) "$ownerInterm#${m.intermediaryName}" else m.intermediaryName
-            sb.append("('method',")
-            sb.append(methodIds[idx]).append(',')
+            val yarn = if (m.yarnName != null && cls.yarnName != null) "${cls.yarnName}#${m.yarnName}" else m.yarnName
+            val moj = if (m.mojmapName != null && cls.mojmapName != null) "${cls.mojmapName}#${m.mojmapName}" else m.mojmapName
+            val interm = if (m.intermediaryName != null && cls.intermediaryName != null) "${cls.intermediaryName}#${m.intermediaryName}" else m.intermediaryName
+            sb.append("('").append(elementType).append("',")
+            sb.append(memberIds[idx]).append(',')
             sb.append(versionRowId).append(',')
             sb.append(quote(yarn)).append(',')
             sb.append(quote(moj)).append(',')
             sb.append(quote(interm)).append(',')
             sb.append(quote(m.obfName)).append(',')
             sb.append(quote(m.yarnName ?: m.mojmapName ?: m.intermediaryName))
-            sb.append(')')
-        }
-        sb.append(';')
-        exec(sb.toString())
-    }
-
-    private fun Transaction.insertFieldFtsBatch(versionRowId: Int, cls: UnifiedClassEntry, fieldIds: List<Int>, classSimple: String?) {
-        if (cls.fields.isEmpty()) return
-        val sb = StringBuilder("INSERT INTO search_index(element_type, element_id, version_id, yarn_name, mojmap_name, intermediary_name, obf_name, simple_name) VALUES ")
-        cls.fields.forEachIndexed { idx, f ->
-            if (idx > 0) sb.append(',')
-            val ownerYarn = cls.yarnName
-            val ownerMoj = cls.mojmapName
-            val ownerInterm = cls.intermediaryName
-            val yarn = if (f.yarnName != null && ownerYarn != null) "$ownerYarn#${f.yarnName}" else f.yarnName
-            val moj = if (f.mojmapName != null && ownerMoj != null) "$ownerMoj#${f.mojmapName}" else f.mojmapName
-            val interm = if (f.intermediaryName != null && ownerInterm != null) "$ownerInterm#${f.intermediaryName}" else f.intermediaryName
-            sb.append("('field',")
-            sb.append(fieldIds[idx]).append(',')
-            sb.append(versionRowId).append(',')
-            sb.append(quote(yarn)).append(',')
-            sb.append(quote(moj)).append(',')
-            sb.append(quote(interm)).append(',')
-            sb.append(quote(f.obfName)).append(',')
-            sb.append(quote(f.yarnName ?: f.mojmapName ?: f.intermediaryName))
             sb.append(')')
         }
         sb.append(';')

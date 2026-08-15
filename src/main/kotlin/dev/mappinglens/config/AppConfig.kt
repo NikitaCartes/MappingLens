@@ -39,8 +39,6 @@ data class SourcesConfig(
 
     fun artifactStorePath(): Path = Paths.get(artifactStore)
 
-    fun mappingsPath(): Path = artifactStorePath().resolve("mappings")
-
     fun minecraftJarsPath(): Path = artifactStorePath().resolve("mc-versions")
 
     fun decompiledSourceJar(versionId: String, mappingType: String): Path? =
@@ -125,12 +123,6 @@ data class SourcesConfig(
     }
 }
 
-data class IndexingConfig(
-    val pollIntervalSeconds: Int,
-    val initialVersions: List<String>,
-    val indexOnStartup: Boolean,
-)
-
 data class SearchConfig(
     val maxResults: Int,
     val defaultResults: Int,
@@ -139,7 +131,8 @@ data class SearchConfig(
 data class AppConfig(
     val databasePath: String,
     val sources: SourcesConfig,
-    val indexing: IndexingConfig,
+    /** Version ids the `index` command restricts itself to; empty means every version in the store. */
+    val initialVersions: List<String>,
     val search: SearchConfig,
 ) {
     companion object {
@@ -155,11 +148,7 @@ data class AppConfig(
                     unobfuscatedIntermediaryMappings =
                         ml.propertyOrNull("sources.unobfuscated-intermediary-mappings")?.getString().orEmpty(),
                 ),
-                indexing = IndexingConfig(
-                    pollIntervalSeconds = ml.property("indexing.poll-interval-seconds").getString().toInt(),
-                    initialVersions = ml.propertyOrNull("indexing.initial-versions")?.getList() ?: emptyList(),
-                    indexOnStartup = ml.property("indexing.index-on-startup").getString().toBoolean(),
-                ),
+                initialVersions = ml.propertyOrNull("indexing.initial-versions")?.getList() ?: emptyList(),
                 search = SearchConfig(
                     maxResults = ml.property("search.max-results").getString().toInt(),
                     defaultResults = ml.property("search.default-results").getString().toInt(),

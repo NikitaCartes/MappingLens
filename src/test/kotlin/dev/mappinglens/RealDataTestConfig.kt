@@ -1,7 +1,6 @@
 package dev.mappinglens
 
 import dev.mappinglens.config.AppConfig
-import dev.mappinglens.config.IndexingConfig
 import dev.mappinglens.config.SearchConfig
 import dev.mappinglens.config.SourcesConfig
 import dev.mappinglens.db.tables.ClassTable
@@ -272,11 +271,7 @@ object RealDataTestConfig {
     fun appConfig(databasePath: Path, initialVersions: List<String> = versions): AppConfig = AppConfig(
         databasePath = databasePath.toString(),
         sources = sourcesConfig(),
-        indexing = IndexingConfig(
-            pollIntervalSeconds = 0,
-            initialVersions = initialVersions,
-            indexOnStartup = false,
-        ),
+        initialVersions = initialVersions,
         search = SearchConfig(maxResults = 200, defaultResults = 50),
     )
 

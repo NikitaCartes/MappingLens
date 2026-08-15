@@ -854,6 +854,9 @@ components:
           type: [string, "null"]
         protocolVersion:
           type: [integer, "null"]
+          description: >
+            Network protocol version, read from the `version.json` inside the Minecraft jar. Null for
+            the versions published before that file existed (before 18w47b).
         hasYarn:
           type: boolean
         hasMojmap:

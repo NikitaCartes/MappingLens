@@ -70,9 +70,7 @@ HOCON-файл `application.conf` (создаётся из встроенног�
 | `mappinglens.sources.unobfuscated-intermediary-mappings` | `""` (выкл.)          | `MAPPINGLENS_UNOBFUSCATED_INTERMEDIARY` | Источник Intermediary для unobfuscated-релизов, отдельный репозиторий (только индексация) |
 | `mappinglens.search.max-results`                         | `200`                 | —                                       | Верхняя граница `limit` для поиска                                                        |
 | `mappinglens.search.default-results`                     | `50`                  | —                                       | `limit` по умолчанию                                                                      |
-| `mappinglens.indexing.poll-interval-seconds`             | `3600`                | —                                       | **Игнорируется `serve`** (наследие, см. ниже)                                             |
-| `mappinglens.indexing.initial-versions`                  | `[]` (все)            | —                                       | **Игнорируется `serve`**                                                                  |
-| `mappinglens.indexing.index-on-startup`                  | `false`               | —                                       | **Игнорируется `serve`** — индексация только через команду `index`                        |
+| `mappinglens.indexing.initial-versions`                  | `[]` (все)            | —                                       | Версии, которые собирает команда `index`; **игнорируется `serve`**                        |
 
 **Плагины Ktor:** ContentNegotiation (kotlinx JSON, `prettyPrint`, `encodeDefaults`, `ignoreUnknownKeys`),
 CallLogging, CORS (`anyHost`, методы GET и POST, заголовок `Content-Type`), RateLimit (200 запросов / 60 с — только
@@ -379,13 +377,10 @@ SQLite-индекс (собирается `index`, открывается `serve
 
 ## План на будущее
 
-1. **Очистка мёртвого кода переписывания.** `VersionDiscovery`, `GitWatcher` и флаги `indexing.*`
-   (`poll-interval-seconds`, `initial-versions`, `index-on-startup`) нигде не используются, кроме
-   собственных файлов — оставлены с проходящими тестами, подлежат удалению.
-2. **Frontend → полный explorer.** Добавить drill-down вьюху на `GET /api/v1/compare` (таблица членов),
+1. **Frontend → полный explorer.** Добавить drill-down вьюху на `GET /api/v1/compare` (таблица членов),
    опционально интегрировать `translate` / `diff` / `bytecode`; рассмотреть отдачу статики `dist/` самим Ktor
    (единый деплой вместо отдельного reverse-proxy).
-3. **Качество поиска.** Улучшить ранжирование (mapped > intermediary > obf, бонус класса/владельца) —
-   сейчас `score` использует только `1/(1+|rank|)`, аргументы `query`/`type` в `scoreFromBm25` игнорируются.
-4. **Коммит-точные diff/история** через JGit (опционально), поверх текущего jar-based горячего пути.
-5. **Phase 5 (низкий приоритет).** In-browser деобфускация/декомпиляция для версий без готового jar.
+2. **Качество поиска.** Улучшить ранжирование (mapped > intermediary > obf, бонус класса/владельца) —
+   сейчас `score` использует только `1/(1+|rank|)`.
+3. **Коммит-точные diff/история** через JGit (опционально), поверх текущего jar-based горячего пути.
+4. **Phase 5 (низкий приоритет).** In-browser деобфускация/декомпиляция для версий без готового jar.

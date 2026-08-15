@@ -7,12 +7,17 @@ import dev.mappinglens.ingestion.UnifiedClassEntry
 import dev.mappinglens.ingestion.UnobfuscatedJarScanner
 import dev.mappinglens.version.VersionCatalog
 import dev.mappinglens.version.VersionMeta
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Optional
 import java.util.concurrent.ConcurrentHashMap
 import java.util.stream.Collectors
+import java.util.zip.ZipFile
 import kotlin.io.path.exists
 import kotlin.io.path.isDirectory
 import kotlin.io.path.name
@@ -33,6 +38,7 @@ class GitCraftStore(
     val catalog: VersionCatalog = VersionCatalog.load(artifactStore),
 ) {
     private val log = LoggerFactory.getLogger(GitCraftStore::class.java)
+    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
     private val mappingsDir = artifactStore.resolve("mappings")
     private val decompiledDir = artifactStore.resolve("decompiled")
@@ -142,6 +148,26 @@ class GitCraftStore(
 
     private fun cachedJar(key: String, resolve: () -> Path?): Path? =
         jarCache.computeIfAbsent(key) { Optional.ofNullable(resolve()) }.orElse(null)
+
+    /**
+     * Network protocol version, read from the `version.json` that Minecraft's own jar carries at its
+     * root (present since 18w47b). No Mojang launcher manifest holds this number, so the jar is the
+     * only source. Null for the versions published before that file existed, and for a version whose
+     * jars are not in the store.
+     */
+    fun protocolVersion(version: String): Int? {
+        val jar = obfMergedJar(version) ?: remappedJar(version, "mojmap") ?: remappedJar(version, "yarn") ?: return null
+        return try {
+            ZipFile(jar.toFile()).use { zip ->
+                val entry = zip.getEntry("version.json") ?: return null
+                val obj = zip.getInputStream(entry).use { json.parseToJsonElement(it.reader().readText()) }
+                (obj as? JsonObject)?.get("protocol_version")?.jsonPrimitive?.intOrNull
+            }
+        } catch (e: Exception) {
+            log.warn("Failed to read the protocol version from {}: {}", jar, e.message)
+            null
+        }
+    }
 
     private fun firstJar(dir: Path, prefix: String): Path? {
         if (!dir.exists() || !dir.isDirectory()) return null

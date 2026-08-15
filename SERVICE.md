@@ -76,9 +76,7 @@ not exist. Every path is overridable through an environment variable.
 | `mappinglens.sources.unobfuscated-intermediary-mappings` | `""` (off)            | `MAPPINGLENS_UNOBFUSCATED_INTERMEDIARY` | Intermediary source for unobfuscated releases, a separate repository (indexing only) |
 | `mappinglens.search.max-results`                         | `200`                 | n/a                                     | Upper bound for the search `limit`                                                   |
 | `mappinglens.search.default-results`                     | `50`                  | n/a                                     | Default search `limit`                                                               |
-| `mappinglens.indexing.poll-interval-seconds`             | `3600`                | n/a                                     | **Ignored by `serve`** (legacy, see below)                                           |
-| `mappinglens.indexing.initial-versions`                  | `[]` (all)            | n/a                                     | **Ignored by `serve`**                                                               |
-| `mappinglens.indexing.index-on-startup`                  | `false`               | n/a                                     | **Ignored by `serve`**: indexing runs only through the `index` command               |
+| `mappinglens.indexing.initial-versions`                  | `[]` (all)            | n/a                                     | Versions the `index` command builds; **ignored by `serve`**                          |
 
 **Ktor plugins:** ContentNegotiation (kotlinx JSON: `prettyPrint`, `encodeDefaults`,
 `ignoreUnknownKeys`), CallLogging, CORS (`anyHost`, GET and POST methods, `Content-Type`
@@ -409,16 +407,12 @@ git blobs; those are read on demand from the read-only store.
 
 ## Future plan
 
-1. **Remove dead rewrite code.** `VersionDiscovery`, `GitWatcher`, and the `indexing.*` flags
-   (`poll-interval-seconds`, `initial-versions`, `index-on-startup`) are not referenced
-   anywhere outside their own files. Their tests still pass; the code is a removal candidate.
-2. **Frontend: full explorer.** Add a drill-down view over `GET /api/v1/compare` (member
+1. **Frontend: full explorer.** Add a drill-down view over `GET /api/v1/compare` (member
    table). Optionally integrate `translate`, `diff`, and `bytecode`. Consider serving the
    `dist/` static bundle from Ktor itself, instead of a separate reverse proxy.
-3. **Search quality.** Improve ranking (mapped over intermediary over obf, with a
-   class/owner bonus). `score` currently uses only `1/(1+|rank|)`, and `scoreFromBm25`'s
-   `query`/`type` arguments are unused.
-4. **Commit-accurate diff and history** through JGit (optional), on top of the current
+2. **Search quality.** Improve ranking (mapped over intermediary over obf, with a
+   class/owner bonus). `score` currently uses only `1/(1+|rank|)`.
+3. **Commit-accurate diff and history** through JGit (optional), on top of the current
    jar-based hot path.
-5. **Phase 5 (low priority).** In-browser deobfuscation and decompilation, for versions
+4. **Phase 5 (low priority).** In-browser deobfuscation and decompilation, for versions
    without a ready jar.

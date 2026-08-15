@@ -43,9 +43,6 @@ class VersionService(private val db: Database) {
 
     fun listVersions(): VersionListResponse = transaction(db) {
         val counts = counts()
-        val classCounts = counts.classes
-        val methodCounts = counts.methods
-        val fieldCounts = counts.fields
         val versions = VersionTable.selectAll()
             .orderBy(VersionTable.sortIndex to SortOrder.DESC_NULLS_LAST, VersionTable.versionId to SortOrder.DESC)
             .map { row ->
@@ -58,9 +55,9 @@ class VersionService(private val db: Database) {
                 hasYarn = row[VersionTable.hasYarn],
                 hasMojmap = row[VersionTable.hasMojmap],
                 hasIntermediary = row[VersionTable.hasIntermediary],
-                classCount = classCounts[versionRowId] ?: 0,
-                methodCount = methodCounts[versionRowId] ?: 0,
-                fieldCount = fieldCounts[versionRowId] ?: 0,
+                classCount = counts.classes[versionRowId] ?: 0,
+                methodCount = counts.methods[versionRowId] ?: 0,
+                fieldCount = counts.fields[versionRowId] ?: 0,
                 indexedAt = row[VersionTable.indexedAt],
             )
         }

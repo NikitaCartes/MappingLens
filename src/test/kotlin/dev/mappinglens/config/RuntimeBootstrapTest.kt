@@ -22,11 +22,10 @@ class RuntimeBootstrapTest {
 
         val content = Files.readString(configPath)
         assertTrue(content.contains("mappinglens {"))
-        assertTrue(content.contains("index-on-startup = false"))
         assertEquals("0.0.0.0", startup.host)
         assertEquals(8080, startup.port)
         assertEquals("data/mappinglens.db", startup.appConfig.databasePath)
-        assertFalse(startup.appConfig.indexing.indexOnStartup)
+        assertEquals(emptyList(), startup.appConfig.initialVersions)
     }
 
     @Test

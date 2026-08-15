@@ -2,11 +2,9 @@ package dev.mappinglens.realdata
 
 import dev.mappinglens.RealDataTestConfig
 import dev.mappinglens.ingestion.CorrespondenceResolver
-import dev.mappinglens.ingestion.GitWatcher
 import dev.mappinglens.ingestion.ParsedMappings
 import dev.mappinglens.ingestion.SourceScanner
 import dev.mappinglens.ingestion.TinyV2Parser
-import dev.mappinglens.ingestion.VersionDiscovery
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -27,22 +25,6 @@ class RealDataIngestionComponentsTest {
         yarnTrees = RealDataTestConfig.versions.associateWith { TinyV2Parser.parse(RealDataTestConfig.yarnMappingFor(it)) }
         mojmapTrees = RealDataTestConfig.versions.associateWith { TinyV2Parser.parse(RealDataTestConfig.mojmapMappingFor(it)) }
         intermediaryTrees = RealDataTestConfig.versions.associateWith { TinyV2Parser.parse(RealDataTestConfig.intermediaryMappingFor(it)) }
-    }
-
-    @Test
-    fun `version discovery resolves yarn intermediary and mojmap files in real folders`() {
-        val discovered = VersionDiscovery(RealDataTestConfig.sourcesConfig())
-            .discover()
-            .associateBy { it.versionId }
-
-        for (version in RealDataTestConfig.versions) {
-            val files = discovered[version]
-            assertNotNull(files, "Version $version was not discovered")
-            assertNotNull(files.intermediary, "Missing intermediary mapping for $version")
-            assertNotNull(files.yarn, "Missing yarn mapping for $version")
-            assertNotNull(files.mojmap, "Missing mojmap mapping for $version")
-            assertTrue(files.mojmap!!.fileName.toString().endsWith("-moj.tiny"))
-        }
     }
 
     @Test
@@ -122,20 +104,6 @@ class RealDataIngestionComponentsTest {
             assertEquals(sourceCase.className, info.classFqn)
             assertEquals(64, info.contentHash.length)
         }
-    }
-
-    @Test
-    fun `git watcher is best effort for attached repositories`() {
-        val yarnRev = GitWatcher(RealDataTestConfig.yarnRepo).getCurrentRev()
-        val mojmapRev = GitWatcher(RealDataTestConfig.mojmapRepo).getCurrentRev()
-
-        for (rev in listOfNotNull(yarnRev, mojmapRev)) {
-            assertTrue(Regex("[0-9a-fA-F]{40}").matches(rev), "Unexpected git rev: $rev")
-        }
-
-        // If these folders are exported source snapshots rather than git checkouts, null is valid.
-        assertTrue(yarnRev == null || yarnRev.length == 40)
-        assertTrue(mojmapRev == null || mojmapRev.length == 40)
     }
 
     @Test

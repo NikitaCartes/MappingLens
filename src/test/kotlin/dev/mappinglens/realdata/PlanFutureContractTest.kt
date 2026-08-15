@@ -2,7 +2,6 @@ package dev.mappinglens.realdata
 
 import dev.mappinglens.Fixtures
 import dev.mappinglens.config.AppConfig
-import dev.mappinglens.config.IndexingConfig
 import dev.mappinglens.config.SearchConfig
 import dev.mappinglens.config.SourcesConfig
 import dev.mappinglens.db.DatabaseFactory
@@ -117,7 +116,7 @@ class PlanFutureContractTest {
                 intermediaryMappings = tmp.toString(),
                 artifactStore = artifactStore.toString(),
             ),
-            indexing = IndexingConfig(0, emptyList(), false),
+            initialVersions = emptyList(),
             search = SearchConfig(maxResults = 100, defaultResults = 20),
         )
 
@@ -182,7 +181,7 @@ class PlanFutureContractTest {
                 intermediaryMappings = intermediaryDir.toString(),
                 artifactStore = artifactStore.toString(),
             ),
-            indexing = IndexingConfig(0, listOf("1.0"), false),
+            initialVersions = listOf("1.0"),
             search = SearchConfig(maxResults = 100, defaultResults = 20),
         )
 

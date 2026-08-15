@@ -8,8 +8,6 @@ object VersionTable : IntIdTable("versions") {
     val releaseTime = text("release_time").nullable()
     val protocolVersion = integer("protocol_version").nullable()
     val indexedAt = text("indexed_at")
-    val gitRevYarn = text("git_rev_yarn").nullable()
-    val gitRevMojmap = text("git_rev_mojmap").nullable()
     val hasYarn = bool("has_yarn").default(false)
     val hasMojmap = bool("has_mojmap").default(false)
     val hasIntermediary = bool("has_intermediary").default(false)

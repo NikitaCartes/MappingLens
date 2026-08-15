@@ -2,7 +2,6 @@ package dev.mappinglens.service
 
 import dev.mappinglens.config.AppConfig
 import dev.mappinglens.db.tables.*
-import org.jetbrains.exposed.dao.id.IntIdTable
 import dev.mappinglens.ingestion.GitSourceRepository
 import dev.mappinglens.model.*
 import org.jetbrains.exposed.sql.*
@@ -47,9 +46,10 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
             return@transaction emptyDiffResponse(from, to, namespace)
         }
 
+        val memberNameCol = sqlNameColumn(namespace)
         val classDiff = diffClasses(fromId, toId, namespace, packageFilter, candidateStableKeys)
-        val methodDiff = diffMethods(fromId, toId, namespace, packageFilter, candidateStableKeys)
-        val fieldDiff = diffFields(fromId, toId, namespace, packageFilter, candidateStableKeys)
+        val methodDiff = diffMembers("methods", fromId, toId, memberNameCol, "method", packageFilter, candidateStableKeys)
+        val fieldDiff = diffMembers("fields", fromId, toId, memberNameCol, "field", packageFilter, candidateStableKeys)
 
         val includeClasses = type == "class" || type == "all"
         val includeMethods = type == "method" || type == "all"
@@ -121,8 +121,8 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         val classAdded = if (fromCid == null && toCid != null) listOf(DiffEntryItem("class", name = normClass)) else emptyList()
         val classRemoved = if (fromCid != null && toCid == null) listOf(DiffEntryItem("class", name = normClass)) else emptyList()
 
-        val methodDiff = memberDiff(MethodTable, fromCid, toCid, namespace, normClass, "method")
-        val fieldDiff = memberDiff(FieldTable, fromCid, toCid, namespace, normClass, "field")
+        val methodDiff = memberDiff(MemberCols.METHOD, fromCid, toCid, namespace, normClass)
+        val fieldDiff = memberDiff(MemberCols.FIELD, fromCid, toCid, namespace, normClass)
 
         val includeClasses = type == "class" || type == "all"
         val includeMethods = type == "method" || type == "all"
@@ -163,22 +163,22 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
     private data class MemberRec(val key: String, val name: String?, val descriptor: String?)
 
     /** Members of [classId] keyed exactly as [methodKeys]/[fieldKeys], carrying the namespace display name + descriptor. */
-    private fun memberRecords(table: IntIdTable, classId: Int?, namespace: String): List<MemberRec> {
+    private fun memberRecords(cols: MemberCols, classId: Int?, namespace: String): List<MemberRec> {
         if (classId == null) return emptyList()
-        val cols = memberCols(table)
-        val nameCol = when (namespace) { "mojmap" -> cols.mojmap; "intermediary" -> cols.intermediary; else -> cols.yarn }
-        return table.selectAll().where { cols.classId eq classId }.map { row ->
+        val nameCol = when (namespace) { "mojmap" -> cols.mojmapName; "intermediary" -> cols.intermediaryName; else -> cols.yarnName }
+        return cols.table.selectAll().where { cols.classId eq classId }.map { row ->
             MemberRec(
-                key = memberKey(row[cols.intermediary] ?: row[cols.mojmap], row[cols.intermediaryDesc] ?: row[cols.obfDesc], row[cols.obfName], row[cols.obfDesc]),
+                key = memberKey(row[cols.intermediaryName] ?: row[cols.mojmapName], row[cols.intermediaryDesc] ?: row[cols.obfDesc], row[cols.obfName], row[cols.obfDesc]),
                 name = row[nameCol],
                 descriptor = row[cols.intermediaryDesc] ?: row[cols.obfDesc],
             )
         }
     }
 
-    private fun memberDiff(table: IntIdTable, fromCid: Int?, toCid: Int?, namespace: String, owner: String, kind: String): TypedDiff {
-        val from = memberRecords(table, fromCid, namespace)
-        val to = memberRecords(table, toCid, namespace)
+    private fun memberDiff(cols: MemberCols, fromCid: Int?, toCid: Int?, namespace: String, owner: String): TypedDiff {
+        val kind = cols.kind
+        val from = memberRecords(cols, fromCid, namespace)
+        val to = memberRecords(cols, toCid, namespace)
         val fromByKey = from.associateBy { it.key }
         val toByKey = to.associateBy { it.key }
         fun item(r: MemberRec) = DiffEntryItem(type = kind, name = r.name, owner = owner, descriptor = r.descriptor)
@@ -188,22 +188,6 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
             .filter { fromByKey.getValue(it).name != toByKey.getValue(it).name }
             .map { DiffEntryItem(type = kind, owner = owner, oldName = fromByKey.getValue(it).name, newName = toByKey.getValue(it).name, descriptor = toByKey.getValue(it).descriptor) }
         return TypedDiff(added, removed, renamed)
-    }
-
-    private class MemberCols(
-        val classId: Column<org.jetbrains.exposed.dao.id.EntityID<Int>>,
-        val obfName: Column<String?>,
-        val obfDesc: Column<String?>,
-        val intermediary: Column<String?>,
-        val intermediaryDesc: Column<String?>,
-        val yarn: Column<String?>,
-        val mojmap: Column<String?>,
-    )
-
-    private fun memberCols(table: IntIdTable): MemberCols = when (table) {
-        MethodTable -> MemberCols(MethodTable.classId, MethodTable.obfName, MethodTable.obfDesc, MethodTable.intermediaryName, MethodTable.intermediaryDesc, MethodTable.yarnName, MethodTable.mojmapName)
-        FieldTable -> MemberCols(FieldTable.classId, FieldTable.obfName, FieldTable.obfDesc, FieldTable.intermediaryName, FieldTable.intermediaryDesc, FieldTable.yarnName, FieldTable.mojmapName)
-        else -> error("unsupported table")
     }
 
     fun diffFiles(from: String, to: String, namespace: String, pathPrefix: String?): FileDiffResponse = transaction(db) {
@@ -246,7 +230,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         val mappingType = if (namespace == "mojmap") "mojmap" else "yarn"
         val normalizedPath = pathPrefix?.normalizeDiffPath()?.takeIf { it.isNotBlank() }
         val normalizedFunction = functionFilter?.normalizeFunctionFilter()?.takeIf { it.isNotBlank() }
-        val candidates = sourceDiffCandidates(from, to, mappingType, normalizedPath)
+        val candidates = indexedSourceCandidates(from, to, mappingType, normalizedPath).orEmpty()
         val selectedFiles = candidates.take(limit)
         val patches = mutableListOf<String>()
         val patchFiles = mutableListOf<PatchFileChange>()
@@ -323,10 +307,18 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         val renamed: List<DiffEntryItem>,
     )
 
-    private fun nameCol(table: ClassTable, namespace: String): Column<String?> = when (namespace) {
-        "mojmap" -> table.mojmapName
-        "intermediary" -> table.intermediaryName
-        else -> table.yarnName
+    /** Class name column of [namespace]; anything else reads as yarn, as every diff query does. */
+    private fun classNameColumn(namespace: String): Column<String?> = when (namespace) {
+        "mojmap" -> ClassTable.mojmapName
+        "intermediary" -> ClassTable.intermediaryName
+        else -> ClassTable.yarnName
+    }
+
+    /** The same choice as [classNameColumn] in raw SQL; classes, methods and fields share the names. */
+    private fun sqlNameColumn(namespace: String): String = when (namespace) {
+        "mojmap" -> "mojmap_name"
+        "intermediary" -> "intermediary_name"
+        else -> "yarn_name"
     }
 
     private fun emptyDiffResponse(from: String, to: String, namespace: String): DiffResponse = DiffResponse(
@@ -341,36 +333,44 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         gitSourceCandidates(from, to, mappingType, pathPrefix)?.let {
             return SourceCandidateSet(available = true, files = it)
         }
-        return transaction(db) {
-            val fromId = versionRowId(from)
-            val toId = versionRowId(to)
-            if (fromId == null || toId == null) return@transaction SourceCandidateSet(false, emptyList())
+        val files = indexedSourceCandidates(from, to, mappingType, pathPrefix)
+            ?: return SourceCandidateSet(available = false, files = emptyList())
+        return SourceCandidateSet(available = true, files = files)
+    }
 
-            val fromFiles = SourceFileTable.selectAll()
-                .where { (SourceFileTable.versionId eq fromId) and (SourceFileTable.mappingType eq mappingType) }
-                .associate { it[SourceFileTable.relativePath] to it[SourceFileTable.contentHash] }
-            val toFiles = SourceFileTable.selectAll()
-                .where { (SourceFileTable.versionId eq toId) and (SourceFileTable.mappingType eq mappingType) }
-                .associate { it[SourceFileTable.relativePath] to it[SourceFileTable.contentHash] }
+    /**
+     * Changed source files of the two versions as the index records them (content hash per path).
+     * Null when either version is unknown or has no indexed sources, which is what tells the diff
+     * to fall back to the mapping tables alone.
+     */
+    private fun indexedSourceCandidates(
+        from: String,
+        to: String,
+        mappingType: String,
+        pathPrefix: String?,
+    ): List<SourcePatchFile>? = transaction(db) {
+        val fromId = versionRowId(from) ?: return@transaction null
+        val toId = versionRowId(to) ?: return@transaction null
 
-            if (fromFiles.isEmpty() || toFiles.isEmpty()) {
-                return@transaction SourceCandidateSet(false, emptyList())
-            }
+        val fromFiles = SourceFileTable.selectAll()
+            .where { (SourceFileTable.versionId eq fromId) and (SourceFileTable.mappingType eq mappingType) }
+            .associate { it[SourceFileTable.relativePath] to it[SourceFileTable.contentHash] }
+        val toFiles = SourceFileTable.selectAll()
+            .where { (SourceFileTable.versionId eq toId) and (SourceFileTable.mappingType eq mappingType) }
+            .associate { it[SourceFileTable.relativePath] to it[SourceFileTable.contentHash] }
+        if (fromFiles.isEmpty() || toFiles.isEmpty()) return@transaction null
 
-            fun keep(path: String): Boolean = pathPrefix.isNullOrBlank() || path.startsWith(pathPrefix)
-            val files = buildList {
-                addAll((toFiles.keys - fromFiles.keys).filter(::keep).map { SourcePatchFile(it, "added") })
-                addAll((fromFiles.keys - toFiles.keys).filter(::keep).map { SourcePatchFile(it, "removed") })
-                addAll(
-                    (fromFiles.keys intersect toFiles.keys)
-                        .filter(::keep)
-                        .filter { fromFiles.getValue(it) != toFiles.getValue(it) }
-                        .map { SourcePatchFile(it, "modified") },
-                )
-            }.sortedWith(compareBy<SourcePatchFile> { it.path }.thenBy { it.changeType })
-
-            SourceCandidateSet(available = true, files = files)
-        }
+        fun keep(path: String): Boolean = pathPrefix.isNullOrBlank() || path.startsWith(pathPrefix)
+        buildList {
+            addAll((toFiles.keys - fromFiles.keys).filter(::keep).map { SourcePatchFile(it, "added") })
+            addAll((fromFiles.keys - toFiles.keys).filter(::keep).map { SourcePatchFile(it, "removed") })
+            addAll(
+                (fromFiles.keys intersect toFiles.keys)
+                    .filter(::keep)
+                    .filter { fromFiles.getValue(it) != toFiles.getValue(it) }
+                    .map { SourcePatchFile(it, "modified") },
+            )
+        }.sortedWith(compareBy<SourcePatchFile> { it.path }.thenBy { it.changeType })
     }
 
     private fun gitSourceCandidates(from: String, to: String, mappingType: String, pathPrefix: String?): List<SourcePatchFile>? {
@@ -394,11 +394,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
 
         val stableKeyColumn = stableIdentityColumn(fromId, toId) ?: return null
         val stableColumn = if (stableKeyColumn == "mojmap_name") ClassTable.mojmapName else ClassTable.intermediaryName
-        val namespaceColumn = when (namespace) {
-            "mojmap" -> ClassTable.mojmapName
-            "intermediary" -> ClassTable.intermediaryName
-            else -> ClassTable.yarnName
-        }
+        val namespaceColumn = classNameColumn(namespace)
 
         return ClassTable.selectAll()
             .where { ClassTable.versionId inList listOf(fromId, toId) }
@@ -409,31 +405,6 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
                 stableKey.takeIf { className.substringBefore('$') in candidatePrefixes }
             }
             .toSet()
-    }
-
-    private fun sourceDiffCandidates(from: String, to: String, mappingType: String, pathPrefix: String?): List<SourcePatchFile> = transaction(db) {
-        val fromId = versionRowId(from)
-        val toId = versionRowId(to)
-        if (fromId == null || toId == null) return@transaction emptyList()
-
-        val fromFiles = SourceFileTable.selectAll()
-            .where { (SourceFileTable.versionId eq fromId) and (SourceFileTable.mappingType eq mappingType) }
-            .associate { it[SourceFileTable.relativePath] to it[SourceFileTable.contentHash] }
-        val toFiles = SourceFileTable.selectAll()
-            .where { (SourceFileTable.versionId eq toId) and (SourceFileTable.mappingType eq mappingType) }
-            .associate { it[SourceFileTable.relativePath] to it[SourceFileTable.contentHash] }
-
-        fun keep(path: String): Boolean = pathPrefix.isNullOrBlank() || path.startsWith(pathPrefix)
-        buildList {
-            addAll((toFiles.keys - fromFiles.keys).filter(::keep).map { SourcePatchFile(it, "added") })
-            addAll((fromFiles.keys - toFiles.keys).filter(::keep).map { SourcePatchFile(it, "removed") })
-            addAll(
-                (fromFiles.keys intersect toFiles.keys)
-                    .filter(::keep)
-                    .filter { fromFiles.getValue(it) != toFiles.getValue(it) }
-                    .map { SourcePatchFile(it, "modified") },
-            )
-        }.sortedWith(compareBy<SourcePatchFile> { it.path }.thenBy { it.changeType })
     }
 
     private fun readSource(reader: SourceJarReader, versionId: String, mappingType: String, relativePath: String): String? {
@@ -807,10 +778,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         packageFilter: String?,
         candidateStableKeys: Set<String>?,
     ): TypedDiff {
-        val nameColExpr: (Int) -> String = { _ -> when (namespace) {
-            "mojmap" -> "mojmap_name"; "intermediary" -> "intermediary_name"; else -> "yarn_name"
-        } }
-        val nameCol = nameColExpr(0)
+        val nameCol = sqlNameColumn(namespace)
         val addedPackageSql = packageCondition("c2", packageFilter)
         val removedPackageSql = packageCondition("c1", packageFilter)
         val renamedPackageSql = packageConditionEither("c1", "c2", packageFilter)
@@ -909,28 +877,6 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         }
     }
 
-    private fun diffMethods(
-        fromId: Int,
-        toId: Int,
-        namespace: String,
-        packageFilter: String?,
-        candidateStableKeys: Set<String>?,
-    ): TypedDiff {
-        val nameCol = when (namespace) { "mojmap" -> "mojmap_name"; "intermediary" -> "intermediary_name"; else -> "yarn_name" }
-        return diffMembers("methods", fromId, toId, nameCol, "method", packageFilter, candidateStableKeys)
-    }
-
-    private fun diffFields(
-        fromId: Int,
-        toId: Int,
-        namespace: String,
-        packageFilter: String?,
-        candidateStableKeys: Set<String>?,
-    ): TypedDiff {
-        val nameCol = when (namespace) { "mojmap" -> "mojmap_name"; "intermediary" -> "intermediary_name"; else -> "yarn_name" }
-        return diffMembers("fields", fromId, toId, nameCol, "field", packageFilter, candidateStableKeys)
-    }
-
     private fun fileChangeWithMemberCounts(
         path: String,
         fromId: Int,
@@ -958,11 +904,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
     }
 
     private fun classIdByName(versionRowId: Int, namespace: String, className: String): Int? {
-        val nameCol = when (namespace) {
-            "mojmap" -> ClassTable.mojmapName
-            "intermediary" -> ClassTable.intermediaryName
-            else -> ClassTable.yarnName
-        }
+        val nameCol = classNameColumn(namespace)
         return ClassTable.selectAll()
             .where { (ClassTable.versionId eq versionRowId) and (nameCol eq className) }
             .singleOrNull()

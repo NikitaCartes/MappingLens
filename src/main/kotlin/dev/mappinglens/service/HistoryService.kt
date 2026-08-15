@@ -1,16 +1,13 @@
 package dev.mappinglens.service
 
 import dev.mappinglens.db.tables.ClassTable
-import dev.mappinglens.db.tables.FieldTable
-import dev.mappinglens.db.tables.MethodTable
+import dev.mappinglens.db.tables.MemberCols
 import dev.mappinglens.db.tables.VersionTable
 import dev.mappinglens.model.HistoryEntry
 import dev.mappinglens.model.HistoryMember
 import dev.mappinglens.model.HistoryResponse
 import dev.mappinglens.model.HistorySpan
 import dev.mappinglens.routes.normalizeClassName
-import org.jetbrains.exposed.dao.id.EntityID
-import org.jetbrains.exposed.dao.id.IntIdTable
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
 
@@ -42,33 +39,11 @@ class HistoryService(private val db: Database) {
         val members: List<HistoryMember> = emptyList(),
     )
 
-    /** The method and field tables carry the same columns under different [Column] instances. */
-    private class MemberCols(
-        val table: IntIdTable,
-        val kind: String,
-        val classId: Column<EntityID<Int>>,
-        val versionId: Column<EntityID<Int>>,
-        val intermediaryName: Column<String?>,
-        val intermediaryDesc: Column<String?>,
-        val yarnName: Column<String?>,
-        val mojmapName: Column<String?>,
-    ) {
-        fun named(namespace: String): Column<String?> = when (namespace) {
-            "yarn" -> yarnName
-            "intermediary" -> intermediaryName
-            else -> mojmapName
-        }
+    private fun MemberCols.named(namespace: String): Column<String?> = when (namespace) {
+        "yarn" -> yarnName
+        "intermediary" -> intermediaryName
+        else -> mojmapName
     }
-
-    private val methodCols = MemberCols(
-        MethodTable, "method", MethodTable.classId, MethodTable.versionId,
-        MethodTable.intermediaryName, MethodTable.intermediaryDesc, MethodTable.yarnName, MethodTable.mojmapName,
-    )
-
-    private val fieldCols = MemberCols(
-        FieldTable, "field", FieldTable.classId, FieldTable.versionId,
-        FieldTable.intermediaryName, FieldTable.intermediaryDesc, FieldTable.yarnName, FieldTable.mojmapName,
-    )
 
     /**
      * One entry per query, in the order given. Returns null when [from] or [to] names a version that
@@ -119,7 +94,7 @@ class HistoryService(private val db: Database) {
             })
         }
         val ownerNameCol = classNameColumn(namespace)
-        for (cols in listOf(methodCols, fieldCols)) {
+        for (cols in listOf(MemberCols.METHOD, MemberCols.FIELD)) {
             val rows = memberRows(cols, ownerRows, member, namespace, order)
             if (rows.isEmpty()) continue
             return HistoryEntry(query, cols.kind, collapse(versions) { v ->

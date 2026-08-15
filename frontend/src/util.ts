@@ -52,9 +52,3 @@ export function simpleClassName(internal: string): string {
   const owner = internal.split("#")[0];
   return owner.slice(owner.lastIndexOf("/") + 1) || owner;
 }
-
-/** Owner part of a `Owner#member` value (or the value itself if there is no member). */
-export function ownerOf(value: string): string {
-  const hash = value.indexOf("#");
-  return hash >= 0 ? value.slice(0, hash) : value;
-}
