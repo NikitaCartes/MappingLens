@@ -3,6 +3,13 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.7.3]
+
+### Fixed
+- `GET /api/v1/versions` answered with `Cache-Control: public, max-age=2592000, immutable`. 
+  The catalog now answers with `max-age=3600`.
+- The frontend turned Blame off in every class opened after the one it was switched on in.
+
 ## [9.7.2]
 
 ### Added

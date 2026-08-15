@@ -50,10 +50,15 @@ class ApplicationStartupTest {
         application { module(testConfig(tmp, dbPath), includeDocs = false) }
 
         // 200 on an /api/v1 route -> one-month immutable cache.
-        val ok = client.get("/api/v1/versions")
+        val ok = client.get("/api/v1/search?q=Block")
         assertEquals(HttpStatusCode.OK, ok.status)
         val cache = ok.headers[HttpHeaders.CacheControl]
         assertTrue(cache?.contains("max-age=2592000") == true, "expected month-long cache, got: $cache")
+
+        // The version catalog changes on every indexer run, so it gets a minute instead of a month.
+        val catalog = client.get("/api/v1/versions")
+        assertEquals(HttpStatusCode.OK, catalog.status)
+        assertEquals("public, max-age=3600", catalog.headers[HttpHeaders.CacheControl])
 
         // 404 must not be frozen (a class/version may be indexed later).
         val notFound = client.get("/api/v1/versions/9.9.9")

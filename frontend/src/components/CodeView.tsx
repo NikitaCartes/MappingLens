@@ -28,6 +28,12 @@ type Mode = "source" | "bytecode";
 let versionsOnce: Promise<VersionInfo[]> | null = null;
 const allVersions = () => (versionsOnce ??= fetchVersions());
 
+/**
+ * Blame is a view preference rather than a property of one tab: a class opened while blame is on
+ * opens with blame on. Only new tabs read this — toggling it leaves the tabs already open alone.
+ */
+let blameDefault = false;
+
 const messageOf = (err: unknown) => (err instanceof ApiRequestError || err instanceof Error ? err.message : String(err));
 
 const EDITOR_OPTIONS = {
@@ -48,7 +54,7 @@ export function CodeView({ tab }: { tab: CodeTab }) {
   const [error, setError] = useState<string | undefined>(undefined);
 
   const [codeEditor, setCodeEditor] = useState<MonacoEditor.IStandaloneCodeEditor | null>(null);
-  const [blameOn, setBlameOn] = useState(false);
+  const [blameOn, setBlameOn] = useState(blameDefault);
   const [blame, setBlame] = useState<BlameResponse | null>(null);
   const [blameError, setBlameError] = useState<string | undefined>(undefined);
   const [versions, setVersions] = useState<VersionInfo[] | null>(null);
@@ -196,7 +202,10 @@ export function CodeView({ tab }: { tab: CodeTab }) {
             type={blameOn ? "primary" : "default"}
             disabled={mode !== "source"}
             loading={blameOn && mode === "source" && !blame && !blameError}
-            onClick={() => setBlameOn((on) => !on)}
+            onClick={() => {
+              blameDefault = !blameOn;
+              setBlameOn(blameDefault);
+            }}
           >
             Blame
           </Button>

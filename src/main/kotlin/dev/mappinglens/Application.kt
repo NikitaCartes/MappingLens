@@ -107,14 +107,21 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
     // Mappings for a given version never change, so let clients/CDNs cache successful /api/v1 responses
     // for a month. Only 2xx (or default-200, where status() is still null at respond time) are cached —
     // errors keep an explicit non-2xx status so a 404 for a not-yet-indexed class isn't frozen for weeks.
+    // `/api/v1/versions` is the exception. It is the catalog, not per-version data: an indexer run adds
+    // versions and changes the counts and the namespace flags of the ones already listed. A month-long
+    // immutable copy froze that in every browser. The catalog is small, so a minute keeps repeated
+    // navigation cheap and still shows an index rebuilt while the page was open.
     install(createApplicationPlugin("ApiCacheHeaders") {
         onCallRespond { call ->
             // GET only: POST /exists is keyed on its request body, which a URL-keyed shared cache
             // ignores — freezing one batch's answers for a different batch. Never cache it.
-            if (call.request.httpMethod == HttpMethod.Get && call.request.path().startsWith("/api/v1")) {
+            val path = call.request.path()
+            if (call.request.httpMethod == HttpMethod.Get && path.startsWith("/api/v1")) {
                 val status = call.response.status()
                 if (status == null || status.isSuccess()) {
-                    call.response.headers.append(HttpHeaders.CacheControl, "public, max-age=2592000, immutable")
+                    val cache = if (path.startsWith("/api/v1/versions")) "public, max-age=3600"
+                    else "public, max-age=2592000, immutable"
+                    call.response.headers.append(HttpHeaders.CacheControl, cache)
                 }
             }
         }
