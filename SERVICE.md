@@ -1,372 +1,424 @@
-# MappingLens — Описание сервиса
+# MappingLens Service Reference
 
-MappingLens — **stateless read-only** сервис для поиска, перевода, сравнения и инспекции
-маппингов Minecraft (Yarn / Mojmap / Intermediary / Obfuscated). Состоит из трёх артефактов:
+*(Русская версия: [SERVICE.ru.md](SERVICE.ru.md))*
 
-- **`index`** — offline-индексатор; единственный писатель SQLite-индекса.
-- **`serve`** — stateless HTTP-сервер (Ktor/Netty), открывает индекс только на чтение.
-- **`frontend/`** — браузерный explorer маппингов (React + Vite), потребляет REST API.
+MappingLens is a stateless, read-only service for search, translation, comparison, and
+inspection of Minecraft mappings (Yarn, Mojmap, Intermediary, Obfuscated). Three artifacts
+make up the project:
 
-Сервер ничего не декомпилирует и не мутирует: исходники/байткод читаются по требованию из
-read-only GitCraft-стора, индекс открывается с `PRAGMA query_only=ON`.
+- **`index`**: the offline indexer. It is the only writer of the SQLite index.
+- **`serve`**: the stateless HTTP server (Ktor/Netty). It opens the index read-only.
+- **`frontend/`**: a browser explorer for mappings (React + Vite). It consumes the REST API.
 
----
-
-## Доступные фичи
-
-| Фича | Описание |
-|---|---|
-| Поиск по маппингам | FTS5-поиск классов/методов/полей в одной версии; каждая строка результата — имя во всех неймспейсах сразу |
-| Перевод имён | Перевод имени класса/метода/поля между неймспейсами (`from`→`to`), с авто-определением типа |
-| Diff символов | Added / removed / renamed классов, методов и полей между двумя версиями + сводка |
-| Diff исходников | Список изменённых файлов и unified/git-патч исходников между версиями (фильтр по пути/функции) |
-| История по версиям | Один класс/член сразу по всем версиям: диапазоны версий с одинаковым ответом, слежение за переименованием через intermediary; несколько ключей за запрос |
-| Compare Yarn↔Mojmap | Таблица соответствия членов одного класса между Yarn и Mojmap |
-| Байткод | Дизассемблированный байткод класса (ASM Textifier) в любом неймспейсе, text или JSON |
-| Исходники | Декомпилированный `.java` класса из artifact-store (namespace yarn/mojmap) |
-| Иерархия наследования | Супертипы + подтипы класса (ASM-скан named-jar'а), для right-click «View Inheritance» в UI |
-| Find All References | Обратный индекс использований класса/метода/поля (on-demand ASM-скан named-jar'а, кэш per version/namespace) |
-| Проверка существования | Батч-проверка, что классы/члены живы в версии (`POST /exists`, ASM-скан named-jar'а) — валидация таргетов миксинов при апдейте мода |
-| Токены исходника | Резолв каждого идентификатора `.java` в owner/name/descriptor (JavaParser symbol-solver) → `{source, tokens}`; питает member-level right-click (Copy AW/AT/Mixin) |
-| Версии | Список проиндексированных версий с флагами доступности неймспейсов и counts, порядок — semver (новые сверху) |
-| OpenAPI / Swagger | Машиночитаемая спецификация (`/openapi.json`, `/openapi.yaml`) + Swagger UI (`/docs`) |
-| Frontend explorer | Браузерный UI: выбор версии, фильтры неймспейса/типа, debounced-поиск, кросс-неймспейс карточки с click-to-copy |
-| Blame по версиям | Колонка «в какой версии последний раз менялась строка» в просмотрщике исходников: один `git blame` по репозиторию исходников за запрос (`/blame/{version}/{class}`) |
+The server does not decompile or mutate anything. Source and bytecode are read on demand
+from a read-only GitCraft store. The server opens the index with `PRAGMA query_only=ON`.
 
 ---
 
-## Требования
+## Available features
 
-- **JDK 21** (Gradle toolchain `languageVersion 21`, `jvmTarget JVM_21`). Стек: Kotlin 2.2.20, Ktor 3.2.3, Exposed 0.56, sqlite-jdbc.
-- **Node.js** (для frontend).
-- **Данные на диске:**
-  - Для `index` — источники: `artifact-store` (с подпапками `mappings/`, `mc-versions/`, `decompiled/<ver>/`, `remapped-mc/<ver>/`), `yarn`, `mojmap`, `intermediary`.
-  - Для `serve` — **готовый индекс** по пути `database.path` (иначе сервер падает на старте с подсказкой запустить `index`). Источники репозиториев на старте не нужны, но `diff`/`bytecode`/`source` лениво читают jar'ы из `artifact-store` во время запроса.
-  - Для `/openapi.*` и `/docs` — ресурс `openapi/mappinglens-api.yaml` на classpath (поставляется в jar).
-  - Для `/skill.md` — ресурс `SKILL.md` на classpath: Gradle кладёт в jar файл `.github/skills/mappinglens/SKILL.md`.
+| Feature               | Description                                                                                                                                                                                             |
+|-----------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Mapping search        | FTS5 search over classes, methods, and fields in one version. Each result row carries the name in every namespace at once.                                                                              |
+| Name translation      | Translates a class, method, or field name between namespaces (`from` to `to`), with automatic type detection.                                                                                           |
+| Symbol diff           | Added, removed, and renamed classes, methods, and fields between two versions, plus a summary.                                                                                                          |
+| Source diff           | List of changed files, and a unified or git patch of the source between two versions (filterable by path or function).                                                                                  |
+| Version history       | One class or member across every indexed version at once: version ranges that share an answer, rename tracking through intermediary names, several keys per request.                                    |
+| Compare Yarn/Mojmap   | Member-correspondence table for one class, between Yarn and Mojmap.                                                                                                                                     |
+| Bytecode              | Disassembled bytecode of a class (ASM Textifier) in any namespace, as text or JSON.                                                                                                                     |
+| Source                | Decompiled `.java` for a class, from the artifact store (Yarn or Mojmap namespace).                                                                                                                     |
+| Inheritance hierarchy | Supertypes and subtypes of a class (ASM scan of the named jar), for the "View Inheritance" right-click action in the UI.                                                                                |
+| Find all references   | Reverse index of where a class, method, or field is used (on-demand ASM scan of the named jar, cached per version and namespace).                                                                       |
+| Existence check       | Batch check that classes or members still exist in a version (`POST /exists`, ASM scan of the named jar). Validates mixin targets before a mod update.                                                  |
+| Source tokens         | Resolves each identifier in a `.java` file to owner, name, and descriptor (JavaParser symbol solver), as `{source, tokens}`. Backs the member-level right-click actions (copy AW, AT, or Mixin target). |
+| Versions              | List of indexed versions, with namespace-availability flags, counts, and semver order (newest first).                                                                                                   |
+| OpenAPI / Swagger     | Machine-readable spec (`/openapi.json`, `/openapi.yaml`) plus Swagger UI (`/docs`).                                                                                                                     |
+| Frontend explorer     | Browser UI: version picker, namespace and type filters, debounced search, cross-namespace cards with click-to-copy.                                                                                     |
+| Blame by version      | Shows which version last changed each line, in the source viewer: one `git blame` over the source repository per request (`/blame/{version}/{class}`).                                                  |
 
-> ⚠️ **Совместимость схемы.** Индекс, собранный до переписывания, не содержит колонок `versions.sort_index` / `classes.presence`, и `serve` на нём вернёт 500 `no such column: versions.sort_index` — лечится пересборкой через `index`.
+---
+
+## Requirements
+
+- **JDK 21** (Gradle toolchain, `languageVersion 21`, `jvmTarget JVM_21`). Stack: Kotlin 2.2.20, Ktor 3.2.3, Exposed 0.56, sqlite-jdbc.
+- **Node.js** (for the frontend).
+- **Data on disk:**
+  - For `index`: the sources `artifact-store` (with subfolders `mappings/`, `mc-versions/`, `decompiled/<version>/`, `remapped-mc/<version>/`), `yarn`, `mojmap`, `intermediary`.
+  - For `serve`: a **built index** at `database.path` (otherwise the server exits at startup with a hint to run `index`). Source repositories are not needed at startup, but `diff`, `bytecode`, and `source` read jars from `artifact-store` on demand, during the request.
+  - For `/openapi.*` and `/docs`: the classpath resource `openapi/mappinglens-api.yaml` (bundled in the jar).
+  - For `/skill.md`: the classpath resource `SKILL.md`. Gradle places `.github/skills/mappinglens/SKILL.md` into the jar under that name.
+
+> **Schema compatibility.** An index built before the rewrite has no `versions.sort_index` or
+> `classes.presence` column, and `serve` fails on it with `500 no such column: versions.sort_index`.
+> Rebuild it with `index` to fix this.
 >
-> Индекс, собранный до оптимизации поиска/diff, не содержит колонок `versions.fts_min_rowid` / `versions.fts_max_rowid` и составного индекса `classes(version_id, intermediary_name)`. Их добавляет **`index`** при сборке; для уже существующего большого индекса есть быстрая миграция **без переразбора исходников** (всё выводится из уже записанных строк):
-> ```sh
-> sqlite3 data/mappinglens.db < dev/migrate-search-perf.sql   # ~1.5 мин на полном индексе
-> ```
-> Пока `fts_*_rowid` пусты (старый индекс, миграция не запускалась), поиск автоматически откатывается на прежний медленный путь — результаты те же.
+> An index built before the search and diff optimization has no `versions.fts_min_rowid` /
+> `fts_max_rowid` columns and no composite index on `classes(version_id, intermediary_name)`. A
+> fresh `index` build adds both. Until a large existing index is rebuilt, search falls back to
+> the older, slower path automatically; the results are the same either way.
 
 ---
 
-## Конфигурация
+## Configuration
 
-HOCON-файл `application.conf` (создаётся из встроенного шаблона при первом запуске, если отсутствует).
-Все пути переопределяются переменными окружения.
+A HOCON file, `application.conf`, is created from the bundled template on first run if it does
+not exist. Every path is overridable through an environment variable.
 
-| Ключ | По умолчанию | Env / CLI | Назначение |
-|---|---|---|---|
-| `ktor.deployment.host` | `0.0.0.0` | `HOST`, `-host` | Адрес привязки |
-| `ktor.deployment.port` | `8080` | `PORT`, `-port` | Порт |
-| `mappinglens.database.path` | `data/mappinglens.db` | `MAPPINGLENS_DB_PATH` | SQLite-индекс (serve — RO, index — пишет) |
-| `mappinglens.sources.artifact-store` | `data/artifact-store` | `MAPPINGLENS_ARTIFACT_STORE` | Корень стора (mappings/mc-versions/decompiled/remapped-mc) |
-| `mappinglens.sources.yarn-repo` | `data/yarn` | `MAPPINGLENS_YARN_REPO` | Источник Yarn (только индексация) |
-| `mappinglens.sources.mojmap-repo` | `data/mojmap` | `MAPPINGLENS_MOJMAP_REPO` | Источник Mojmap (только индексация) |
-| `mappinglens.sources.intermediary-mappings` | `data/intermediary` | `MAPPINGLENS_INTERMEDIARY` | Источник Intermediary (только индексация) |
-| `mappinglens.sources.unobfuscated-intermediary-mappings` | `""` (выкл.) | `MAPPINGLENS_UNOBFUSCATED_INTERMEDIARY` | Источник Intermediary для unobfuscated-релизов, отдельный репозиторий (только индексация) |
-| `mappinglens.search.max-results` | `200` | — | Верхняя граница `limit` для поиска |
-| `mappinglens.search.default-results` | `50` | — | `limit` по умолчанию |
-| `mappinglens.indexing.poll-interval-seconds` | `3600` | — | **Игнорируется `serve`** (наследие, см. ниже) |
-| `mappinglens.indexing.initial-versions` | `[]` (все) | — | **Игнорируется `serve`** |
-| `mappinglens.indexing.index-on-startup` | `false` | — | **Игнорируется `serve`** — индексация только через команду `index` |
+| Key                                                      | Default               | Env / CLI                               | Purpose                                                                              |
+|----------------------------------------------------------|-----------------------|-----------------------------------------|--------------------------------------------------------------------------------------|
+| `ktor.deployment.host`                                   | `0.0.0.0`             | `HOST`, `-host`                         | Bind address                                                                         |
+| `ktor.deployment.port`                                   | `8080`                | `PORT`, `-port`                         | Port                                                                                 |
+| `mappinglens.database.path`                              | `data/mappinglens.db` | `MAPPINGLENS_DB_PATH`                   | SQLite index (`serve` opens it read-only; `index` writes it)                         |
+| `mappinglens.sources.artifact-store`                     | `data/artifact-store` | `MAPPINGLENS_ARTIFACT_STORE`            | Store root (`mappings`, `mc-versions`, `decompiled`, `remapped-mc`)                  |
+| `mappinglens.sources.yarn-repo`                          | `data/yarn`           | `MAPPINGLENS_YARN_REPO`                 | Yarn source (indexing only)                                                          |
+| `mappinglens.sources.mojmap-repo`                        | `data/mojmap`         | `MAPPINGLENS_MOJMAP_REPO`               | Mojmap source (indexing only)                                                        |
+| `mappinglens.sources.intermediary-mappings`              | `data/intermediary`   | `MAPPINGLENS_INTERMEDIARY`              | Intermediary source (indexing only)                                                  |
+| `mappinglens.sources.unobfuscated-intermediary-mappings` | `""` (off)            | `MAPPINGLENS_UNOBFUSCATED_INTERMEDIARY` | Intermediary source for unobfuscated releases, a separate repository (indexing only) |
+| `mappinglens.search.max-results`                         | `200`                 | n/a                                     | Upper bound for the search `limit`                                                   |
+| `mappinglens.search.default-results`                     | `50`                  | n/a                                     | Default search `limit`                                                               |
+| `mappinglens.indexing.poll-interval-seconds`             | `3600`                | n/a                                     | **Ignored by `serve`** (legacy, see below)                                           |
+| `mappinglens.indexing.initial-versions`                  | `[]` (all)            | n/a                                     | **Ignored by `serve`**                                                               |
+| `mappinglens.indexing.index-on-startup`                  | `false`               | n/a                                     | **Ignored by `serve`**: indexing runs only through the `index` command               |
 
-**Плагины Ktor:** ContentNegotiation (kotlinx JSON, `prettyPrint`, `encodeDefaults`, `ignoreUnknownKeys`),
-CallLogging, CORS (`anyHost`, метод GET, заголовок `Content-Type`), RateLimit (200 запросов / 60 с — только
-на группы `/api/v1`), StatusPages (`IllegalArgumentException`→`400 invalid_query`, прочее→`500 internal_error`).
+**Ktor plugins:** ContentNegotiation (kotlinx JSON: `prettyPrint`, `encodeDefaults`,
+`ignoreUnknownKeys`), CallLogging, CORS (`anyHost`, GET and POST methods, `Content-Type`
+header), RateLimit (200 requests per 60 seconds, on the `/api/v1` route group only),
+StatusPages (`IllegalArgumentException` maps to `400 invalid_query`, everything else maps
+to `500 internal_error`), and a cache-headers plugin that sets `Cache-Control` on successful
+`/api/v1` responses (see the contract rules below).
 
 ---
 
-## Запуск
+## Running
 
 ```sh
-# 1. Собрать read-only индекс (единственный писатель БД)
+# 1. Build the read-only index (the only writer of the database).
 ./gradlew run --args="index"
 
-# 1a. Пересобрать только указанные версии (например, после того как GitCraft перестроил
-#     версию на новом билде yarn). `-versions` перекрывает `indexing.initial-versions`;
-#     уже проиндексированная версия пересобирается только вместе с `-force`.
+# 1a. Rebuild only the given versions (for example, after GitCraft rebuilds a version on a
+#     new yarn build). `-versions` overrides `indexing.initial-versions`; rebuilding a version
+#     already indexed also needs `-force`.
 ./gradlew run --args="index -force -versions=1.21.4,26.2"
 
-# 2. Запустить сервер (stateless, RO). serve — команда по умолчанию,
-#    если первый аргумент отсутствует или начинается с '-'.
-./gradlew run --args="serve"            # слушает :8080
+# 2. Start the server (stateless, read-only). `serve` is the default command when the first
+#    argument is absent or starts with '-'.
+./gradlew run --args="serve"            # listens on :8080
 
-# 3. Frontend (dev): Vite проксирует /api -> http://localhost:8080
+# 3. Frontend (dev): Vite proxies /api -> http://localhost:8080
 cd frontend
 npm install
 npm run dev                              # http://localhost:5173
-npm run build                            # статика в dist/ (tsc + vite)
+npm run build                            # static bundle in dist/ (tsc + vite)
 ```
 
-`main()` берёт `args[0]` как подкоманду только если она не начинается с `-`; известные команды —
-`index` (пишет БД) и `serve` (RO). Любой другой токен печатает usage и выходит с кодом 2.
+`main()` reads `args[0]` as the subcommand only when it does not start with `-`. The known
+commands are `index` (writes the database) and `serve` (read-only). Any other token prints
+usage and exits with code 2.
 
-Прод-вариант frontend: задеплоить `dist/` как статику и проксировать `/api` на работающий `serve`
-(в compose это делает контейнер `frontend`, см. ниже).
+For a production frontend, deploy `dist/` as static files and proxy `/api` to a running
+`serve` instance (the `frontend` container does this in compose, see below).
 
 ---
 
 ## Docker
 
-Compose-файл поднимает два сервиса: `mappinglens` держит `serve` запущенным и сам достраивает
-данные (GitCraft пополняет артефакт-стор и репозитории исходников, `index` обновляет индекс),
-`frontend` отдаёт собранный бандл.
+The compose file starts two services. `mappinglens` keeps `serve` running and builds its own
+data: GitCraft fills the artifact store and the source repositories, and `index` updates the
+index. `frontend` serves the built bundle.
 
 ```sh
 docker compose -f docker/docker-compose.yml up -d --build
 ```
 
-| Сервис        | Порт на хосте                         | Dockerfile                   |
+| Service       | Host port                             | Dockerfile                   |
 |---------------|---------------------------------------|------------------------------|
-| `mappinglens` | `10096` → API и Swagger UI на `/docs` | `docker/Dockerfile`          |
-| `frontend`    | `22441` → UI                          | `docker/Dockerfile.frontend` |
+| `mappinglens` | `8080`: API and Swagger UI at `/docs` | `docker/Dockerfile`          |
+| `frontend`    | `3000`: UI                            | `docker/Dockerfile.frontend` |
 
-Контекст сборки у обоих образов — корень проекта. `.dockerignore` исключает `frontend/node_modules`
-и `frontend/dist`, сами исходники frontend остаются в контексте. Сборка frontend — `npm ci` и
-`npm run build` на Node 24, дальше `dist/` отдаётся nginx. Бандл ходит в API по своему же origin
-(`/api/v1/…`), поэтому `docker/nginx.conf` проксирует `/api/` на `http://mappinglens:8080`; наружу
-порт `8080` открыт только для прямых запросов к API.
+The build context for both images is the project root. `.dockerignore` excludes
+`frontend/node_modules` and `frontend/dist`; the frontend source itself stays in the context.
+The frontend build runs `npm ci` and `npm run build` on Node 24, then nginx serves `dist/`.
+The bundle calls the API on its own origin (`/api/v1/...`), so `docker/nginx.conf` proxies
+`/api/` to `http://mappinglens:8080`; port `8080` is exposed only for direct API requests.
 
-В образе API: fat jar MappingLens (собирается отдельным слоем на JDK 21), GitCraft (требует JDK 25),
-чекауты `FabricMC/intermediary`, `RelativityMC/intermediary`, `FabricMC/yarn`, `RelativityMC/yarn`
-и пресеты GitCraft. `VOLUME` в Dockerfile нет, тома объявлены в compose-файле.
+In the API image: the MappingLens fat jar (built in its own layer on JDK 21), GitCraft
+(requires JDK 25), checkouts of `FabricMC/intermediary`, `RelativityMC/intermediary`,
+`FabricMC/yarn`, `RelativityMC/yarn`, and the GitCraft presets. The Dockerfile declares no
+`VOLUME`; volumes are declared in the compose file.
 
-| Каталог в томе `/data` | Что лежит |
-|---|---|
-| `artifact-store/` | Артефакт-стор GitCraft (`mappings/`, `mc-versions/`, `decompiled/`, ...) |
-| `repos/yarn`, `repos/mojmap` | Git-репозитории декомпилированных исходников |
-| `index/mappinglens.db` | SQLite-индекс |
-| `state/` | Маркеры цикла обновления, в том числе снимок стора `store.files` |
-| `gradle/` | Gradle home для прогонов GitCraft |
+| Directory under the `/data` volume | Contents                                                                    |
+|------------------------------------|-----------------------------------------------------------------------------|
+| `artifact-store/`                  | GitCraft's artifact store (`mappings/`, `mc-versions/`, `decompiled/`, ...) |
+| `repos/yarn`, `repos/mojmap`       | Git repositories of decompiled source                                       |
+| `index/mappinglens.db`             | SQLite index                                                                |
+| `state/`                           | Update-cycle markers, including the store snapshot `store.files`            |
+| `gradle/`                          | Gradle home for the GitCraft runs                                           |
 
-Цикл `docker/entrypoint.sh`, интервал `UPDATE_INTERVAL_SECONDS`:
+`docker/entrypoint.sh` cycle, every `UPDATE_INTERVAL_SECONDS`:
 
-1. Обновляет четыре чекаута и считает один отпечаток по их refs (`git ls-remote`).
-2. В манифесте Mojang новая версия → пресет `mojmap`. Прогон не ограничен новой версией: GitCraft
-   собирает всё, чего нет в сторе, этим же заполняется и пустой стор. Mojmap не нужны ни
-   intermediary, ни yarn, поэтому версия попадает в поиск в этом же цикле.
-3. Опубликованный билд yarn выше того, что лежит в артефакт-сторе, либо на диске его вообще нет →
-   пресет `yarn`, при необходимости с `--refresh-only-version`.
-4. Индексация. Шаги 2 и 3 только собирают, индексирует один этот шаг, и смотрит он на стор, а не на
-   код возврата сборки. Листинг `artifact-store/mappings` сравнивается со снимком `state/store.files`
-   от последней успешной индексации: сначала `index -force -versions=<...>` по версиям, у которых
-   файлы изменились, затем обычный `index` по версиям, которых в базе ещё нет. Снимок пишется только
-   после успеха, поэтому рестарт контейнера между сборкой и индексацией ничего не теряет, а
-   удалённый `index/` собирается заново целиком.
-5. Индекс изменился → рестарт `serve`: сервер мемоизирует счётчики версий и пути к jar'ам.
+1. Updates the four checkouts and computes one fingerprint over their refs (`git ls-remote`).
+2. A new version in the Mojang manifest triggers the `mojmap` preset. The run is not limited
+   to the new version: GitCraft builds everything missing from the store, which is also what
+   fills an empty store. Mojmap needs neither intermediary nor yarn, so the version reaches
+   the search index in the same cycle.
+3. A published yarn build newer than the one in the artifact store, or no yarn on disk at
+   all, triggers the `yarn` preset, with `--refresh-only-version` when needed.
+4. Indexing. Steps 2 and 3 only build; this step is the only one that indexes, and it checks
+   the store, not a build's exit code. The `artifact-store/mappings` listing is compared
+   against the snapshot `state/store.files`: first `index -force -versions=<...>` for
+   versions whose files changed, then a plain `index` for versions still missing from the
+   database. The snapshot is written only after success, so a container restart between a
+   build and an index run loses nothing, and a removed `index/` directory rebuilds in full.
+5. An index change restarts `serve`: the server memoizes version counts and jar paths.
 
-Сравниваются все версии, а не только свежие. Если набор несобираемых версий не изменился и ни один
-mapping-репозиторий не двигался, прогон GitCraft пропускается: версия ждёт публикации intermediary
-или yarn.
+Every version is compared, not only recent ones. When the set of unbuildable versions has
+not changed and no mapping repository has moved, the GitCraft run is skipped: those versions
+are still waiting on intermediary or yarn to be published.
 
-Пресеты `docker/presets/mojmap.args` и `docker/presets/yarn.args` — по одному аргументу в строке,
-строки с `#` игнорируются; передаются GitCraft как `--preset=<файл>`.
+The presets `docker/presets/mojmap.args` and `docker/presets/yarn.args` hold one argument per
+line; lines starting with `#` are ignored. GitCraft receives them as `--preset=<file>`.
 
-| Переменная | По умолчанию | Назначение |
-|---|---|---|
-| `UPDATE_INTERVAL_SECONDS` | `3600` | Пауза между проверками |
-| `PORT` | `8080` | Порт `serve` |
-| `MAPPINGLENS_*` | пути внутри `/data` | Те же переменные, что и вне контейнера |
-| `GITCRAFT_JAVA_OPTS` | — | Опции JVM для прогона GitCraft, например `-Xmx16g` |
-| `INDEX_JAVA_OPTS` | — | Опции JVM для `index`, например `-Xmx4g` |
-| `SERVE_JAVA_OPTS` | — | Опции JVM для `serve`, например `-Xmx4g` |
+| Variable                  | Default             | Purpose                                                 |
+|---------------------------|---------------------|---------------------------------------------------------|
+| `UPDATE_INTERVAL_SECONDS` | `3600`              | Pause between checks                                    |
+| `PORT`                    | `8080`              | `serve` port                                            |
+| `MAPPINGLENS_*`           | paths under `/data` | Same variables as outside the container                 |
+| `GITCRAFT_JAVA_OPTS`      | none                | JVM options for the GitCraft run, for example `-Xmx16g` |
+| `INDEX_JAVA_OPTS`         | none                | JVM options for `index`, for example `-Xmx4g`           |
+| `SERVE_JAVA_OPTS`         | none                | JVM options for `serve`, for example `-Xmx4g`           |
 
-Build-args `GITCRAFT_REPO` и `GITCRAFT_REF` указывают, откуда брать GitCraft. Нужны опции
-`--preset`, `--artifact-store-path`, `--override-repo-target` и `--fabric-intermediary-repo`.
+The build args `GITCRAFT_REPO` and `GITCRAFT_REF` set where GitCraft comes from. It needs the
+`--preset`, `--artifact-store-path`, `--override-repo-target`, and `--fabric-intermediary-repo`
+options.
 
-> ⚠️ На пустом томе первый прогон строит все версии с нуля и занимает дни, `serve` поднимется
-> только после появления индекса. Готовый артефакт-стор монтируется поверх `/data/artifact-store`
-> (пример закомментирован в compose-файле).
+> On an empty volume, the first run builds every version from nothing and takes days; `serve`
+> starts only once an index exists. Mount an existing artifact store over
+> `/data/artifact-store` to skip that first build (see the commented example in the compose
+> file).
 
 ---
 
-## Эндпоинты
+## Endpoints
 
-Базовый префикс — `/api/v1`. Все эндпоинты — `GET`. `{className...}` / `{name...}` — catch-all:
-остаток пути (со слэшами) склеивается в internal-имя класса.
+Base prefix: `/api/v1`. Every endpoint is `GET` unless noted otherwise. `{className...}` and
+`{name...}` are catch-all path segments: the remaining path (with slashes) joins into a
+class internal name.
 
-### Мета (без rate-limit)
+### Meta (not rate-limited)
 
-| Эндпоинт | Описание |
-|---|---|
-| `GET /` | Текстовый указатель на `/docs` и `/openapi.json` |
-| `GET /health` | Liveness, отвечает `ok` |
-| `GET /openapi.json` | OpenAPI 3.1 как **настоящий JSON** (YAML парсится SnakeYAML и реэкспортируется) |
-| `GET /openapi.yaml` | OpenAPI 3.1 в YAML |
-| `GET /skill.md` | Skill-документ в Markdown (тот же файл, что `.github/skills/mappinglens/SKILL.md`) |
-| `GET /docs` | Swagger UI (включён по умолчанию, `includeDocs=true`) |
+| Endpoint            | Description                                                                                   |
+|---------------------|-----------------------------------------------------------------------------------------------|
+| `GET /`             | Text pointer to `/docs`, `/openapi.json`, and `/skill.md`                                     |
+| `GET /health`       | Liveness check. Returns `ok`                                                                  |
+| `GET /openapi.json` | OpenAPI 3.1 as real JSON (the YAML is parsed by SnakeYAML and re-exported)                    |
+| `GET /openapi.yaml` | OpenAPI 3.1 as YAML                                                                           |
+| `GET /skill.md`     | The agent skill document in Markdown (the same file as `.github/skills/mappinglens/SKILL.md`) |
+| `GET /docs`         | Swagger UI (on by default, `includeDocs=true`)                                                |
 
-### Версии
+### Versions
 
-| Эндпоинт | Описание |
-|---|---|
-| `GET /api/v1/versions` | Список всех версий (флаги `hasYarn/Mojmap/Intermediary` + counts), порядок semver (новые сверху) |
-| `GET /api/v1/versions/{version}` | Метаданные одной версии (`404 version_not_found`, если нет) |
+| Endpoint                         | Description                                                                                           |
+|----------------------------------|-------------------------------------------------------------------------------------------------------|
+| `GET /api/v1/versions`           | All versions (`hasYarn`/`hasMojmap`/`hasIntermediary` flags plus counts), semver order (newest first) |
+| `GET /api/v1/versions/{version}` | Metadata for one version (`404 version_not_found` if absent)                                          |
 
-### Поиск
+### Search
 
-| Эндпоинт | Описание |
-|---|---|
-| `GET /api/v1/search` | FTS-поиск классов/методов/полей в версии; каждая строка — имя во всех неймспейсах |
+| Endpoint             | Description                                                                                               |
+|----------------------|-----------------------------------------------------------------------------------------------------------|
+| `GET /api/v1/search` | FTS search over classes, methods, and fields in one version; each row carries the name in every namespace |
 
-Параметры: `q` (обяз.), `version` (по умолч. последний release), `type` (`class/method/field/all`),
-`namespace` (`yarn/mojmap/intermediary/all`), `limit` (1–200, по умолч. 50), `offset` (≥0), `exact` (`true/false`).
-`q` поддерживает форму `Owner#member` / `Owner.member` / `Owner/member`.
+Parameters: `q` (required), `version` (default: the latest release), `type`
+(`class`/`method`/`field`/`all`), `namespace` (`yarn`/`mojmap`/`intermediary`/`all`), `limit`
+(1 to 200, default 50), `offset` (0 or more), `exact` (`true`/`false`). `q` also accepts the
+form `Owner#member`, `Owner.member`, or `Owner/member`.
 
-### Перевод
+### Translate
 
-| Эндпоинт | Описание |
-|---|---|
-| `GET /api/v1/translate` | Перевод имени между неймспейсами (`name`, `from`, `to`, `version?`, `type=auto`) |
-| `GET /api/v1/translate/class/{name...}` | Шорткат перевода класса (тип фиксирован `class`; `from/to` по умолч. `yarn`→`mojmap`) |
+| Endpoint                                | Description                                                                                           |
+|-----------------------------------------|-------------------------------------------------------------------------------------------------------|
+| `GET /api/v1/translate`                 | Translates a name between namespaces (`name`, `from`, `to`, `version?`, `type=auto`)                  |
+| `GET /api/v1/translate/class/{name...}` | Shortcut for a class translation (`type` fixed to `class`; `from`/`to` default to `yarn` to `mojmap`) |
 
 ### Diff
 
-| Эндпоинт | Описание |
-|---|---|
-| `GET /api/v1/diff` | Символьный diff (added/removed/renamed классов/методов/полей) + summary |
-| `GET /api/v1/diff/files` | Список изменённых файлов (`format=json`) или raw-патч (`format=patch/git`) |
-| `GET /api/v1/diff/patch` | Unified/git-патч исходников (фильтры `path`/`file`/`function`, `context`, `limit`) или JSON с метаданными |
+| Endpoint                 | Description                                                                                                      |
+|--------------------------|------------------------------------------------------------------------------------------------------------------|
+| `GET /api/v1/diff`       | Symbol diff (added, removed, renamed classes/methods/fields) plus a summary                                      |
+| `GET /api/v1/diff/files` | List of changed files (`format=json`), or a raw patch (`format=patch`/`git`)                                     |
+| `GET /api/v1/diff/patch` | Unified or git patch of the source (`path`/`file`/`function` filters, `context`, `limit`), or JSON with metadata |
 
-Параметры diff: `from`, `to` (обяз.); `namespace` (для `/diff` — `yarn/mojmap/intermediary`, для
-`/diff/files` и `/diff/patch` — только `yarn/mojmap`); `type`, `package`, `class`, `changeType`, `limit`.
+Diff parameters: `from`, `to` (required); `namespace` (for `/diff`: `yarn`/`mojmap`/`intermediary`;
+for `/diff/files` and `/diff/patch`: `yarn`/`mojmap` only); `type`, `package`, `class`,
+`changeType`, `limit`.
 
-- `package` — префикс пакета над всем diff'ом; `class` — ровно один класс по внутреннему имени в
-  `namespace` (перечисляет добавленные/удалённые/переименованные члены по имени с `owner`/`descriptor`;
-  `summary` совпадает с `/diff/files` для того же класса). `class` приоритетнее `package`.
-- `/diff/files?format=patch` и `/diff/patch` принимают `ignoreWhitespace` (по умолч. `false`):
-  схлопывает ханки, отличающиеся только пробелами/переносами/переотступами. Патчи минимальны по
-  построению (Myers O(ND)) — класс с парой правок даёт пару ханков, а не переписанный целиком файл;
-  прежний LCS-путь остаётся лишь фолбэком для почти полностью переформатированных файлов.
+- `package` is a package-path prefix over the whole diff. `class` targets exactly one class
+  by internal name in `namespace`: it lists added, removed, and renamed members by name, with
+  `owner` and JVM `descriptor`, and its `summary` matches `/diff/files` for the same class
+  exactly. `class` wins when both are given.
+- `/diff/files?format=patch` and `/diff/patch` accept `ignoreWhitespace` (default `false`):
+  it collapses hunks that differ only in whitespace, line breaks, or reindentation (decompiler
+  cosmetics). Patches are minimal by construction (Myers O(ND) diff): a class with a few real
+  changes yields a few hunks, not a rewritten file. The older LCS path remains only as a
+  fallback for near-total reformats.
 
-### История по версиям
+### Version history
 
-| Эндпоинт | Описание |
-|---|---|
-| `GET /api/v1/history?q=<key>` | Один класс/член по всем версиям сразу: список диапазонов (`spans`) с одинаковым ответом |
+| Endpoint                      | Description                                                                                               |
+|-------------------------------|-----------------------------------------------------------------------------------------------------------|
+| `GET /api/v1/history?q=<key>` | One class or member across every indexed version at once: a list of ranges (`spans`) that share an answer |
 
-Параметры: `q` (обяз., повторяемый — до 50 ключей за запрос), `namespace` (`yarn/mojmap/intermediary`,
-по умолч. `mojmap`), `from`/`to` (ограничивают перебор версий; порядок границ не важен, неизвестная
-версия → `404`). Ключ `q` — internal-имя класса (точки допустимы) или `owner:name`; третий сегмент
-`:descriptor` принимается ради совместимости с ключами `/references` и `/exists`, но в отборе не
-участвует.
+Parameters: `q` (required, repeatable: up to 50 keys per request), `namespace`
+(`yarn`/`mojmap`/`intermediary`, default `mojmap`), `from`/`to` (bound the version walk;
+either bound may be the older one; an unknown version returns `404`). The key `q` is a class
+internal name (dots allowed) or `owner:name`. A third `:descriptor` segment is accepted, for
+compatibility with keys from `/references` and `/exists`, but it does not filter the result.
 
-Ответ — `{namespace, results[]}`, по одной записи на каждый `q`, в порядке запроса, поле `query`
-повторяет исходную строку дословно. `type` = `class`/`method`/`field`/`unknown`. Каждый `span` —
-диапазон подряд идущих версий с одинаковым ответом: `from` (старшая), `to` (младшая), `versions`
-(сколько версий), `present`. Для класса заполнены `intermediary`/`yarn`/`mojmap`, для члена —
-`owner` (в запрошенном неймспейсе) и `members[]` (по записи на перегрузку).
+The response is `{namespace, results[]}`: one entry per `q`, in request order, and `query`
+repeats the input string exactly. `type` is `class`, `method`, `field`, or `unknown`. Each
+`span` is a run of consecutive versions with the same answer: `from` (the older bound), `to`
+(the newer bound), `versions` (the count), `present`. A class entry also carries
+`intermediary`/`yarn`/`mojmap`; a member entry carries `owner` (in the requested namespace)
+and `members[]` (one entry per overload).
 
-- Класс отслеживается не по имени, а по intermediary-имени самого нового совпадения, поэтому
-  переименование и переезд в другой пакет остаются одной историей: имя из любой версии даёт один и
-  тот же ответ.
-- Unobfuscated-релизы (всё после 1.21.11) своих маппингов не содержат. Если индексатору задан
-  `sources.unobfuscated-intermediary-mappings`, intermediary у них есть, и история работает как на
-  любой другой версии. Проверить состояние индекса можно по `hasIntermediary` в `/api/v1/versions`.
-- Без этого источника имя, взятое из такой версии, само по себе отвечало бы только за неё, поэтому
-  класс дополнительно ищется в ближайшей предыдущей версии с intermediary — по простому имени,
-  которое переезд пакета сохраняет. Найденное intermediary-имя и восстанавливает остальную историю.
-- Два имени, живущие в одной версии, — это два класса, и связаны они не будут: у класса одно имя на
-  версию. Так `util/filefix/virtualfilesystem/Node` не приклеивается к `world/level/pathfinder/Node`,
-  хотя простое имя у них общее. Цена правила — без отдельного источника класс, переименованный
-  (а не переехавший) уже после 1.21.11, историю до 1.21.11 не получит.
-- Именованные дескрипторы в индексе не хранятся, поэтому смена сигнатуры видна по
-  `members[].intermediaryDescriptor`.
-- `present: false` с непустым `owner` — класс жив, член исчез; `owner: null` — исчез класс.
-- Версии-двойники (`1.21.11` и `1.21.11_unobfuscated`) идут в списке версий подряд, а yarn- и
-  intermediary-имена у двойника пустые, поэтому такая пара всегда даёт два соседних span'а.
-  Сузить перебор помогает `from`/`to`.
+- A class is tracked by the intermediary name of its newest match, not by the name queried,
+  so a rename or a package move stays one history: the name from any version gives the same
+  answer.
+- Unobfuscated releases (everything after 1.21.11) ship no mappings of their own. When the
+  indexer has `sources.unobfuscated-intermediary-mappings` set, they carry intermediary like
+  any other version, and history works the same way. Check `hasIntermediary` on
+  `/api/v1/versions` to see which case an index is in.
+- Without that source, a name taken from one of those versions is also looked up in the
+  nearest earlier version that carries intermediary, by simple name (a package move preserves
+  it). That lookup recovers the rest of the history. Two names alive in the same version are
+  never linked, because a class has one name per version: `util/filefix/virtualfilesystem/Node`
+  is not linked to `world/level/pathfinder/Node`, even though the two share a simple name. The
+  cost of this rule: without the separate source, a class renamed, not moved, after 1.21.11
+  gets no history before 1.21.11.
+- Named descriptors are not indexed, so a signature change is visible only as a changed
+  `members[].intermediaryDescriptor`, and only on versions that carry intermediary.
+- `present: false` with a non-null `owner` means the class is still there and the member is
+  gone. `owner: null` means the class itself is gone.
+- Twin versions (`1.21.11` and `1.21.11_unobfuscated`) sit next to each other in the version
+  list, and the twin's yarn and intermediary names are empty, so such a pair always yields two
+  adjacent spans. `from`/`to` narrow the walk.
 
 ### Compare
 
-| Эндпоинт | Описание |
-|---|---|
-| `GET /api/v1/compare/{version}/{className...}` | Таблица соответствия членов (методы+поля) Yarn↔Mojmap для класса |
+| Endpoint                                       | Description                                                                             |
+|------------------------------------------------|-----------------------------------------------------------------------------------------|
+| `GET /api/v1/compare/{version}/{className...}` | Member-correspondence table (methods and fields) between Yarn and Mojmap, for one class |
 
-Параметры: `from` (по умолч. `yarn` — выбирает колонку поиска класса и проверку доступности),
-`to` (по умолч. `mojmap`, см. замечание ниже).
+Parameters: `from` (default `yarn`: picks the column for the class lookup and the
+availability check), `to` (default `mojmap`, see the note below).
 
-### Байткод и исходники
+Response: the obf-keyed member table aligning the class across both namespaces, including
+members present on only one side. No source is read. Per-member `status`: `matched`,
+`yarnOnly`, `mojmapOnly`, `unmappedYarn`, `synthetic`, `initializer`, or `unmapped` (neither
+namespace names the member). Class-level `presence`: `both`, `yarn_only`, or `mojmap_only`.
+`422` when the requested `from` namespace is unavailable for that version.
 
-| Эндпоинт | Описание |
-|---|---|
-| `GET /api/v1/bytecode/{version}/{className...}` | Дизассемблированный байткод (ASM Textifier); `namespace`, `format=text/json` |
-| `GET /api/v1/source/{version}/{className...}` | Декомпилированный `.java` класса; `namespace=yarn/mojmap`, `format=text/json` |
-| `GET /api/v1/tokens/{version}/{className...}` | `{source, tokens}`: каждый идентификатор `.java` резолвится в owner/name/descriptor (JavaParser); `namespace=yarn/mojmap`, `format=text/json` |
+Note: `to` is validated as a namespace name, but it is never checked for availability and it
+does not affect what is returned. Alignment is always Yarn to Mojmap.
 
-`source`: если точного совпадения имени нет, берётся единственный класс версии с таким простым
-именем. Так резолвятся и короткое имя (`ZombifiedPiglin`), и класс, переехавший в другой пакет.
-Поле `class` в ответе — то имя, которое реально отдано. Простых имён несколько или ни одного →
-`404`, а в `message` перечислены кандидаты. `format=text` отдаёт исходник как `text/plain`,
-`format=text` у `tokens` — TSV с шапкой `#startLine…declaration`, по токену на строку.
+### Bytecode and source
 
-### Иерархия и ссылки
+| Endpoint                                        | Description                                                                                                                                   |
+|-------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------|
+| `GET /api/v1/bytecode/{version}/{className...}` | Disassembled bytecode (ASM Textifier); `namespace`, `format=text/json`                                                                        |
+| `GET /api/v1/source/{version}/{className...}`   | Decompiled `.java` for a class; `namespace=yarn/mojmap`, `format=text/json`                                                                   |
+| `GET /api/v1/tokens/{version}/{className...}`   | `{source, tokens}`: resolves each `.java` identifier to owner, name, and descriptor (JavaParser); `namespace=yarn/mojmap`, `format=text/json` |
 
-| Эндпоинт | Описание |
-|---|---|
-| `GET /api/v1/hierarchy/{version}/{className...}` | Супертипы+подтипы класса (nodes/edges, ASM-скан named-jar'а); `namespace=yarn/mojmap` |
-| `GET /api/v1/references/{version}?q=<key>` | Использования класса/члена (`q` = `owner` или `owner:name:descriptor`); `namespace=yarn/mojmap` |
-| `POST /api/v1/exists/{version}` | Батч-проверка существования классов/членов; тело `{namespace, members[]}` (ключи = `owner` или `owner:name:descriptor`); ответ `{results:[{key, exists, renamedTo}]}` |
+`source`: when no class matches the name exactly, the endpoint falls back to the single class
+of that version with the same simple name. This resolves both a short name
+(`ZombifiedPiglin`) and a class that moved package. The response `class` field names the
+class actually served. When the simple name is ambiguous or unknown, the call returns `404`,
+and `message` lists the candidates. `format=text` returns the source as `text/plain`.
+`format=text` on `tokens` returns TSV with a `#`-prefixed header line, one token per line.
 
-`exists`: сканирует named-jar версии через ASM (кэш per version/namespace), поэтому дескрипторы
-совпадают без ремаппинга; до 2000 ключей за запрос; `404`, если named-jar для версии отсутствует.
-Единственный `POST`-эндпоинт, **не кэшируется** (ответ зависит от тела). `renamedTo` зарезервировано
-(пока всегда `null` — определение переименования требует исходной версии-якоря, которой у одноверсионной
-проверки нет). Назначение — валидация таргетов миксинов/shadow при апдейте мода одним вызовом.
+### Blame
 
----
+| Endpoint                                     | Description                                                                                                                                |
+|----------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------|
+| `GET /api/v1/blame/{version}/{className...}` | Version that last changed each line of the class source. `lines` holds one entry per line, line 1 first, and each entry indexes `versions` |
 
-## Общие правила контракта
+`className` resolves the same way as `/source`. One `git blame` over the source repository
+answers the whole file, so use this instead of walking `/diff/patch` version by version. A
+version indexed from the artifact store alone has no source repository and returns `404`.
 
-- **Неймспейсы:** `yarn`, `mojmap`, `intermediary`, `obfuscated` (алиас `obf`). Где какие допускаются — см. таблицы выше.
-- **Версия по умолчанию** (search/translate) — последний `release` по semver-порядку.
-- **Ошибки** — единый `ApiError { error, message, status }`, где `status` дублирует HTTP-код:
-  `400 invalid_query` (валидация), `404 not_found`, `422 namespace_unavailable` (версия не имеет запрошенного неймспейса).
-- **Форматы ответов:** JSON по умолчанию; `bytecode/source/tokens?format=text` → `text/plain`; `diff` патч (`format=patch/git`) → `text/x-diff`.
-- **`hasIntermediary`** — версия имеет intermediary-имена, а не отдельный intermediary-файл. Yarn tiny v2
-  устроен как `official->intermediary->named`, поэтому любая yarn-версия отдаёт intermediary.
-  Unobfuscated-релиз, который yarn не покрывает, отдаёт intermediary только при заданном
-  `sources.unobfuscated-intermediary-mappings`.
-- **`hasMojmap`** — у unobfuscated-релизов тоже true. Своих маппингов они не публикуют, но имена
-  Mojang уже лежат в самом jar, поэтому неймспейс `official` и есть неймспейс `mojmap`: на таких
-  версиях `obfuscated` и `mojmap` возвращают одно и то же имя.
-- **Rate limit:** 200 запросов / 60 с на группы `/api/v1` (мета-эндпоинты не лимитируются).
+### Hierarchy and references
 
-### Поведенческие замечания (важно для агентов)
+| Endpoint                                         | Description                                                                                                                                                             |
+|--------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `GET /api/v1/hierarchy/{version}/{className...}` | Supertypes and subtypes of a class (nodes/edges, ASM scan of the named jar); `namespace=yarn/mojmap`                                                                    |
+| `GET /api/v1/references/{version}?q=<key>`       | Uses of a class or member (`q` is `owner` or `owner:name:descriptor`); `namespace=yarn/mojmap`                                                                          |
+| `POST /api/v1/exists/{version}`                  | Batch existence check for classes/members; body `{namespace, members[]}` (keys are `owner` or `owner:name:descriptor`); response `{results:[{key, exists, renamedTo}]}` |
 
-- `search.totalResults` — это размер **текущей страницы**, а не общее число совпадений.
-- `diff*` с несуществующей версией возвращает **200** с пустым/нулевым результатом (не 404).
-- `translate` и `compare` с несуществующей версией возвращают **404**, не 422.
-- `compare`: параметр `to` валидируется, но на выборку не влияет — выравнивание всегда Yarn↔Mojmap;
-  `from` выбирает колонку для поиска класса и определяет проверку 422.
-- `/diff/files`: `context`/`limit`/`function` читаются только при `format=patch/git`; при `format=json` игнорируются.
+`exists` scans the version's named jar with ASM (cached per version and namespace), so
+descriptors match exactly, without remapping. It accepts up to 2000 keys per request, and
+returns `404` when the named jar for the version is missing. This is the only `POST`
+endpoint, and the only endpoint never cached: the result depends on the request body.
+`renamedTo` is reserved and always `null` today, because detecting a rename needs an anchor
+version, which a single-version check does not have. Intended for validating mixin or shadow
+targets before a mod update, in one call.
 
 ---
 
-## Что хранит индекс
+## General contract rules
 
-SQLite-индекс (собирается `index`, открывается `serve` как RO): `versions` (метаданные + semver-порядок + counts + FTS rowid-диапазон версии),
-унифицированные obf-ключённые строки `classes`/`methods`/`fields` (с `presence ∈ {both, yarn_only, mojmap_only}`)
-и FTS5-таблица `search_index` по именам. **Не хранит** декомпилированный исходник, байткод и git-блобы —
-они читаются по требованию из read-only стора.
+- **Namespaces:** `yarn`, `mojmap`, `intermediary`, `obfuscated` (alias `obf`). See the
+  tables above for which endpoints accept which.
+- **Default version** (search, translate): the latest `release` by semver order.
+- **Errors:** one `ApiError { error, message, status }` shape, where `status` repeats the
+  HTTP code: `400 invalid_query` (validation), `404 not_found`, `422 namespace_unavailable`
+  (the version lacks the requested namespace).
+- **Response formats:** JSON by default; `bytecode`/`source`/`tokens?format=text` return
+  `text/plain`; a diff patch (`format=patch`/`git`) returns `text/x-diff`.
+- **`hasIntermediary`** means the version carries intermediary names, not that a standalone
+  intermediary file exists. Yarn's tiny v2 format is `official->intermediary->named`, so
+  every yarn version carries intermediary. An unobfuscated release that yarn does not cover
+  carries intermediary only when `sources.unobfuscated-intermediary-mappings` is set.
+- **`hasMojmap`** is also true on unobfuscated releases. They publish no mappings of their
+  own, but the jar already carries Mojang's names, so the `official` namespace is the mojmap
+  namespace: on those versions, `obfuscated` and `mojmap` return the same name.
+- **Rate limit:** 200 requests per 60 seconds on the `/api/v1` route group (meta endpoints
+  are not limited).
+
+### Behavioral notes (for agents)
+
+- `search.totalResults` is the size of the current page, not the total match count.
+- `diff*` on an unknown version returns `200` with an empty or zero result, not `404`.
+- `translate` and `compare` on an unknown version return `404`, not `422`.
+- `compare`: the `to` parameter is validated but does not affect the result; alignment is
+  always Yarn to Mojmap. `from` picks the column for the class lookup and decides the `422`
+  check.
+- `/diff/files`: `context`, `limit`, and `function` are read only when `format=patch/git`;
+  they are ignored when `format=json`.
 
 ---
 
-## План на будущее
+## What the index stores
 
-1. **Очистка мёртвого кода переписывания.** `VersionDiscovery`, `GitWatcher` и флаги `indexing.*`
-   (`poll-interval-seconds`, `initial-versions`, `index-on-startup`) больше не используются `serve` —
-   оставлены с проходящими тестами, подлежат удалению.
-2. **Frontend → полный explorer.** Добавить drill-down вьюху на `GET /api/v1/compare` (таблица членов),
-   опционально интегрировать `translate` / `diff` / `bytecode`; рассмотреть отдачу статики `dist/` самим Ktor
-   (единый деплой вместо отдельного reverse-proxy).
-3. **Качество поиска.** Улучшить ранжирование (mapped > intermediary > obf, бонус класса/владельца) —
-   сейчас `score` использует только `1/(1+|rank|)`, аргументы `query`/`type` в `scoreFromBm25` игнорируются.
-4. **Коммит-точные diff/история** через JGit (опционально), поверх текущего jar-based горячего пути.
-5. **Phase 5 (низкий приоритет).** In-browser деобфускация/декомпиляция для версий без готового jar.
+The SQLite index (built by `index`, opened read-only by `serve`) holds: `versions`
+(metadata, semver order, counts, and each version's FTS rowid range), unified obf-keyed rows
+in `classes`/`methods`/`fields` (with `presence` in `{both, yarn_only, mojmap_only}`), and
+the FTS5 table `search_index` over names. It does not store decompiled source, bytecode, or
+git blobs; those are read on demand from the read-only store.
+
+---
+
+## Future plan
+
+1. **Remove dead rewrite code.** `VersionDiscovery`, `GitWatcher`, and the `indexing.*` flags
+   (`poll-interval-seconds`, `initial-versions`, `index-on-startup`) are not referenced
+   anywhere outside their own files. Their tests still pass; the code is a removal candidate.
+2. **Frontend: full explorer.** Add a drill-down view over `GET /api/v1/compare` (member
+   table). Optionally integrate `translate`, `diff`, and `bytecode`. Consider serving the
+   `dist/` static bundle from Ktor itself, instead of a separate reverse proxy.
+3. **Search quality.** Improve ranking (mapped over intermediary over obf, with a
+   class/owner bonus). `score` currently uses only `1/(1+|rank|)`, and `scoreFromBm25`'s
+   `query`/`type` arguments are unused.
+4. **Commit-accurate diff and history** through JGit (optional), on top of the current
+   jar-based hot path.
+5. **Phase 5 (low priority).** In-browser deobfuscation and decompilation, for versions
+   without a ready jar.

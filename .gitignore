@@ -1,7 +1,9 @@
 .gradle/
 build/
 .idea/
+.vscode/
 *.iml
+*.class
 application.conf
 data/
 out/

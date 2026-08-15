@@ -7,24 +7,21 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     ports:
-      - "10096:8080"
+      - "8080:8080"
     user: "1000:1000"
     environment:
       UPDATE_INTERVAL_SECONDS: 3600
-      # GitCraft's forked run JVM does the decompile and remap work. 8g was not enough for
-      # 1.20-pre1, so GITCRAFT_JAVA_OPTS starts at 16g.
+      # GitCraft's forked run JVM does the decompile and remap work.
       GITCRAFT_JAVA_OPTS: -Xmx16g
       # The index command processes one version per run no matter how many versions are targeted.
       # Heap needs do not grow with the version count.
       INDEX_JAVA_OPTS: -Xmx4g
       # Serve keeps a cache per class and version for the life of the process
-      # (FUTURE_IMPROVEMENTS.md). Size SERVE_JAVA_OPTS for API use between restarts, not for the
-      # 35GB db file.
       SERVE_JAVA_OPTS: -Xmx4g
     volumes:
-      - /mnt/cache/MappinLens:/data
+      - /path/to/data:/data
       # An existing GitCraft store can be mounted over the matching subdirectory, which skips the
-      # first build (a full build from an empty volume takes days). The layout under /data is:
+      # first build (a full build from an empty volume takes a long time). The layout under /data is:
       #   /data/artifact-store  GitCraft artifact store (mappings, mc-versions, decompiled, ...)
       #   /data/repos/yarn      decompiled sources, yarn
       #   /data/repos/mojmap    decompiled sources, mojmap
@@ -40,7 +37,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.frontend
     ports:
-      - "22441:80"
+      - "3000:80"
     depends_on:
       - mappinglens
     restart: unless-stopped
