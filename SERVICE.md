@@ -56,6 +56,12 @@ from a read-only GitCraft store. The server opens the index with `PRAGMA query_o
 > `fts_max_rowid` columns and no composite index on `classes(version_id, intermediary_name)`. A
 > fresh `index` build adds both. Until a large existing index is rebuilt, search falls back to
 > the older, slower path automatically; the results are the same either way.
+>
+> An index built before the version-count columns has no `versions.class_count` / `method_count` /
+> `field_count`, and `serve` fails on it with `500 no such column: versions.class_count`. A fresh
+> `index` build adds the columns; `dev/migrate-version-counts.sql` adds and fills them on an
+> existing index without a rebuild. A version row whose columns are null still answers correctly,
+> from the older grouped-count path.
 
 ---
 

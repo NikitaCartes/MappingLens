@@ -21,11 +21,12 @@ import org.jetbrains.exposed.sql.transactions.transaction
 
 class VersionService(private val db: Database) {
 
-    // The index is immutable for the server's lifetime (read-only, sole writer is the offline
-    // indexer), so per-version row counts never change. Computing the three grouped COUNTs scans
-    // ~50M index rows (~1.5s warm / ~6.5s cold on a full multi-version index); memoize them so only
-    // the first /versions request pays. ponytail: a benign double-compute under a startup race is
-    // fine (idempotent over immutable data); no lock needed.
+    // The indexer records each version's row counts on the version row, so the catalog is one scan
+    // of the ~500-row versions table. An index built before those columns leaves them null, and such
+    // rows fall back to three grouped COUNTs over ~51M index rows (~1.6s warm / ~6.5s cold). The
+    // index is immutable for the server's lifetime (read-only, sole writer is the offline indexer),
+    // so memoize that fallback: only the first request pays it. ponytail: a benign double-compute
+    // under a startup race is fine (idempotent over immutable data); no lock needed.
     @Volatile
     private var countsCache: VersionCounts? = null
 
@@ -33,7 +34,17 @@ class VersionService(private val db: Database) {
         val classes: Map<Int, Long>,
         val methods: Map<Int, Long>,
         val fields: Map<Int, Long>,
-    )
+    ) {
+        fun of(versionRowId: Int) = Triple(
+            classes[versionRowId] ?: 0,
+            methods[versionRowId] ?: 0,
+            fields[versionRowId] ?: 0,
+        )
+
+        companion object {
+            val EMPTY = VersionCounts(emptyMap(), emptyMap(), emptyMap())
+        }
+    }
 
     /** Must be called inside a [transaction]; populates and caches the per-version counts once. */
     private fun counts(): VersionCounts = countsCache ?: VersionCounts(
@@ -42,27 +53,31 @@ class VersionService(private val db: Database) {
         fields = countsByVersion(FieldTable.versionId),
     ).also { countsCache = it }
 
+    /** The counts the indexer recorded, or null on a version row written before those columns. */
+    private fun ResultRow.storedCounts(): Triple<Long, Long, Long>? {
+        val classes = this[VersionTable.classCount] ?: return null
+        val methods = this[VersionTable.methodCount] ?: return null
+        val fields = this[VersionTable.fieldCount] ?: return null
+        return Triple(classes, methods, fields)
+    }
+
     fun listVersions(): VersionListResponse = transaction(db) {
-        val counts = counts()
-        val versions = VersionTable.selectAll()
+        val rows = VersionTable.selectAll()
             .orderBy(VersionTable.sortIndex to SortOrder.DESC_NULLS_LAST, VersionTable.versionId to SortOrder.DESC)
-            .map { row ->
-                val versionRowId = row[VersionTable.id].value
-                versionInfo(
-                    row,
-                    counts.classes[versionRowId] ?: 0,
-                    counts.methods[versionRowId] ?: 0,
-                    counts.fields[versionRowId] ?: 0,
-                )
-            }
+            .toList()
+        // One grouped scan serves every row that lacks recorded counts; skip it when none does.
+        val scanned = if (rows.any { it.storedCounts() == null }) counts() else VersionCounts.EMPTY
+        val versions = rows.map { row ->
+            val (classes, methods, fields) = row.storedCounts() ?: scanned.of(row[VersionTable.id].value)
+            versionInfo(row, classes, methods, fields)
+        }
         VersionListResponse(versions)
     }
 
     fun getVersion(versionId: String): VersionInfo? = transaction(db) {
         val row = VersionTable.selectAll().where { VersionTable.versionId eq versionId }.singleOrNull()
             ?: return@transaction null
-        val versionRowId = row[VersionTable.id].value
-        val (classes, methods, fields) = countsFor(versionRowId)
+        val (classes, methods, fields) = row.storedCounts() ?: countsFor(row[VersionTable.id].value)
         versionInfo(row, classes, methods, fields)
     }
 

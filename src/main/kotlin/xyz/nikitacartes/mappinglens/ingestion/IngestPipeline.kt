@@ -106,6 +106,11 @@ class IngestPipeline(private val config: AppConfig) {
                 .singleOrNull()?.get(VersionTable.id)?.value
         }
 
+        // Recorded on the version row so /versions reads them instead of counting the rows itself.
+        val classes = unified.size.toLong()
+        val methods = unified.sumOf { it.methods.size }.toLong()
+        val fields = unified.sumOf { it.fields.size }.toLong()
+
         transaction {
             // Replace existing data (idempotent re-index)
             val versionRowId = if (existingId != null) {
@@ -123,6 +128,9 @@ class IngestPipeline(private val config: AppConfig) {
                     it[hasYarn] = src.hasYarn
                     it[hasMojmap] = src.hasMojmap
                     it[hasIntermediary] = src.hasIntermediaryNames
+                    it[classCount] = classes
+                    it[methodCount] = methods
+                    it[fieldCount] = fields
                 }
                 existingId
             } else {
@@ -136,6 +144,9 @@ class IngestPipeline(private val config: AppConfig) {
                     it[hasYarn] = src.hasYarn
                     it[hasMojmap] = src.hasMojmap
                     it[hasIntermediary] = src.hasIntermediaryNames
+                    it[classCount] = classes
+                    it[methodCount] = methods
+                    it[fieldCount] = fields
                 }.value
             }
 

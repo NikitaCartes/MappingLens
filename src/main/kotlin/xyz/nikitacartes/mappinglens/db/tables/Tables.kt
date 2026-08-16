@@ -22,6 +22,14 @@ object VersionTable : IntIdTable("versions") {
     // all ~500 versions — same results, but it ranks only one version's rows. See IngestPipeline.
     val ftsMinRowid = long("fts_min_rowid").nullable()
     val ftsMaxRowid = long("fts_max_rowid").nullable()
+
+    // Number of class, method and field rows of this version. The indexer holds these three numbers
+    // while it writes the rows, so recording them costs it nothing. Without them the version catalog
+    // has to derive them, and that means three grouped COUNTs over ~51M rows on every server start.
+    // Null on an index built before these columns; see VersionService.
+    val classCount = long("class_count").nullable()
+    val methodCount = long("method_count").nullable()
+    val fieldCount = long("field_count").nullable()
 }
 
 object ClassTable : IntIdTable("classes") {

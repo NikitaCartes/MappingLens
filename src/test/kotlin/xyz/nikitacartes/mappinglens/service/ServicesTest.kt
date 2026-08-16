@@ -14,6 +14,7 @@ import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
+import org.jetbrains.exposed.sql.update
 import java.nio.file.Path
 import java.util.jar.JarOutputStream
 import java.util.zip.ZipEntry
@@ -41,6 +42,26 @@ class VersionServiceTest {
         assertEquals(1L, v.methodCount)
         assertEquals(1L, v.fieldCount)
         assertTrue(v.hasYarn && v.hasMojmap && v.hasIntermediary)
+    }
+
+    @Test
+    fun `listVersions reads the counts recorded on the version row`(@TempDir tmp: Path) {
+        val db = Fixtures.newDb(tmp)
+        Fixtures.seed_1_21_1(db)
+        // Numbers that no scan of the seeded tables can produce, so the assertion passes only if the
+        // catalog reads the columns. The fixture leaves them null, which is the fallback case above.
+        transaction(db) {
+            VersionTable.update({ VersionTable.versionId eq Fixtures.V_1_21_1 }) {
+                it[classCount] = 42
+                it[methodCount] = 43
+                it[fieldCount] = 44
+            }
+        }
+
+        val v = VersionService(db).listVersions().versions.single { it.id == Fixtures.V_1_21_1 }
+        assertEquals(42L, v.classCount)
+        assertEquals(43L, v.methodCount)
+        assertEquals(44L, v.fieldCount)
     }
 
     @Test

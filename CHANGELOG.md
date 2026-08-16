@@ -3,6 +3,17 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.9]
+
+### Changed
+- `GET /api/v1/versions` no longer counts the class, method and field rows of every version on the
+  first request after a server start.
+
+  This adds the columns `versions.class_count`, `method_count` and `field_count`. An index built
+  before them makes `serve` fail with `500 no such column: versions.class_count`.
+  `dev/migrate-version-counts.sql` adds and fills the columns on an existing index in a few seconds,
+  without a rebuild.
+
 ## [9.8.1]
 
 ### Added
