@@ -61,6 +61,14 @@ const collectDirKeys = (nodes: TreeDataNode[], acc: React.Key[] = []): React.Key
   return acc;
 };
 
+/** net/minecraft holds nearly every class; open it by default instead of a wall of collapsed folders. */
+const defaultExpandedKeys = (nodes: TreeDataNode[]): React.Key[] => {
+  const net = nodes.find((n) => n.key === "d:net");
+  if (!net) return [];
+  const minecraft = net.children?.find((n) => n.key === "d:net/minecraft");
+  return minecraft ? [net.key, minecraft.key] : [net.key];
+};
+
 export function ClassTree({ version, namespace }: { version: string; namespace: SourceNamespace }) {
   const openClass = useOpenClass();
   const [classes, setClasses] = useState<ClassEntry[] | null>(null);
@@ -100,9 +108,9 @@ export function ClassTree({ version, namespace }: { version: string; namespace: 
     [classes, namespace, filter],
   );
 
-  // Expand everything while filtering (the matched set is small); collapse when cleared.
+  // Expand everything while filtering (the matched set is small); net/minecraft when cleared.
   useEffect(() => {
-    setExpandedKeys(filter.trim() ? collectDirKeys(treeData) : []);
+    setExpandedKeys(filter.trim() ? collectDirKeys(treeData) : defaultExpandedKeys(treeData));
   }, [filter, treeData]);
 
   return (

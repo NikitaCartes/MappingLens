@@ -129,6 +129,20 @@ class GitCraftStoreTest {
     }
 
     @Test
+    fun `the intermediary repo underscore spelling resolves as its canonical id`(@TempDir tmp: Path) {
+        // FabricMC/intermediary holds mappings/1_16_combat-0.tiny for the version the launcher calls
+        // 1.16_combat-0. Both spellings once reached the index: the real version plus an
+        // intermediary-only ghost carrying the same classes under a name nothing else uses.
+        val intermediary = Files.createDirectories(tmp.resolve("intermediary/mappings"))
+        Files.writeString(intermediary.resolve("1_16_combat-0.tiny"), "v1\tofficial\tintermediary\n")
+        Files.writeString(intermediary.resolve("1.16_combat-1.tiny"), "v1\tofficial\tintermediary\n")
+
+        val s = GitCraftStore(tmp.resolve("artifact-store"), intermediary)
+        assertEquals(intermediary.resolve("1_16_combat-0.tiny"), s.intermediaryTiny("1.16_combat-0"))
+        assertEquals(listOf("1.16_combat-0", "1.16_combat-1"), s.versionIds().sorted())
+    }
+
+    @Test
     fun `protocol version comes from the version json inside the jar`(@TempDir tmp: Path) {
         val versionDir = Files.createDirectories(tmp.resolve("artifact-store/mc-versions/1.21"))
         ZipOutputStream(Files.newOutputStream(versionDir.resolve("merged-1.21-id_abc.jar"))).use { zip ->

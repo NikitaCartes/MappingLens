@@ -4,10 +4,10 @@ import type { editor as MonacoEditor } from "monaco-editor";
 import { App, Button, Segmented, Spin } from "antd";
 import type { CodeTab } from "../tabs";
 import { nameIn } from "../tabs";
-import type { BlameResponse, SourceNamespace, VersionInfo } from "../types";
+import type { BlameResponse, ClassNames, SourceNamespace, VersionInfo } from "../types";
 import { fetchBlame, fetchBytecode, fetchSource, fetchTokens, fetchVersions } from "../api";
 import { messageOf, simpleClassName } from "../util";
-import { useOpenHierarchy, useOpenReferences } from "../openClass";
+import { useOpenClass, useOpenHierarchy, useOpenReferences } from "../openClass";
 import type { SourceToken } from "../types";
 import { atEntry, awEntry, findTokenAtPosition, mixinEntry, referenceQuery, tokenTarget, type Target } from "../tokens";
 import { Copyable } from "./Copyable";
@@ -58,6 +58,7 @@ export function CodeView({ tab }: { tab: CodeTab }) {
   const [blameError, setBlameError] = useState<string | undefined>(undefined);
   const [versions, setVersions] = useState<VersionInfo[] | null>(null);
 
+  const openClass = useOpenClass();
   const openHierarchy = useOpenHierarchy();
   const openReferences = useOpenReferences();
   const { message } = App.useApp();
@@ -146,7 +147,8 @@ export function CodeView({ tab }: { tab: CodeTab }) {
   }, [blameOn, tab.version, className, namespace, mode]);
 
   // The annotation column itself: injected text before each line, so it scrolls with the code and
-  // stays out of anything copied from the editor.
+  // stays out of anything copied from the editor. Clicking a version opens that class as it stood
+  // in that version (same resolved class name blame itself follows, so history stays continuous).
   useEffect(() => {
     if (!codeEditor || !blameOn || !blame || mode !== "source") return;
     const byId = new Map(versions?.map((ver) => [ver.id, ver]));
@@ -154,19 +156,34 @@ export function CodeView({ tab }: { tab: CodeTab }) {
       blame.lines.map((idx, i) => {
         const version = blame.versions[idx];
         const released = byId.get(version)?.releaseTime?.slice(0, 10);
+        const clickable = version !== tab.version;
         return {
           range: { startLineNumber: i + 1, startColumn: 1, endLineNumber: i + 1, endColumn: 1 },
           options: {
             // Monaco drops injected text on an empty range unless showIfCollapsed is set.
             showIfCollapsed: true,
             before: { content: version, inlineClassName: "blame-anno", inlineClassNameAffectsLetterSpacing: true },
-            hoverMessage: { value: `Last changed in **${version}**${released ? ` (${released})` : ""}` },
+            hoverMessage: {
+              value: `Last changed in **${version}**${released ? ` (${released})` : ""}${clickable ? " — click to open" : ""}`,
+            },
           },
         };
       }),
     );
-    return () => collection.clear();
-  }, [codeEditor, blameOn, blame, versions, mode]);
+    const mouseUp = codeEditor.onMouseUp((e) => {
+      if (!e.target.element?.closest(".blame-anno")) return;
+      const line = e.target.position?.lineNumber;
+      if (!line) return;
+      const version = blame.versions[blame.lines[line - 1]];
+      if (!version || version === tab.version) return;
+      const names: ClassNames = namespace === "mojmap" ? { mojmap: blame.class } : { yarn: blame.class };
+      openClass({ names, version, namespace });
+    });
+    return () => {
+      collection.clear();
+      mouseUp.dispose();
+    };
+  }, [codeEditor, blameOn, blame, versions, mode, namespace, tab.version, openClass]);
 
   const hasYarn = !!tab.names.yarn;
   const hasMojmap = !!tab.names.mojmap;

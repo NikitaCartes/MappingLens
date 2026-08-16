@@ -3,6 +3,19 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.8]
+
+### Added
+- A click on a version in the Blame column opens the file at that version.
+- The class tree opens `net/minecraft` by default.
+
+### Fixed
+- `GET /api/v1/versions` ranked the variant ids (`_unobfuscated`, `_combat-N`,
+  `_experimental-snapshot-N`, and the space-form `1.14 Pre-Release N`) as the newest versions. They
+  now sort next to the release they derive from.
+- Two versions were listed twice, as `1_16_combat-0`/`1.16_combat-0` and
+  `1_15_combat-6`/`1.15_combat-6`.
+
 ## [9.7.5]
 
 ### Fixed

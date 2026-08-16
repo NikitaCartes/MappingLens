@@ -50,25 +50,36 @@ data class Semver(
 
         /**
          * Best-effort semver derived from a GitCraft canonical id, for newest builds the
-         * semver-cache hasn't caught up to yet (`26.2`, `26.2-pre-3`, `26.2-rc-1`, `26.2-snapshot-1`).
-         * Without this they fall back to lexicographic ordering, which sorts the bare release
-         * ("26.2") *below* its own "26.2-pre-N"/"-rc-N" strings. Handles only the modern
-         * `X.Y[.Z][-qualifier-N]` form; returns null for anything else (space-named ids, weekly
-         * snapshots like 25w43a) so the caller keeps its lexicographic fallback. `snapshot` maps to
-         * `alpha` to match the cache's own convention → precedence alpha < pre < rc < release.
+         * semver-cache hasn't caught up to yet (`26.2`, `26.2-pre-3`, `26.2-rc-1`, `26.2-snapshot-1`),
+         * and for ids the cache never covers at all: `_unobfuscated`/`_experimental-snapshot-N`/
+         * `_combat-N` variants and old space-form pre-releases (`1.14 Pre-Release 1`). Without this
+         * they fall back to "unknown semver, sorts as if newest" (see [VersionCatalog.order]), which
+         * is fine for a one-off joke id but wrong for a few dozen real historical versions — they'd
+         * clump together after whatever known-semver id happens to precede them alphabetically,
+         * instead of near their true `major.minor.patch`.
+         *
+         * The leading `major[.minor[.patch]]` run is read up to the first `-`, `_`, or space,
+         * whichever comes first; anything after that separator becomes the pre-release qualifier, so
+         * a variant always sorts as *some* pre-release of its base version (never above the bare
+         * release). Returns null only when no such leading numeric run exists at all (space-named ids
+         * with no version prefix, weekly snapshots like `25w43a`) so the caller keeps its
+         * lexicographic fallback. `snapshot` maps to `alpha` to match the cache's own convention →
+         * precedence alpha < pre < rc < release.
          */
         fun fromMinecraftId(id: String): Semver? {
-            val core = id.substringBefore('-')
+            val sepIdx = id.indexOfFirst { it == '-' || it == '_' || it == ' ' }
+            val core = if (sepIdx < 0) id else id.substring(0, sepIdx)
             val coreParts = core.split('.')
             val major = coreParts.getOrNull(0)?.toIntOrNull() ?: return null
             if (coreParts.size > 3 || coreParts.drop(1).any { it.toIntOrNull() == null }) return null
             val minor = coreParts.getOrNull(1)?.toIntOrNull() ?: 0
             val patch = coreParts.getOrNull(2)?.toIntOrNull() ?: 0
-            val rest = id.substringAfter('-', "")
+            if (sepIdx < 0) return Semver(major, minor, patch, emptyList())
+            val rest = id.substring(sepIdx + 1)
             if (rest.isEmpty()) return Semver(major, minor, patch, emptyList())
-            val tokens = rest.split('-').filter { it.isNotEmpty() }
-            if (tokens.isEmpty()) return null
-            val qualifier = if (tokens[0] == "snapshot") "alpha" else tokens[0]
+            val tokens = rest.split('-', '_', ' ').filter { it.isNotEmpty() }
+            if (tokens.isEmpty()) return Semver(major, minor, patch, emptyList())
+            val qualifier = if (tokens[0] == "snapshot") "alpha" else tokens[0].lowercase()
             return Semver(major, minor, patch, listOf(qualifier) + tokens.drop(1))
         }
 

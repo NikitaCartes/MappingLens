@@ -293,6 +293,11 @@ code,
   margin-right: 1ch;
   border-right: 1px solid var(--border);
   color: var(--text-dim);
+  cursor: pointer;
+}
+.blame-anno:hover {
+  color: var(--accent);
+  text-decoration: underline;
 }
 
 /* ---- compare ---- */

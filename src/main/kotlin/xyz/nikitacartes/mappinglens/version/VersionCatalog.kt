@@ -42,10 +42,16 @@ class VersionCatalog(private val metaByCanonical: Map<String, VersionMeta>) {
     /**
      * Effective semver: the cached value, or one derived from the canonical id when the cache hasn't
      * caught up to the newest builds (otherwise a bare release sorts below its own pre/rc builds).
+     *
+     * Tried even when [id] is not a catalog key at all (no cache entry, no mc-meta file) — true for
+     * every id GitCraft/MappingLens derives itself (`_unobfuscated`, `_experimental-snapshot-N`,
+     * `_combat-N`) rather than reading from Mojang's own launcher manifest, so the catalog can never
+     * carry them. Falling back to [Semver.fromMinecraftId] on the raw id is the only way these get a
+     * comparable version at all, instead of always sorting as if newest.
      */
     private fun semverOf(id: String): Semver? {
-        val meta = metaByCanonical[id] ?: return null
-        return meta.semver?.let(Semver::parse) ?: Semver.fromMinecraftId(meta.canonical)
+        val meta = metaByCanonical[id]
+        return meta?.semver?.let(Semver::parse) ?: Semver.fromMinecraftId(meta?.canonical ?: id)
     }
 
     /**

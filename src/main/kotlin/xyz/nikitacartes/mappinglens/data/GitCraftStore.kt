@@ -95,9 +95,24 @@ class GitCraftStore(
 
     // ---------------------------------------------------------------- mapping tiny resolution
 
+    /**
+     * FabricMC/intermediary spells two of its files with underscores where the Mojang launcher id
+     * uses dots (`mappings/1_16_combat-0.tiny` for `1.16_combat-0`). GitCraft carries the same table
+     * as `GitCraftQuirks.yarnInconsistentVersionNaming` and normalizes on read, so only this
+     * repository is affected. Left untranslated, the repository's own spelling enters [versionIds]
+     * as a second, intermediary-only version next to the real one, and the real one never finds its
+     * intermediary tiny.
+     */
+    private val intermediaryFileStem = mapOf(
+        "1.15_combat-6" to "1_15_combat-6",
+        "1.16_combat-0" to "1_16_combat-0",
+    )
+    private val canonicalOfIntermediaryFileStem = intermediaryFileStem.entries.associate { (k, v) -> v to k }
+
     /** Intermediary mappings (tiny v1). Prefers the dedicated intermediary repo over artifact-store. */
     fun intermediaryTiny(version: String): Path? {
-        if ("$version.tiny" in intermediaryNames) return intermediaryMappingsDir.resolve("$version.tiny")
+        val stem = intermediaryFileStem[version] ?: version
+        if ("$stem.tiny" in intermediaryNames) return intermediaryMappingsDir.resolve("$stem.tiny")
         if ("$version-intermediary.tiny" in intermediaryNames) return intermediaryMappingsDir.resolve("$version-intermediary.tiny")
         if ("$version-intermediary.tiny" in mappingNames) return mappingsDir.resolve("$version-intermediary.tiny")
         return null
@@ -274,7 +289,7 @@ class GitCraftStore(
             n.endsWith("-intermediary.tiny") -> n.removeSuffix("-intermediary.tiny")
             n.endsWith(".tiny") -> n.removeSuffix(".tiny")
             else -> null
-        }
+        }?.let { canonicalOfIntermediaryFileStem[it] ?: it }
     }
 
     private fun artifactMappingVersionNames(): List<String> = mappingNames.mapNotNull { n ->

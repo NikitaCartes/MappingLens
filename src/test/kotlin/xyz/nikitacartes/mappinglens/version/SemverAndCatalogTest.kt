@@ -16,6 +16,12 @@ class SemverTest {
         assertTrue(sa < sb, "$a should sort before $b")
     }
 
+    private fun ltId(a: String, b: String) {
+        val sa = assertNotNull(Semver.fromMinecraftId(a), "fromMinecraftId $a")
+        val sb = assertNotNull(Semver.fromMinecraftId(b), "fromMinecraftId $b")
+        assertTrue(sa < sb, "$a should sort before $b")
+    }
+
     @Test
     fun `minor numbers compare numerically not lexically`() {
         lt("1.9", "1.10")          // the classic latestRelease() bug
@@ -39,6 +45,32 @@ class SemverTest {
     @Test
     fun `numeric pre-release identifiers rank below alphanumeric`() {
         lt("1.0.0-1", "1.0.0-alpha")
+    }
+
+    @Test
+    fun `fromMinecraftId reads the leading version out of underscore and space-form ids`() {
+        assertEquals(Semver(1, 21, 11, listOf("unobfuscated")), Semver.fromMinecraftId("1.21.11_unobfuscated"))
+        assertEquals(Semver(1, 16, 0, listOf("combat", "6")), Semver.fromMinecraftId("1.16_combat-6"))
+        assertEquals(Semver(1, 19, 0, listOf("deep", "dark", "experimental", "snapshot", "1")),
+            Semver.fromMinecraftId("1.19_deep_dark_experimental_snapshot-1"))
+        val preRelease = assertNotNull(Semver.fromMinecraftId("1.14.2 Pre-Release 4"))
+        assertEquals(1, preRelease.major)
+        assertEquals(14, preRelease.minor)
+        assertEquals(2, preRelease.patch)
+    }
+
+    @Test
+    fun `underscore and space-form variants never outrank their own bare release`() {
+        ltId("1.21.11_unobfuscated", "1.21.11")
+        ltId("1.16_combat-6", "1.16")
+        ltId("1.14 Pre-Release 1", "1.14")
+        ltId("1.14.2 Pre-Release 4", "1.14.2")
+    }
+
+    @Test
+    fun `weekly snapshots still fall through to the cache (no leading dotted version)`() {
+        assertEquals(null, Semver.fromMinecraftId("25w43a"))
+        assertEquals(null, Semver.fromMinecraftId("weird"))
     }
 }
 
@@ -74,6 +106,33 @@ class VersionCatalogTest {
         val ids = listOf("26.2", "26.2-rc-2", "26.2-pre-3", "26.2-pre-2", "26.2-snapshot-1")
         assertEquals(
             listOf("26.2-snapshot-1", "26.2-pre-2", "26.2-pre-3", "26.2-rc-2", "26.2"),
+            cat.sorted(ids),
+        )
+    }
+
+    @Test
+    fun `unobfuscated, combat, and old pre-release variants sort near their own base version`() {
+        // Real case (the reported bug): these ids are derived by GitCraft/MappingLens itself from an
+        // unobfuscated jar or a combat/experimental test build, never read from Mojang's own launcher
+        // manifest — so they are not catalog keys AT ALL (no cache entry, no mc-meta file), not merely
+        // "a key with no semver value". They reach sorted() only via GitCraftStore.versionIds()'s
+        // filesystem-discovered id list. Before the fix they fell into "unknown semver" and sorted as
+        // if newest — right after 26.3-snapshot-1 instead of next to 1.14 / 1.16 / 1.21.11.
+        val cat = catalog(
+            "1.14" to "1.14",
+            "1.16" to "1.16",
+            "1.21.11" to "1.21.11",
+            "26.3-snapshot-1" to "26.3-alpha.1",
+        )
+        val ids = listOf(
+            "1.14", "1.14 Pre-Release 1", "1.16", "1.16_combat-6",
+            "1.21.11", "1.21.11_unobfuscated", "26.3-snapshot-1",
+        )
+        assertEquals(
+            listOf(
+                "1.14 Pre-Release 1", "1.14", "1.16_combat-6", "1.16",
+                "1.21.11_unobfuscated", "1.21.11", "26.3-snapshot-1",
+            ),
             cat.sorted(ids),
         )
     }
