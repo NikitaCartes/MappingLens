@@ -11,10 +11,7 @@ import io.ktor.server.routing.*
 fun Route.tokenRoutes(service: TokenService) {
     get("/api/v1/tokens/{version}/{className...}") {
         val version = call.parameters["version"]!!
-        val name = normalizeClassName(call.parameters.getAll("className")?.joinToString("/").orEmpty())
-        if (name.isBlank()) {
-            call.respond(HttpStatusCode.BadRequest, ApiError("invalid_query", "Missing class name", 400)); return@get
-        }
+        val name = call.classNameParam() ?: return@get
         val ns = call.request.queryParameters["namespace"] ?: "mojmap"
         val format = call.request.queryParameters["format"] ?: "json"
         if (!call.ensureOneOf("namespace", ns, setOf("yarn", "mojmap"))) return@get

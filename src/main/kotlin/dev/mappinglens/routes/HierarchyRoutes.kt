@@ -10,10 +10,7 @@ import io.ktor.server.routing.*
 fun Route.hierarchyRoutes(service: HierarchyService) {
     get("/api/v1/hierarchy/{version}/{className...}") {
         val version = call.parameters["version"]!!
-        val name = normalizeClassName(call.parameters.getAll("className")?.joinToString("/").orEmpty())
-        if (name.isBlank()) {
-            call.respond(HttpStatusCode.BadRequest, ApiError("invalid_query", "Missing class name", 400)); return@get
-        }
+        val name = call.classNameParam() ?: return@get
         val ns = call.request.queryParameters["namespace"] ?: "mojmap"
         if (!call.ensureOneOf("namespace", ns, setOf("yarn", "mojmap"))) return@get
         val r = service.hierarchy(version, name, ns)

@@ -1,6 +1,5 @@
 package dev.mappinglens.model
 
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -95,8 +94,8 @@ data class DiffEntryItem(
     val intermediary: String? = null,
     val owner: String? = null,
     val descriptor: String? = null,
-    @SerialName("oldName") val oldName: String? = null,
-    @SerialName("newName") val newName: String? = null,
+    val oldName: String? = null,
+    val newName: String? = null,
 )
 
 @Serializable

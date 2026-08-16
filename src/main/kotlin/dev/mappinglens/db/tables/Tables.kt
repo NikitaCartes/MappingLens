@@ -45,7 +45,12 @@ object ClassTable : IntIdTable("classes") {
     }
 }
 
-object MethodTable : IntIdTable("methods") {
+/**
+ * Methods and fields carry the same columns; only the table name and [kind] differ. Sharing the
+ * declaration lets one query body serve both kinds of member. Name selection per namespace stays
+ * with the caller: the services disagree on which namespace an unknown value falls back to.
+ */
+sealed class MemberTable(name: String, val kind: String) : IntIdTable(name) {
     val classId = reference("class_id", ClassTable).index()
     val versionId = reference("version_id", VersionTable).index()
     val obfName = text("obf_name").nullable()
@@ -62,22 +67,9 @@ object MethodTable : IntIdTable("methods") {
     }
 }
 
-object FieldTable : IntIdTable("fields") {
-    val classId = reference("class_id", ClassTable).index()
-    val versionId = reference("version_id", VersionTable).index()
-    val obfName = text("obf_name").nullable()
-    val obfDesc = text("obf_desc").nullable()
-    val intermediaryName = text("intermediary_name").nullable().index()
-    val intermediaryDesc = text("intermediary_desc").nullable()
-    val yarnName = text("yarn_name").nullable()
-    val mojmapName = text("mojmap_name").nullable()
-    val simpleName = text("simple_name").nullable().index()
+object MethodTable : MemberTable("methods", "method")
 
-    init {
-        index(isUnique = false, versionId, intermediaryName, intermediaryDesc)
-        index(isUnique = false, versionId, mojmapName, obfDesc)
-    }
-}
+object FieldTable : MemberTable("fields", "field")
 
 object SourceFileTable : IntIdTable("source_files") {
     val versionId = reference("version_id", VersionTable).index()

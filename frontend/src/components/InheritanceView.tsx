@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Empty, Spin, Tree, Typography } from "antd";
 import type { DataNode } from "antd/es/tree";
-import { fetchHierarchy, ApiRequestError } from "../api";
+import { fetchHierarchy } from "../api";
 import type { HierarchyResponse } from "../types";
 import type { HierarchyTab } from "../tabs";
 import { useOpenClass } from "../openClass";
-import { simpleClassName } from "../util";
+import { messageOf, simpleClassName } from "../util";
 
 // ponytail: antd Tree (already a dep) instead of ReactFlow+dagre. Add a graph canvas only if a
 // visual DAG is explicitly wanted; the up/down trees already convey the hierarchy and navigate.
@@ -61,7 +61,7 @@ export function InheritanceView({ tab }: { tab: HierarchyTab }) {
       })
       .catch((err: unknown) => {
         if (err instanceof DOMException && err.name === "AbortError") return;
-        setError(err instanceof ApiRequestError || err instanceof Error ? err.message : String(err));
+        setError(messageOf(err));
         setLoading(false);
       });
     return () => controller.abort();

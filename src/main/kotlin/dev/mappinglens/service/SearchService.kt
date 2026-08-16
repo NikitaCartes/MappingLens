@@ -218,11 +218,11 @@ class SearchService(private val db: Database, private val versionService: Versio
             )
         }
         val cols = when (elementType) {
-            "method" -> MemberCols.METHOD
-            "field" -> MemberCols.FIELD
+            "method" -> MethodTable
+            "field" -> FieldTable
             else -> return null
         }
-        val r = cols.table.selectAll().where { cols.table.id eq elementId }.singleOrNull() ?: return null
+        val r = cols.selectAll().where { cols.id eq elementId }.singleOrNull() ?: return null
         val classRow = ClassTable.selectAll().where { ClassTable.id eq r[cols.classId] }.singleOrNull()
         return SearchResultEntry(
             type = elementType,

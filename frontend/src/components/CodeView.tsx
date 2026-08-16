@@ -5,8 +5,8 @@ import { App, Button, Segmented, Spin } from "antd";
 import type { CodeTab } from "../tabs";
 import { nameIn } from "../tabs";
 import type { BlameResponse, SourceNamespace, VersionInfo } from "../types";
-import { fetchBlame, fetchBytecode, fetchSource, fetchTokens, fetchVersions, ApiRequestError } from "../api";
-import { simpleClassName } from "../util";
+import { fetchBlame, fetchBytecode, fetchSource, fetchTokens, fetchVersions } from "../api";
+import { messageOf, simpleClassName } from "../util";
 import { useOpenHierarchy, useOpenReferences } from "../openClass";
 import type { SourceToken } from "../types";
 import { atEntry, awEntry, findTokenAtPosition, mixinEntry, referenceQuery, tokenTarget, type Target } from "../tokens";
@@ -34,7 +34,6 @@ const allVersions = () => (versionsOnce ??= fetchVersions());
  */
 let blameDefault = false;
 
-const messageOf = (err: unknown) => (err instanceof ApiRequestError || err instanceof Error ? err.message : String(err));
 
 const EDITOR_OPTIONS = {
   readOnly: true,
@@ -117,7 +116,7 @@ export function CodeView({ tab }: { tab: CodeTab }) {
       })
       .catch((err: unknown) => {
         if (err instanceof DOMException && err.name === "AbortError") return;
-        setError(err instanceof ApiRequestError || err instanceof Error ? err.message : String(err));
+        setError(messageOf(err));
         setContent("");
         setLoading(false);
       });

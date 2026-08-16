@@ -121,8 +121,8 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         val classAdded = if (fromCid == null && toCid != null) listOf(DiffEntryItem("class", name = normClass)) else emptyList()
         val classRemoved = if (fromCid != null && toCid == null) listOf(DiffEntryItem("class", name = normClass)) else emptyList()
 
-        val methodDiff = memberDiff(MemberCols.METHOD, fromCid, toCid, namespace, normClass)
-        val fieldDiff = memberDiff(MemberCols.FIELD, fromCid, toCid, namespace, normClass)
+        val methodDiff = memberDiff(MethodTable, fromCid, toCid, namespace, normClass)
+        val fieldDiff = memberDiff(FieldTable, fromCid, toCid, namespace, normClass)
 
         val includeClasses = type == "class" || type == "all"
         val includeMethods = type == "method" || type == "all"
@@ -163,10 +163,10 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
     private data class MemberRec(val key: String, val name: String?, val descriptor: String?)
 
     /** Members of [classId] keyed exactly as [methodKeys]/[fieldKeys], carrying the namespace display name + descriptor. */
-    private fun memberRecords(cols: MemberCols, classId: Int?, namespace: String): List<MemberRec> {
+    private fun memberRecords(cols: MemberTable, classId: Int?, namespace: String): List<MemberRec> {
         if (classId == null) return emptyList()
         val nameCol = when (namespace) { "mojmap" -> cols.mojmapName; "intermediary" -> cols.intermediaryName; else -> cols.yarnName }
-        return cols.table.selectAll().where { cols.classId eq classId }.map { row ->
+        return cols.selectAll().where { cols.classId eq classId }.map { row ->
             MemberRec(
                 key = memberKey(row[cols.intermediaryName] ?: row[cols.mojmapName], row[cols.intermediaryDesc] ?: row[cols.obfDesc], row[cols.obfName], row[cols.obfDesc]),
                 name = row[nameCol],
@@ -175,7 +175,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         }
     }
 
-    private fun memberDiff(cols: MemberCols, fromCid: Int?, toCid: Int?, namespace: String, owner: String): TypedDiff {
+    private fun memberDiff(cols: MemberTable, fromCid: Int?, toCid: Int?, namespace: String, owner: String): TypedDiff {
         val kind = cols.kind
         val from = memberRecords(cols, fromCid, namespace)
         val to = memberRecords(cols, toCid, namespace)

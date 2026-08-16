@@ -10,10 +10,7 @@ import io.ktor.server.routing.*
 fun Route.bytecodeRoutes(service: BytecodeService) {
     get("/api/v1/bytecode/{version}/{className...}") {
         val version = call.parameters["version"]!!
-        val name = normalizeClassName(call.parameters.getAll("className")?.joinToString("/").orEmpty())
-        if (name.isBlank()) {
-            call.respond(HttpStatusCode.BadRequest, ApiError("invalid_query", "Missing class name", 400)); return@get
-        }
+        val name = call.classNameParam() ?: return@get
         val ns = call.request.queryParameters["namespace"] ?: "mojmap"
         val format = call.request.queryParameters["format"] ?: "json"
         if (!call.ensureOneOf("namespace", ns, setOf("yarn", "mojmap", "intermediary", "obfuscated", "obf"))) return@get
@@ -27,10 +24,7 @@ fun Route.bytecodeRoutes(service: BytecodeService) {
     }
     get("/api/v1/source/{version}/{className...}") {
         val version = call.parameters["version"]!!
-        val name = normalizeClassName(call.parameters.getAll("className")?.joinToString("/").orEmpty())
-        if (name.isBlank()) {
-            call.respond(HttpStatusCode.BadRequest, ApiError("invalid_query", "Missing class name", 400)); return@get
-        }
+        val name = call.classNameParam() ?: return@get
         val explicit = call.request.queryParameters["namespace"]
         val ns = explicit ?: "mojmap"
         val format = call.request.queryParameters["format"] ?: "json"
@@ -52,10 +46,7 @@ fun Route.bytecodeRoutes(service: BytecodeService) {
     }
     get("/api/v1/blame/{version}/{className...}") {
         val version = call.parameters["version"]!!
-        val name = normalizeClassName(call.parameters.getAll("className")?.joinToString("/").orEmpty())
-        if (name.isBlank()) {
-            call.respond(HttpStatusCode.BadRequest, ApiError("invalid_query", "Missing class name", 400)); return@get
-        }
+        val name = call.classNameParam() ?: return@get
         val ns = call.request.queryParameters["namespace"] ?: "mojmap"
         if (!call.ensureOneOf("namespace", ns, setOf("yarn", "mojmap"))) return@get
         val r = service.blame(version, name, ns)

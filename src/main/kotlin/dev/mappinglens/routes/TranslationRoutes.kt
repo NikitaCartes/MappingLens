@@ -21,16 +21,7 @@ fun Route.translationRoutes(translationService: TranslationService) {
         if (!call.ensureOneOf("from", from, namespaces)) return@get
         if (!call.ensureOneOf("to", to, namespaces)) return@get
         if (!call.ensureOneOf("type", type, setOf("class", "method", "field", "auto"))) return@get
-        translationService.firstUnavailableNamespace(version, listOf(from, to))?.let { (ver, ns) ->
-            call.respond(
-                HttpStatusCode.UnprocessableEntity,
-                ApiError(
-                    "namespace_unavailable",
-                    "Version $ver has no $ns mappings",
-                    422,
-                ),
-            ); return@get
-        }
+        if (!call.namespacesAvailable(translationService, version, from, to)) return@get
         val r = translationService.translate(name, from, to, version, type)
         if (r == null) call.respond(HttpStatusCode.NotFound, ApiError("not_found", "No translation found", 404))
         else call.respond(r)
@@ -44,18 +35,21 @@ fun Route.translationRoutes(translationService: TranslationService) {
         val namespaces = setOf("yarn", "mojmap", "intermediary", "obfuscated", "obf")
         if (!call.ensureOneOf("from", from, namespaces)) return@get
         if (!call.ensureOneOf("to", to, namespaces)) return@get
-        translationService.firstUnavailableNamespace(version, listOf(from, to))?.let { (ver, ns) ->
-            call.respond(
-                HttpStatusCode.UnprocessableEntity,
-                ApiError(
-                    "namespace_unavailable",
-                    "Version $ver has no $ns mappings",
-                    422,
-                ),
-            ); return@get
-        }
+        if (!call.namespacesAvailable(translationService, version, from, to)) return@get
         val r = translationService.translate(name, from, to, version, "class")
         if (r == null) call.respond(HttpStatusCode.NotFound, ApiError("not_found", "No translation found", 404))
         else call.respond(r)
     }
+}
+
+/** False after answering 422: one of [from]/[to] has no mappings in the requested version. */
+private suspend fun ApplicationCall.namespacesAvailable(
+    service: TranslationService,
+    version: String?,
+    from: String,
+    to: String,
+): Boolean {
+    val (ver, ns) = service.firstUnavailableNamespace(version, listOf(from, to)) ?: return true
+    respond(HttpStatusCode.UnprocessableEntity, ApiError("namespace_unavailable", "Version $ver has no $ns mappings", 422))
+    return false
 }

@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Empty, Input, Spin, Tree } from "antd";
 import type { TreeDataNode } from "antd";
-import { fetchClasses, ApiRequestError } from "../api";
+import { fetchClasses } from "../api";
+import { messageOf } from "../util";
 import type { ClassEntry, SourceNamespace } from "../types";
 import { useOpenClass } from "../openClass";
 
@@ -88,7 +89,7 @@ export function ClassTree({ version, namespace }: { version: string; namespace: 
       })
       .catch((err: unknown) => {
         if (err instanceof DOMException && err.name === "AbortError") return;
-        setError(err instanceof ApiRequestError || err instanceof Error ? err.message : String(err));
+        setError(messageOf(err));
         setLoading(false);
       });
     return () => controller.abort();

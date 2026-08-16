@@ -1,6 +1,5 @@
 package dev.mappinglens.routes
 
-import dev.mappinglens.model.ApiError
 import dev.mappinglens.service.DiffService
 import io.ktor.http.*
 import io.ktor.server.application.*
@@ -9,11 +8,7 @@ import io.ktor.server.routing.*
 
 fun Route.diffRoutes(diffService: DiffService) {
     get("/api/v1/diff") {
-        val from = call.request.queryParameters.required("from")
-        val to = call.request.queryParameters.required("to")
-        if (from.isNullOrBlank() || to.isNullOrBlank()) {
-            call.respond(HttpStatusCode.BadRequest, ApiError("invalid_query", "Missing 'from' or 'to'", 400)); return@get
-        }
+        val (from, to) = call.versionPair() ?: return@get
         val namespace = call.request.queryParameters["namespace"] ?: "mojmap"
         val type = call.request.queryParameters["type"] ?: "all"
         val pkg = call.request.queryParameters["package"]
@@ -31,11 +26,7 @@ fun Route.diffRoutes(diffService: DiffService) {
         call.respond(diffService.diff(from, to, namespace, type, pkg, changeType, limit))
     }
     get("/api/v1/diff/files") {
-        val from = call.request.queryParameters.required("from")
-        val to = call.request.queryParameters.required("to")
-        if (from.isNullOrBlank() || to.isNullOrBlank()) {
-            call.respond(HttpStatusCode.BadRequest, ApiError("invalid_query", "Missing 'from' or 'to'", 400)); return@get
-        }
+        val (from, to) = call.versionPair() ?: return@get
         val namespace = call.request.queryParameters["namespace"] ?: "mojmap"
         if (!call.ensureOneOf("namespace", namespace, setOf("yarn", "mojmap"))) return@get
         val path = call.request.queryParameters["file"] ?: call.request.queryParameters["path"]
@@ -53,11 +44,7 @@ fun Route.diffRoutes(diffService: DiffService) {
         call.respond(diffService.diffFiles(from, to, namespace, path))
     }
     get("/api/v1/diff/patch") {
-        val from = call.request.queryParameters.required("from")
-        val to = call.request.queryParameters.required("to")
-        if (from.isNullOrBlank() || to.isNullOrBlank()) {
-            call.respond(HttpStatusCode.BadRequest, ApiError("invalid_query", "Missing 'from' or 'to'", 400)); return@get
-        }
+        val (from, to) = call.versionPair() ?: return@get
         val namespace = call.request.queryParameters["namespace"] ?: "mojmap"
         if (!call.ensureOneOf("namespace", namespace, setOf("yarn", "mojmap"))) return@get
         val path = call.request.queryParameters["file"] ?: call.request.queryParameters["path"]

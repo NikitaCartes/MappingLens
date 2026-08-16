@@ -65,8 +65,8 @@ class TranslationService(private val db: Database, private val versionService: V
     private fun lookup(versionRowId: Int, name: String, from: String, to: String, type: String): TranslateResponse? {
         return when (type) {
             "class" -> lookupClass(versionRowId, name, from, to)
-            "method" -> lookupMember(MemberCols.METHOD, versionRowId, name, from, to)
-            "field" -> lookupMember(MemberCols.FIELD, versionRowId, name, from, to)
+            "method" -> lookupMember(MethodTable, versionRowId, name, from, to)
+            "field" -> lookupMember(FieldTable, versionRowId, name, from, to)
             else -> null
         }
     }
@@ -88,7 +88,7 @@ class TranslationService(private val db: Database, private val versionService: V
     }
 
     private fun lookupMember(
-        cols: MemberCols,
+        cols: MemberTable,
         versionRowId: Int, name: String, from: String, to: String,
     ): TranslateResponse? {
         // Splits owner#member
@@ -97,7 +97,7 @@ class TranslationService(private val db: Database, private val versionService: V
 
         val nameCol = nameColumnMember(cols, from)
         val ownerCol = nameColumnClass(from)
-        val row = cols.table.innerJoin(ClassTable)
+        val row = cols.innerJoin(ClassTable)
             .selectAll()
             .where {
                 (cols.versionId eq versionRowId) and (nameCol eq member) and
@@ -134,7 +134,7 @@ class TranslationService(private val db: Database, private val versionService: V
         else -> ClassTable.yarnName
     }
 
-    private fun nameColumnMember(cols: MemberCols, ns: String): Column<String?> = when (ns) {
+    private fun nameColumnMember(cols: MemberTable, ns: String): Column<String?> = when (ns) {
         "mojmap" -> cols.mojmapName
         "intermediary" -> cols.intermediaryName
         "obfuscated", "obf" -> cols.obfName

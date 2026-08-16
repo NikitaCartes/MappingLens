@@ -74,7 +74,7 @@ class VersionCatalog(private val metaByCanonical: Map<String, VersionMeta>) {
          * id may itself contain underscores and spaces, so split on the LAST underscore and validate
          * the trailing component is a sha1.
          */
-        private fun canonicalFromMetaName(name: String): String? {
+        internal fun canonicalFromMetaName(name: String): String? {
             if (!name.endsWith(".json")) return null
             val stem = name.removeSuffix(".json")
             val cut = stem.lastIndexOf('_')

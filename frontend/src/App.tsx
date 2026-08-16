@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { App as AntApp, ConfigProvider, Splitter, Tabs, theme } from "antd";
-import { ApiRequestError, fetchVersions, search } from "./api";
+import { fetchVersions, search } from "./api";
+import { messageOf } from "./util";
 import type {
   SearchNamespace,
   SearchResponse,
@@ -38,9 +39,6 @@ function pickDefaultVersion(versions: VersionInfo[]): string | undefined {
 }
 
 const isAbort = (err: unknown) => err instanceof DOMException && err.name === "AbortError";
-const messageOf = (err: unknown) =>
-  err instanceof ApiRequestError || err instanceof Error ? err.message : String(err);
-
 export default function App() {
   const [versions, setVersions] = useState<VersionInfo[] | null>(null);
   const [versionsError, setVersionsError] = useState<string | null>(null);

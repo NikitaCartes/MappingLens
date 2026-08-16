@@ -1,5 +1,6 @@
 package dev.mappinglens.config
 
+import dev.mappinglens.version.VersionCatalog
 import io.ktor.server.config.*
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -77,7 +78,7 @@ data class SourcesConfig(
         val dir = artifactStorePath().resolve("mc-meta").resolve("mojang-launcher")
         if (!dir.isDirectory()) return null
         return Files.list(dir).use { stream ->
-            stream.filter { canonicalFromMetaName(it.name) == versionId }
+            stream.filter { VersionCatalog.canonicalFromMetaName(it.name) == versionId }
                 .max(compareBy { it.getLastModifiedTime().toMillis() })
                 .orElse(null)
         }
@@ -109,17 +110,6 @@ data class SourcesConfig(
 
     companion object {
         private val META_JSON = Json { ignoreUnknownKeys = true; isLenient = true }
-
-        /** mc-meta files are `<canonical>_<sha1>.json`; split on the last `_` and require a 40-hex sha. */
-        private fun canonicalFromMetaName(name: String): String? {
-            if (!name.endsWith(".json")) return null
-            val stem = name.removeSuffix(".json")
-            val cut = stem.lastIndexOf('_')
-            if (cut <= 0) return null
-            val sha = stem.substring(cut + 1)
-            if (sha.length != 40 || !sha.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }) return null
-            return stem.substring(0, cut)
-        }
     }
 }
 

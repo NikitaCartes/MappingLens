@@ -3,9 +3,7 @@ import { DiffEditor, Editor } from "@monaco-editor/react";
 import { Button, Segmented, Select, Spin, Tabs } from "antd";
 import { fetchBytecode, fetchDiff, fetchDiffFiles, fetchPatch, fetchSource, patchDownloadUrl, ApiRequestError } from "../api";
 import type { DiffResponse, FileDiffResponse, SourceNamespace, VersionInfo } from "../types";
-
-const msg = (err: unknown) =>
-  err instanceof ApiRequestError || err instanceof Error ? err.message : String(err);
+import { messageOf } from "../util";
 
 /** Sentinel `selectedFile` meaning "the whole version-to-version patch, all files". */
 const WHOLE_PATCH = "\0whole";
@@ -77,7 +75,7 @@ export function CompareView({ versions, initialTo, initialNamespace }: Props) {
       })
       .catch((err: unknown) => {
         if (err instanceof DOMException && err.name === "AbortError") return;
-        setError(msg(err));
+        setError(messageOf(err));
         setLoading(false);
       });
     return () => controller.abort();
@@ -105,7 +103,7 @@ export function CompareView({ versions, initialTo, initialNamespace }: Props) {
         })
         .catch((err: unknown) => {
           if (err instanceof DOMException && err.name === "AbortError") return;
-          setPatchError(msg(err));
+          setPatchError(messageOf(err));
           setPatchStatus("error");
         });
     } else {
@@ -127,7 +125,7 @@ export function CompareView({ versions, initialTo, initialNamespace }: Props) {
         })
         .catch((err: unknown) => {
           if (err instanceof DOMException && err.name === "AbortError") return;
-          setPairError(msg(err));
+          setPairError(messageOf(err));
           setPairStatus("error");
         });
     }

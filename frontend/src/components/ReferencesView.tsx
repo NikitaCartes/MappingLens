@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { List, Spin, Tag, Typography } from "antd";
-import { fetchReferences, ApiRequestError } from "../api";
+import { fetchReferences } from "../api";
+import { messageOf } from "../util";
 import type { ReferenceItem, ReferenceResponse } from "../types";
 import type { ReferencesTab } from "../tabs";
 import { useOpenClass } from "../openClass";
@@ -24,7 +25,7 @@ export function ReferencesView({ tab }: { tab: ReferencesTab }) {
       })
       .catch((err: unknown) => {
         if (err instanceof DOMException && err.name === "AbortError") return;
-        setError(err instanceof ApiRequestError || err instanceof Error ? err.message : String(err));
+        setError(messageOf(err));
         setLoading(false);
       });
     return () => controller.abort();

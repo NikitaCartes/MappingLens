@@ -11,6 +11,7 @@ import dev.mappinglens.model.VersionListResponse
 import org.jetbrains.exposed.dao.id.EntityID
 import org.jetbrains.exposed.sql.Column
 import org.jetbrains.exposed.sql.Database
+import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.count
@@ -46,21 +47,14 @@ class VersionService(private val db: Database) {
         val versions = VersionTable.selectAll()
             .orderBy(VersionTable.sortIndex to SortOrder.DESC_NULLS_LAST, VersionTable.versionId to SortOrder.DESC)
             .map { row ->
-            val versionRowId = row[VersionTable.id].value
-            VersionInfo(
-                id = row[VersionTable.versionId],
-                releaseType = row[VersionTable.releaseType],
-                releaseTime = row[VersionTable.releaseTime],
-                protocolVersion = row[VersionTable.protocolVersion],
-                hasYarn = row[VersionTable.hasYarn],
-                hasMojmap = row[VersionTable.hasMojmap],
-                hasIntermediary = row[VersionTable.hasIntermediary],
-                classCount = counts.classes[versionRowId] ?: 0,
-                methodCount = counts.methods[versionRowId] ?: 0,
-                fieldCount = counts.fields[versionRowId] ?: 0,
-                indexedAt = row[VersionTable.indexedAt],
-            )
-        }
+                val versionRowId = row[VersionTable.id].value
+                versionInfo(
+                    row,
+                    counts.classes[versionRowId] ?: 0,
+                    counts.methods[versionRowId] ?: 0,
+                    counts.fields[versionRowId] ?: 0,
+                )
+            }
         VersionListResponse(versions)
     }
 
@@ -69,20 +63,22 @@ class VersionService(private val db: Database) {
             ?: return@transaction null
         val versionRowId = row[VersionTable.id].value
         val (classes, methods, fields) = countsFor(versionRowId)
-        VersionInfo(
-            id = row[VersionTable.versionId],
-            releaseType = row[VersionTable.releaseType],
-            releaseTime = row[VersionTable.releaseTime],
-            protocolVersion = row[VersionTable.protocolVersion],
-            hasYarn = row[VersionTable.hasYarn],
-            hasMojmap = row[VersionTable.hasMojmap],
-            hasIntermediary = row[VersionTable.hasIntermediary],
-            classCount = classes,
-            methodCount = methods,
-            fieldCount = fields,
-            indexedAt = row[VersionTable.indexedAt],
-        )
+        versionInfo(row, classes, methods, fields)
     }
+
+    private fun versionInfo(row: ResultRow, classes: Long, methods: Long, fields: Long) = VersionInfo(
+        id = row[VersionTable.versionId],
+        releaseType = row[VersionTable.releaseType],
+        releaseTime = row[VersionTable.releaseTime],
+        protocolVersion = row[VersionTable.protocolVersion],
+        hasYarn = row[VersionTable.hasYarn],
+        hasMojmap = row[VersionTable.hasMojmap],
+        hasIntermediary = row[VersionTable.hasIntermediary],
+        classCount = classes,
+        methodCount = methods,
+        fieldCount = fields,
+        indexedAt = row[VersionTable.indexedAt],
+    )
 
     /** Every class of one version (names per namespace + presence), for the client-side structure tree. */
     fun listClasses(versionId: String): ClassListResponse? = transaction(db) {

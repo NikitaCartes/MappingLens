@@ -1,7 +1,9 @@
 package dev.mappinglens.service
 
 import dev.mappinglens.db.tables.ClassTable
-import dev.mappinglens.db.tables.MemberCols
+import dev.mappinglens.db.tables.FieldTable
+import dev.mappinglens.db.tables.MemberTable
+import dev.mappinglens.db.tables.MethodTable
 import dev.mappinglens.db.tables.VersionTable
 import dev.mappinglens.model.HistoryEntry
 import dev.mappinglens.model.HistoryMember
@@ -39,7 +41,7 @@ class HistoryService(private val db: Database) {
         val members: List<HistoryMember> = emptyList(),
     )
 
-    private fun MemberCols.named(namespace: String): Column<String?> = when (namespace) {
+    private fun MemberTable.named(namespace: String): Column<String?> = when (namespace) {
         "yarn" -> yarnName
         "intermediary" -> intermediaryName
         else -> mojmapName
@@ -94,7 +96,7 @@ class HistoryService(private val db: Database) {
             })
         }
         val ownerNameCol = classNameColumn(namespace)
-        for (cols in listOf(MemberCols.METHOD, MemberCols.FIELD)) {
+        for (cols in listOf(MethodTable, FieldTable)) {
             val rows = memberRows(cols, ownerRows, member, namespace, order)
             if (rows.isEmpty()) continue
             return HistoryEntry(query, cols.kind, collapse(versions) { v ->
@@ -210,7 +212,7 @@ class HistoryService(private val db: Database) {
 
     /** Every version's rows for one member of [ownerRows], keyed by version row id (one per overload). */
     private fun memberRows(
-        cols: MemberCols,
+        cols: MemberTable,
         ownerRows: Map<Int, ResultRow>,
         member: String,
         namespace: String,
@@ -218,14 +220,14 @@ class HistoryService(private val db: Database) {
     ): Map<Int, List<ResultRow>> {
         val classIds = ownerRows.values.map { it[ClassTable.id].value }
         val col = cols.named(namespace)
-        val byName = cols.table.selectAll()
+        val byName = cols.selectAll()
             .where { (cols.classId inList classIds) and (col eq member) }
             .toList()
         val intermediary = byName.filter { it[cols.intermediaryName] != null }
             .maxByOrNull { order[it[cols.versionId].value] ?: -1 }
             ?.get(cols.intermediaryName)
         val rows = if (intermediary == null) byName else {
-            cols.table.selectAll()
+            cols.selectAll()
                 .where { (cols.classId inList classIds) and ((col eq member) or (cols.intermediaryName eq intermediary)) }
                 .toList()
         }

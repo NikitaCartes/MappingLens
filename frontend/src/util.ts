@@ -1,4 +1,9 @@
+import { ApiRequestError } from "./api";
 import type { Namespace, SearchResultEntry } from "./types";
+
+/** Readable text for anything a failed fetch throws. */
+export const messageOf = (err: unknown) =>
+  err instanceof ApiRequestError || err instanceof Error ? err.message : String(err);
 
 export interface NamespaceMeta {
   id: Namespace;
