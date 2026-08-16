@@ -1,4 +1,4 @@
-// Mirrors the MappingLens REST DTOs (dev.mappinglens.model.Dtos.kt).
+// Mirrors the MappingLens REST DTOs (xyz.nikitacartes.mappinglens.model.Dtos.kt).
 
 export type Namespace = "yarn" | "mojmap" | "intermediary" | "obfuscated";
 export type SearchNamespace = "all" | "yarn" | "mojmap" | "intermediary";

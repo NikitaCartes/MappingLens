@@ -5,11 +5,11 @@ plugins {
     application
 }
 
-group = "dev.mappinglens"
+group = "xyz.nikitacartes.mappinglens"
 version = "0.1.0"
 
 application {
-    mainClass.set("dev.mappinglens.ApplicationKt")
+    mainClass.set("xyz.nikitacartes.mappinglens.ApplicationKt")
 }
 
 repositories {

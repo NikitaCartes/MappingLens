@@ -9,5 +9,5 @@
     </root>
     <logger name="org.jetbrains.exposed" level="WARN"/>
     <logger name="io.ktor" level="INFO"/>
-    <logger name="dev.mappinglens" level="INFO"/>
+    <logger name="xyz.nikitacartes.mappinglens" level="INFO"/>
 </configuration>
