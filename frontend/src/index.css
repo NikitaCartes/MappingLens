@@ -262,12 +262,24 @@ code,
   background: var(--bg-elev);
   flex-wrap: wrap;
 }
+.codeview-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
 .codeview-class {
   font-family: ui-monospace, monospace;
   font-size: 0.82rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.codeview-version {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .codeview-controls {
   display: flex;

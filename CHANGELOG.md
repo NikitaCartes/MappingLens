@@ -3,6 +3,20 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.8.1]
+
+### Added
+- The code view shows the version of the open class next to its name. A tab opened from Blame no
+  longer looks identical to the tab it was opened from.
+
+### Fixed
+- `GET /api/v1/versions` still ranked every `_unobfuscated` variant, including weekly-snapshot ones
+  such as `25w46a_unobfuscated`, one slot above the version it derives from. The semver cache marks
+  these variants with `+unobfuscated` build metadata. The parser dropped that metadata for ordering,
+  so the variant tied with the plain version on precedence. The tie then fell back to raw id
+  comparison, which always ranked the longer, suffixed id as newest. Build metadata now breaks the
+  tie the other way, so the variant sorts right below its own release.
+
 ## [9.8]
 
 ### Added

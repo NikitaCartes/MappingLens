@@ -191,9 +191,12 @@ export function CodeView({ tab }: { tab: CodeTab }) {
   return (
     <div className="codeview">
       <div className="codeview-toolbar">
-        <span className="codeview-class" title={className ?? undefined}>
-          {className ? <Copyable text={className} /> : <span className="hint">unmapped</span>}
-        </span>
+        <div className="codeview-title">
+          <span className="codeview-class" title={className ?? undefined}>
+            {className ? <Copyable text={className} /> : <span className="hint">unmapped</span>}
+          </span>
+          <span className="codeview-version">{tab.version}</span>
+        </div>
         <div className="codeview-controls">
           <Segmented
             size="small"

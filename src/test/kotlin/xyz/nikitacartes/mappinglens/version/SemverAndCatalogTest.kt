@@ -72,6 +72,18 @@ class SemverTest {
         assertEquals(null, Semver.fromMinecraftId("25w43a"))
         assertEquals(null, Semver.fromMinecraftId("weird"))
     }
+
+    @Test
+    fun `build metadata never outranks the untagged build it tags`() {
+        // Real case: the cache spells `1.21.11_unobfuscated` as `1.21.11+unobfuscated` — same
+        // major.minor.patch and pre-release as the untagged `1.21.11`, so only build metadata tells
+        // them apart. Semver 2.0.0 ignores build metadata for precedence, which used to make the two
+        // compare equal and fall through to raw id comparison — always ranking the longer, suffixed
+        // id (so every `_unobfuscated` snapshot) as newest.
+        lt("1.21.11+unobfuscated", "1.21.11")
+        lt("1.21.11-rc.1+unobfuscated", "1.21.11-rc.1")
+        lt("1.21.11-alpha.25.45.a+unobfuscated", "1.21.11-alpha.25.45.a")
+    }
 }
 
 class VersionCatalogTest {
@@ -133,6 +145,27 @@ class VersionCatalogTest {
                 "1.14 Pre-Release 1", "1.14", "1.16_combat-6", "1.16",
                 "1.21.11_unobfuscated", "1.21.11", "26.3-snapshot-1",
             ),
+            cat.sorted(ids),
+        )
+    }
+
+    @Test
+    fun `unobfuscated variant with its own cache entry still sorts below its base`() {
+        // Real case (the reported bug): unlike the combat/experimental variants above, GitCraft's
+        // cache DOES carry a semver for `_unobfuscated` ids — spelled with `+unobfuscated` build
+        // metadata, e.g. `25w45a` -> "1.21.11-alpha.25.45.a" and `25w45a_unobfuscated` ->
+        // "1.21.11-alpha.25.45.a+unobfuscated". Before the fix this tied with the untagged id on
+        // precedence and fell through to the id-string tiebreak, which sorted every `_unobfuscated`
+        // row one slot newer than its own base.
+        val cat = catalog(
+            "1.21.11" to "1.21.11",
+            "1.21.11_unobfuscated" to "1.21.11+unobfuscated",
+            "25w45a" to "1.21.11-alpha.25.45.a",
+            "25w45a_unobfuscated" to "1.21.11-alpha.25.45.a+unobfuscated",
+        )
+        val ids = listOf("1.21.11_unobfuscated", "1.21.11", "25w45a_unobfuscated", "25w45a")
+        assertEquals(
+            listOf("25w45a_unobfuscated", "25w45a", "1.21.11_unobfuscated", "1.21.11"),
             cat.sorted(ids),
         )
     }

@@ -13,6 +13,8 @@ data class Semver(
     val patch: Int,
     /** Dot-separated pre-release identifiers; empty means a stable release (highest precedence). */
     val preRelease: List<String>,
+    /** Metadata after `+` (for example `unobfuscated`); ignored for precedence except as a last tiebreak. */
+    val buildMeta: String? = null,
 ) : Comparable<Semver> {
 
     override fun compareTo(other: Semver): Int {
@@ -21,7 +23,7 @@ data class Semver(
         (patch - other.patch).let { if (it != 0) return it }
 
         // A version WITH a pre-release has lower precedence than the same version without one.
-        if (preRelease.isEmpty() && other.preRelease.isEmpty()) return 0
+        if (preRelease.isEmpty() && other.preRelease.isEmpty()) return compareBuildMeta(other)
         if (preRelease.isEmpty()) return 1
         if (other.preRelease.isEmpty()) return -1
 
@@ -31,13 +33,28 @@ data class Semver(
             if (cmp != 0) return cmp
         }
         // A larger set of pre-release fields has higher precedence when all shared fields are equal.
-        return preRelease.size - other.preRelease.size
+        if (preRelease.size != other.preRelease.size) return preRelease.size - other.preRelease.size
+        return compareBuildMeta(other)
+    }
+
+    /**
+     * A build tagged with metadata is a variant of the same release, so it sorts just below the
+     * untagged build instead of tying. The cache spells `1.21.11_unobfuscated` as
+     * `1.21.11+unobfuscated`: a bare tie here used to fall through to raw id comparison, which
+     * always ranked the longer, suffixed id (and so every `_unobfuscated` snapshot) as newest.
+     */
+    private fun compareBuildMeta(other: Semver): Int = when {
+        buildMeta == null && other.buildMeta == null -> 0
+        buildMeta == null -> 1
+        other.buildMeta == null -> -1
+        else -> buildMeta.compareTo(other.buildMeta)
     }
 
     companion object {
         fun parse(value: String): Semver? {
             val noBuild = value.substringBefore('+').trim()
             if (noBuild.isEmpty()) return null
+            val buildMeta = value.substringAfter('+', "").trim().ifEmpty { null }
             val core = noBuild.substringBefore('-')
             val pre = noBuild.substringAfter('-', "")
             val parts = core.split('.')
@@ -45,7 +62,7 @@ data class Semver(
             val minor = parts.getOrNull(1)?.toIntOrNull() ?: 0
             val patch = parts.getOrNull(2)?.toIntOrNull() ?: 0
             val preIds = if (pre.isEmpty()) emptyList() else pre.split('.')
-            return Semver(major, minor, patch, preIds)
+            return Semver(major, minor, patch, preIds, buildMeta)
         }
 
         /**
