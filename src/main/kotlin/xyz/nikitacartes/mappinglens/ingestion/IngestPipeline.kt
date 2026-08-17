@@ -58,7 +58,26 @@ class IngestPipeline(private val config: AppConfig) {
             }
         }
 
+        syncSortIndex(rankOf)
         populateFtsRanges()
+    }
+
+    /**
+     * Rewrites the sort index of every version row. A version the store gains in the middle of the
+     * order shifts the rank of every version after it, and the loop above writes the rank of the
+     * versions it ingested alone, so a plain run repairs the whole column here rather than leaving
+     * the order stale until a forced rebuild of all versions.
+     */
+    private fun syncSortIndex(rankOf: Map<String, Int>) = transaction {
+        var changed = 0
+        VersionTable.selectAll().forEach { row ->
+            val rank = rankOf[row[VersionTable.versionId]]
+            if (row[VersionTable.sortIndex] != rank) {
+                VersionTable.update({ VersionTable.id eq row[VersionTable.id] }) { it[sortIndex] = rank }
+                changed++
+            }
+        }
+        if (changed > 0) log.info("Refreshed the sort index of {} versions", changed)
     }
 
     /**

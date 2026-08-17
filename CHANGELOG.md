@@ -3,6 +3,23 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.9.1]
+
+### Fixed
+- `GET /api/v1/versions` listed every weekly snapshot (`18w43b` up to `26w14a`) and
+  `3D Shareware v1.34` above the newest version, in name order. The semver of those ids comes from
+  GitCraft's `semver-cache-mojang-launcher.json` alone, because the id carries no `major.minor.patch`
+  to derive one from. GitCraft wrote that file to its own working directory, not into the artifact
+  store where the indexer reads it, so the file was never found and 217 of 525 versions ranked as
+  "unknown semver, sorts as if newest". GitCraft now keeps the file in the artifact store, and the
+  container seeds a store that has no copy yet from the GitCraft checkout.
+
+### Changed
+- The `index` command rewrites the sort index of every version, not only of the versions it ingests.
+  A version the store gains in the middle of the order shifts the rank of every version after it,
+  which until now stayed stale until a forced rebuild of all versions. One plain `index` run is
+  enough to reorder an existing index.
+
 ## [9.9]
 
 ### Changed

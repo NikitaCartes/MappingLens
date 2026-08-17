@@ -258,6 +258,12 @@ cycle() {
 }
 
 mkdir -p "$STATE" /data/config /data/index /data/repos "$MAPPINGLENS_ARTIFACT_STORE"
+# GitCraft keeps the semver cache in the artifact store, and both GitCraft and the indexer read it
+# from there. A store built before the cache moved into it carries no copy, so seed the store from
+# the checkout: -n keeps the copy GitCraft wrote. Without the file the indexer gives no semver to
+# every id that the cache alone carries one for (18w43b, 25w46a, 3D Shareware v1.34), and those ids
+# sort as if they were the newest version. GitCraft itself would rebuild the file over the network.
+cp -n /opt/gitcraft/semver-cache-mojang-launcher.json "$MAPPINGLENS_ARTIFACT_STORE/" 2>/dev/null
 log "starting, update interval ${UPDATE_INTERVAL_SECONDS}s"
 serve_start
 while true; do
