@@ -168,7 +168,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         val nameCol = when (namespace) { "mojmap" -> cols.mojmapName; "intermediary" -> cols.intermediaryName; else -> cols.yarnName }
         return cols.selectAll().where { cols.classId eq classId }.map { row ->
             MemberRec(
-                key = memberKey(row[cols.intermediaryName] ?: row[cols.mojmapName], row[cols.intermediaryDesc] ?: row[cols.obfDesc], row[cols.obfName], row[cols.obfDesc]),
+                key = memberKey(row[cols.intermediaryName] ?: row[cols.mojmapName], row[cols.stableDesc] ?: row[cols.obfDesc], row[cols.obfName], row[cols.obfDesc]),
                 name = row[nameCol],
                 descriptor = row[cols.intermediaryDesc] ?: row[cols.obfDesc],
             )
@@ -779,9 +779,9 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         candidateStableKeys: Set<String>?,
     ): TypedDiff {
         val nameCol = sqlNameColumn(namespace)
-        val addedPackageSql = packageCondition("c2", packageFilter)
-        val removedPackageSql = packageCondition("c1", packageFilter)
-        val renamedPackageSql = packageConditionEither("c1", "c2", packageFilter)
+        val addedPackageSql = packageCondition("c2", nameCol, packageFilter)
+        val removedPackageSql = packageCondition("c1", nameCol, packageFilter)
+        val renamedPackageSql = packageConditionEither("c1", "c2", nameCol, packageFilter)
 
         val added = mutableListOf<DiffEntryItem>()
         val removed = mutableListOf<DiffEntryItem>()
@@ -917,7 +917,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         .map { row ->
             memberKey(
                 row[MethodTable.intermediaryName] ?: row[MethodTable.mojmapName],
-                row[MethodTable.intermediaryDesc] ?: row[MethodTable.obfDesc],
+                row[MethodTable.stableDesc] ?: row[MethodTable.obfDesc],
                 row[MethodTable.obfName],
                 row[MethodTable.obfDesc],
             )
@@ -929,7 +929,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         .map { row ->
             memberKey(
                 row[FieldTable.intermediaryName] ?: row[FieldTable.mojmapName],
-                row[FieldTable.intermediaryDesc] ?: row[FieldTable.obfDesc],
+                row[FieldTable.stableDesc] ?: row[FieldTable.obfDesc],
                 row[FieldTable.obfName],
                 row[FieldTable.obfDesc],
             )
@@ -954,14 +954,16 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         val added = mutableListOf<DiffEntryItem>()
         val removed = mutableListOf<DiffEntryItem>()
         val renamed = mutableListOf<DiffEntryItem>()
-        val addedPackageSql = packageCondition("c2", packageFilter)
-        val removedPackageSql = packageCondition("c1", packageFilter)
-        val renamedPackageSql = packageConditionEither("c1", "c2", packageFilter)
+        val addedPackageSql = packageCondition("c2", nameCol, packageFilter)
+        val removedPackageSql = packageCondition("c1", nameCol, packageFilter)
+        val renamedPackageSql = packageConditionEither("c1", "c2", nameCol, packageFilter)
         // Pick a join key that works whether intermediary mappings exist (default fast path)
         // or both versions are Mojang's unobfuscated 26.x family (fall back to mojmap_name
         // and the descriptor we stored in obf_desc for those).
         val keyCol = stableIdentityColumn(fromId, toId) ?: return TypedDiff(emptyList(), emptyList(), emptyList())
-        val keyDesc = if (keyCol == "intermediary_name") "intermediary_desc" else "obf_desc"
+        // `stable_desc` is the same descriptor in both versions; `obf_desc` covers an index built
+        // before that column existed, where it reads as it did before — wrong, but not empty.
+        fun keyDesc(m: String) = "IFNULL($m.stable_desc, $m.obf_desc)"
         val addedCandidateSql = stableKeyCondition("c2", keyCol, candidateStableKeys)
         val removedCandidateSql = stableKeyCondition("c1", keyCol, candidateStableKeys)
         val renamedCandidateSql = stableKeyCondition("c1", keyCol, candidateStableKeys)
@@ -971,12 +973,12 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         // many-to-many cartesian and took minutes. A NULL in any key part means "no stable identity",
         // so that row can never match — `keyOrUnique` gives it a per-row sentinel (always added/removed)
         // and `keyNotNull` drops it from the lookup set, exactly replicating SQL join NULL semantics.
-        fun key(c: String, m: String) = "$c.$keyCol||char(1)||$m.$keyCol||char(1)||$m.$keyDesc"
+        fun key(c: String, m: String) = "$c.$keyCol||char(1)||$m.$keyCol||char(1)||${keyDesc(m)}"
         fun keyOrUnique(c: String, m: String) =
-            "CASE WHEN $m.$keyCol IS NULL OR $c.$keyCol IS NULL OR $m.$keyDesc IS NULL " +
+            "CASE WHEN $m.$keyCol IS NULL OR $c.$keyCol IS NULL OR ${keyDesc(m)} IS NULL " +
                 "THEN char(2)||$m.id ELSE ${key(c, m)} END"
         fun keyNotNull(c: String, m: String) =
-            "$m.$keyCol IS NOT NULL AND $c.$keyCol IS NOT NULL AND $m.$keyDesc IS NOT NULL"
+            "$m.$keyCol IS NOT NULL AND $c.$keyCol IS NOT NULL AND ${keyDesc(m)} IS NOT NULL"
         val conn = org.jetbrains.exposed.sql.transactions.TransactionManager.current().connection
             .connection as java.sql.Connection
         conn.createStatement().use { st ->
@@ -1036,7 +1038,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
                 JOIN classes c1 ON c1.id = m1.class_id
                 JOIN classes c2 ON c2.$keyCol = c1.$keyCol AND c2.version_id = $toId
                 JOIN $table m2 ON m2.class_id = c2.id AND m2.version_id = $toId
-                    AND m2.$keyCol = m1.$keyCol AND m2.$keyDesc = m1.$keyDesc
+                    AND m2.$keyCol = m1.$keyCol AND ${keyDesc("m2")} = ${keyDesc("m1")}
                 WHERE m1.version_id = $fromId
                   AND m1.$keyCol IS NOT NULL
                   AND IFNULL(m1.$nameCol,'') != IFNULL(m2.$nameCol,'')
@@ -1055,16 +1057,26 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         return TypedDiff(added, removed, renamed)
     }
 
-    private fun packageCondition(alias: String, packageFilter: String?): String {
-        if (packageFilter.isNullOrBlank()) return ""
-        val escaped = packageFilter.replace("'", "''")
-        return "AND $alias.package_path LIKE '$escaped%'"
+    /**
+     * `AND` clause keeping only classes under [packageFilter], in the namespace the caller asked
+     * about. The indexed `package_path` cannot serve this: it is cut from the yarn name, so a
+     * mojmap package matched nothing and the whole diff came back empty. The class name column of
+     * the namespace carries the package the caller means, and the trailing slash keeps a class name
+     * from passing as a package of the same spelling.
+     */
+    private fun packageCondition(alias: String, nameCol: String, packageFilter: String?): String {
+        val prefix = packagePrefix(packageFilter) ?: return ""
+        return "AND $alias.$nameCol LIKE '$prefix'"
     }
 
-    private fun packageConditionEither(leftAlias: String, rightAlias: String, packageFilter: String?): String {
-        if (packageFilter.isNullOrBlank()) return ""
-        val escaped = packageFilter.replace("'", "''")
-        return "AND ($leftAlias.package_path LIKE '$escaped%' OR $rightAlias.package_path LIKE '$escaped%')"
+    private fun packageConditionEither(leftAlias: String, rightAlias: String, nameCol: String, packageFilter: String?): String {
+        val prefix = packagePrefix(packageFilter) ?: return ""
+        return "AND ($leftAlias.$nameCol LIKE '$prefix' OR $rightAlias.$nameCol LIKE '$prefix')"
+    }
+
+    private fun packagePrefix(packageFilter: String?): String? {
+        if (packageFilter.isNullOrBlank()) return null
+        return packageFilter.trimEnd('/').replace("'", "''") + "/%"
     }
 
     private fun stableKeyCondition(alias: String, keyCol: String, candidateStableKeys: Set<String>?): String {

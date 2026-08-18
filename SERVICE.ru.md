@@ -263,7 +263,9 @@ Build-args `GITCRAFT_REPO` и `GITCRAFT_REF` указывают, откуда б
 Параметры diff: `from`, `to` (обяз.); `namespace` (для `/diff` — `yarn/mojmap/intermediary`, для
 `/diff/files` и `/diff/patch` — только `yarn/mojmap`); `type`, `package`, `class`, `changeType`, `limit`.
 
-- `package` — префикс пакета над всем diff'ом; `class` — ровно один класс по внутреннему имени в
+- `package` — префикс пакета над всем diff'ом, читается в `namespace`:
+  `net/minecraft/world/level/block` для mojmap, `net/minecraft/block` для yarn.
+  `class` — ровно один класс по внутреннему имени в
   `namespace` (перечисляет добавленные/удалённые/переименованные члены по имени с `owner`/`descriptor`;
   `summary` совпадает с `/diff/files` для того же класса). `class` приоритетнее `package`.
 - `/diff/files?format=patch` и `/diff/patch` принимают `ignoreWhitespace` (по умолч. `false`):
@@ -357,6 +359,10 @@ Build-args `GITCRAFT_REPO` и `GITCRAFT_REF` указывают, откуда б
 отвечает на весь файл, поэтому используйте этот эндпоинт вместо перебора `/diff/patch` по
 версиям. Версия, проиндексированная только из artifact-store (без репозитория исходников),
 истории не имеет и отдаёт `404`.
+
+В `versions` никогда нет вариантов `_unobfuscated`. Вариант — повторный проход по уже
+проиндексированной сборке, так что его коммит записывает имена декомпилятора, а не изменение класса.
+Каждая строка относится к версии, из которой вариант собран.
 
 ### Иерархия и ссылки
 

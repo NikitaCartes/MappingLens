@@ -3,24 +3,17 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [11.0]
+
+### Fixed
+- `/api/v1/diff` reported the same member as added and removed at once.
+- `/api/v1/diff?package=` answered an empty diff for a package named in any namespace but yarn.
+- `/api/v1/blame` attributed lines to `_unobfuscated` variants. 
+
 ## [10.0]
 
 ### Fixed
-- The index held no overriding method of an unobfuscated release. Intermediary names an override
-  only in the class that first declares it, and the name propagates down the hierarchy instead of
-  being written again for each subclass. An obfuscated release hides that, because its mojmap tiny
-  lists every declared member; an unobfuscated release has no mojmap tiny, so a mapping-only parse
-  gave it no overrides at all. The indexer now reads the version's own jar and adds the members the
-  mappings leave out.
-
-  The gap was a third of the methods. One build indexed both ways: `1.21.11` held 89,606 methods
-  against 56,986 for `1.21.11_unobfuscated`, and `/diff` between the two reported 32,355 methods
-  removed with nothing having changed. Fields were within 1%, because a field is never overridden.
-  It reached every DB-backed endpoint, not only `/history`: `/diff` from 1.21.11 to 26.1 reported 66
-  members removed from `ServerLevel`, of which 49 of the 62 distinct names are still declared in
-  26.1 — `getWorldBorder`, `addFreshEntity` and `neighborChanged` among them.
-
-  **Re-index the affected versions.** An existing index keeps the gap until they are rebuilt.
+- The index held no overriding method of an unobfuscated release.
 
 ### Added
 - `POST /api/v1/translate/{version}` translates a batch of keys between namespaces, descriptors

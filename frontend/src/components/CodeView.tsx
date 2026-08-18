@@ -171,7 +171,11 @@ export function CodeView({ tab }: { tab: CodeTab }) {
       }),
     );
     const mouseUp = codeEditor.onMouseUp((e) => {
-      if (!e.target.element?.closest(".blame-anno")) return;
+      // Monaco renders the line again when the mouse goes down, which detaches the annotation the
+      // press landed on. By the time the button comes up `e.target.element` is the line container,
+      // so the class is read from whatever sits under the pointer now.
+      const { clientX, clientY } = e.event.browserEvent;
+      if (!document.elementFromPoint(clientX, clientY)?.closest(".blame-anno")) return;
       const line = e.target.position?.lineNumber;
       if (!line) return;
       const version = blame.versions[blame.lines[line - 1]];

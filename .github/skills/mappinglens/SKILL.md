@@ -93,7 +93,7 @@ Unless a subsection says otherwise, `namespace` accepts `yarn` or `mojmap` and d
 - `namespace`: `yarn`, `mojmap`, or `intermediary`. Defaults to `mojmap`.
 - `changeType`: `added`, `removed`, `renamed`, or `all`.
 - `package` vs `class` (mutually exclusive, `class` wins if both are given):
-  - `package` is a **package-path prefix** over the whole diff, for example `net/minecraft/block` matches every class under that package.
+  - `package` is a **package-path prefix** over the whole diff, for example `net/minecraft/block` matches every class under that package. Give the path in `namespace`: `net/minecraft/world/level/block` for mojmap, `net/minecraft/block` for yarn.
   - `class` targets **exactly one class** by its internal name in `namespace`, for example `net/minecraft/world/entity/Entity`. It lists added, removed, and renamed members by name, each with `owner`, `name`, and `intermediaryDescriptor`. Its `summary` counts (`methodsAdded`, `fieldsAdded`, and so on) match `/diff/files` for the same class exactly. Use it to answer which methods or fields were added to a class, by name.
   - A string like `net/minecraft/world/entity/Entity` names a class, not a package. Pass it as `class=`. Using it as `package=` matches nothing, because no class lives under a package named `Entity`.
 
@@ -160,6 +160,7 @@ Unless a subsection says otherwise, `namespace` accepts `yarn` or `mojmap` and d
 - `className` resolves as it does for `/source`.
 - One `git blame` over the source repository answers the whole file, so use this instead of walking `/diff/patch` version by version.
 - A version indexed from the artifact store alone has no source repository and gives a `404`.
+- `versions` never names an `_unobfuscated` variant. A variant is a second pass over a build already indexed, so a line blamed on it is attributed to the version it was built from.
 
 ### Bytecode
 

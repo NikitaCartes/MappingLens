@@ -129,7 +129,9 @@ paths:
           name: package
           schema:
             type: string
-          description: Package/path prefix filter such as `net/minecraft/block`.
+          description: >
+            Package prefix filter, read in `namespace`: `net/minecraft/world/level/block`
+            for mojmap, `net/minecraft/block` for yarn.
         - in: query
           name: class
           schema:

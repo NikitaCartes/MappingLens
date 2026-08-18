@@ -72,6 +72,15 @@ sealed class MemberTable(name: String, val kind: String) : IntIdTable(name) {
     val obfDesc = text("obf_desc").nullable()
     val intermediaryName = text("intermediary_name").nullable().index()
     val intermediaryDesc = text("intermediary_desc").nullable()
+
+    /**
+     * [obfDesc] with every class type renamed to the identity a diff keys members by: the
+     * intermediary name, or the mojmap name on a version that carries no intermediary. The official
+     * descriptor changes with every obfuscated release and the tiny files leave `intermediary_desc`
+     * empty for a member they do not name, so keying a diff on either made every override read as
+     * removed and added at once on every pair of versions.
+     */
+    val stableDesc = text("stable_desc").nullable()
     val yarnName = text("yarn_name").nullable()
     val mojmapName = text("mojmap_name").nullable()
     val simpleName = text("simple_name").nullable().index()

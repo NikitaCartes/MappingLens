@@ -283,7 +283,9 @@ Diff parameters: `from`, `to` (required); `namespace` (for `/diff`: `yarn`/`mojm
 for `/diff/files` and `/diff/patch`: `yarn`/`mojmap` only); `type`, `package`, `class`,
 `changeType`, `limit`.
 
-- `package` is a package-path prefix over the whole diff. `class` targets exactly one class
+- `package` is a package-path prefix over the whole diff, read in `namespace`:
+  `net/minecraft/world/level/block` for mojmap, `net/minecraft/block` for yarn.
+  `class` targets exactly one class
   by internal name in `namespace`: it lists added, removed, and renamed members by name, with
   `owner` and JVM `descriptor`, and its `summary` matches `/diff/files` for the same class
   exactly. `class` wins when both are given.
@@ -382,6 +384,10 @@ and `message` lists the candidates. `format=text` returns the source as `text/pl
 `className` resolves the same way as `/source`. One `git blame` over the source repository
 answers the whole file, so use this instead of walking `/diff/patch` version by version. A
 version indexed from the artifact store alone has no source repository and returns `404`.
+
+`versions` never names an `_unobfuscated` variant. A variant is a second pass over a build
+already indexed, so its commit records how the decompiler named things rather than a change to
+the class. Each line is attributed to the version the variant was built from.
 
 ### Hierarchy and references
 

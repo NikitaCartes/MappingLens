@@ -10,6 +10,7 @@ import org.jetbrains.exposed.sql.transactions.transaction
 import org.slf4j.LoggerFactory
 import java.nio.file.Paths
 import java.time.Instant
+import xyz.nikitacartes.mappinglens.service.Descriptors
 
 /**
  * Offline indexer: enumerates versions from the [GitCraftStore], joins their mappings by obfuscated
@@ -196,6 +197,17 @@ class IngestPipeline(private val config: AppConfig) {
                 this[ClassTable.simpleName] = Names.simpleName(nameForPath)
             }.forEach { classIds += it[ClassTable.id].value }
 
+            // Class identity by official name, the same choice the member names make: intermediary
+            // first, mojmap where a version carries none. [stableDesc] is built through this map.
+            val stableClassName = HashMap<String, String>(unified.size)
+            unified.forEach { cls ->
+                val obf = cls.obfName ?: return@forEach
+                val stable = cls.intermediaryName ?: cls.mojmapName ?: return@forEach
+                stableClassName[obf] = stable
+            }
+            fun stableDesc(obfDesc: String?): String? =
+                obfDesc?.let { desc -> Descriptors.mapTypes(desc) { stableClassName[it] } }
+
             // Methods + Fields
             unified.forEachIndexed { idx, cls ->
                 val classRowId = classIds[idx]
@@ -207,6 +219,7 @@ class IngestPipeline(private val config: AppConfig) {
                         this[MethodTable.obfDesc] = m.obfDesc
                         this[MethodTable.intermediaryName] = m.intermediaryName
                         this[MethodTable.intermediaryDesc] = m.intermediaryDesc
+                        this[MethodTable.stableDesc] = stableDesc(m.obfDesc)
                         this[MethodTable.yarnName] = m.yarnName
                         this[MethodTable.mojmapName] = m.mojmapName
                         this[MethodTable.simpleName] = m.yarnName ?: m.mojmapName ?: m.intermediaryName
@@ -221,6 +234,7 @@ class IngestPipeline(private val config: AppConfig) {
                         this[FieldTable.obfDesc] = f.obfDesc
                         this[FieldTable.intermediaryName] = f.intermediaryName
                         this[FieldTable.intermediaryDesc] = f.intermediaryDesc
+                        this[FieldTable.stableDesc] = stableDesc(f.obfDesc)
                         this[FieldTable.yarnName] = f.yarnName
                         this[FieldTable.mojmapName] = f.mojmapName
                         this[FieldTable.simpleName] = f.yarnName ?: f.mojmapName ?: f.intermediaryName

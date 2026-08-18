@@ -14,6 +14,7 @@ import org.jetbrains.exposed.sql.Column
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -95,9 +96,34 @@ class BytecodeService(private val config: AppConfig, private val db: Database) {
         val sourceClassName = resolveSourceClassName(versionId, className, namespace, mappingType) ?: className
         val rel = "${sourceClassName.substringBefore('$')}.java"
         val perLine = GitSourceRepository(rootPath).blame(versionId, rel) ?: return null
-        val versions = perLine.distinct()
+        val (versions, lines) = blameIndex(perLine, variantBases(perLine.toSet()))
+        return BlameResponse(versionId, sourceClassName, mappingType, rel, versions, lines)
+    }
+
+    /**
+     * The per-line versions of a blame as the distinct list the response carries plus one index per
+     * line into that list. Every id in [variantBase] is replaced by the version it is a variant of,
+     * before the list is cut, so a base and its variant fold into one entry. Pure over the two
+     * inputs (no repository, no database), so it is unit-testable.
+     */
+    internal fun blameIndex(perLine: List<String>, variantBase: Map<String, String>): Pair<List<String>, List<Int>> {
+        val lines = perLine.map { variantBase[it] ?: it }
+        val versions = lines.distinct()
         val index = versions.withIndex().associate { (i, v) -> v to i }
-        return BlameResponse(versionId, sourceClassName, mappingType, rel, versions, perLine.map { index.getValue(it) })
+        return versions to lines.map { index.getValue(it) }
+    }
+
+    /**
+     * The `_unobfuscated` ids among [ids], each mapped to the version it is a variant of. A variant
+     * is a second pass over a build already indexed, so its commit changes only how the decompiler
+     * named things. Blaming a line on the variant reports a rename as a change and names a version
+     * that `/versions` does not list, so the line is attributed to the base version instead.
+     */
+    private fun variantBases(ids: Set<String>): Map<String, String> = transaction(db) {
+        VersionTable.selectAll()
+            .where { VersionTable.versionId inList ids }
+            .mapNotNull { row -> row[VersionTable.variantOf]?.let { row[VersionTable.versionId] to it } }
+            .toMap()
     }
 
     /**
