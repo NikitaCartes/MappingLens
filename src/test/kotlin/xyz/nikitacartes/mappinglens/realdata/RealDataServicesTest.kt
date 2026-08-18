@@ -100,7 +100,7 @@ class RealDataServicesTest {
     @Test
     fun `search service finds real class method and field names in different namespaces`(@TempDir tmp: Path) {
         val db = realDb(tmp)
-        val service = SearchService(db, VersionService(db))
+        val service = SearchService(db, VersionService(db), Fixtures.dbPath(db))
 
         for (case in RealDataTestConfig.blockStateClasses) {
             val byYarn = service.search("BlockState", case.version, type = "class", namespace = "yarn", limit = 20, offset = 0, exact = false)
@@ -132,7 +132,7 @@ class RealDataServicesTest {
     @Test
     fun `search service supports owner member query using real names`(@TempDir tmp: Path) {
         val db = realDb(tmp)
-        val service = SearchService(db, VersionService(db))
+        val service = SearchService(db, VersionService(db), Fixtures.dbPath(db))
         val member = RealDataTestConfig.defaultStateMethods.single { it.version == RealDataTestConfig.V_1_21_1 }
 
         val response = service.search(

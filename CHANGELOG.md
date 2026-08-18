@@ -3,7 +3,26 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
-## [11.1]
+## [11.2]
+
+### Changed
+- `/api/v1/search` answers a prefix query over one version instead of over all 526 at once. `q=get`
+  went from 1214ms to 47ms, `q=Block` from 999ms to 28ms, `q=a` from 3739ms to 48ms, `q=Entity` from
+  1465ms to 35ms and `q=Block#getDefaultState` from 1025ms to 20ms. Of 500 queries over five
+  versions, 490 return the same rows in the same order and 4 return the same rows in a different
+  order. The 6 that differ are ties: `"<init>"` matches about 10000 rows whose top 50 carry two
+  distinct bm25 scores, so which 50 come back was always arbitrary.
+- Names are searched through a second file, `mappinglens-search.db`, beside the index: one
+  contentless FTS5 table for each version. `serve` needs both files and exits at startup without it.
+  The second file is 5.3 GB where the table it replaces held 14.9 GB inside the index, so an `index`
+  run followed by `VACUUM` leaves the pair 9.6 GB smaller.
+- `index` builds the search table of any indexed version that has none, reading the names back out
+  of the index rather than from the GitCraft store. An existing index is filled by one ordinary
+  `index` run: 52.3M rows in 485s over 526 versions, with no re-index of the mappings.
+- `/api/v1/search` reads the names of its results in one query for each element table instead of two
+  queries for each result.
+
+## [11.2]
 
 ### Fixed
 - `/api/v1/diff` still reported the same member as added and removed at once everywhere but `class=`.

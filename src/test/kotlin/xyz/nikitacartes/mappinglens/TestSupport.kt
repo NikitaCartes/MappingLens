@@ -1,5 +1,6 @@
 package xyz.nikitacartes.mappinglens
 
+import xyz.nikitacartes.mappinglens.db.SearchIndex
 import xyz.nikitacartes.mappinglens.db.tables.*
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.SchemaUtils
@@ -86,31 +87,32 @@ object Fixtures {
         mojmap = "net/minecraft/world/level/block/OldBlock",
     )
 
+    /**
+     * The file [db] is stored in, asked of SQLite so it answers for any database a test built, not
+     * only the ones [newDb] made. SearchIndex derives the search index path beside it.
+     */
+    fun dbPath(db: Database): String = transaction(db) {
+        val conn = org.jetbrains.exposed.sql.transactions.TransactionManager.current()
+            .connection.connection as java.sql.Connection
+        conn.createStatement().use { st ->
+            st.executeQuery("PRAGMA database_list").use { rs ->
+                generateSequence { if (rs.next()) rs.getString("name") to rs.getString("file") else null }
+                    .first { it.first == "main" }.second
+            }
+        }
+    }
+
     fun newDb(tmp: Path): Database {
         val dbFile = tmp.resolve("test-${System.nanoTime()}.db")
         val db = Database.connect(
             url = "jdbc:sqlite:${dbFile.toString().replace('\\', '/')}",
             driver = "org.sqlite.JDBC",
         )
-        // Create schema + FTS5 search index. Mirrors DatabaseFactory.init but skips the
-        // WAL PRAGMA (which cannot run inside the implicit transaction Exposed opens).
+        // Create the schema. Mirrors DatabaseFactory.init but skips the WAL PRAGMA (which cannot
+        // run inside the implicit transaction Exposed opens). Names are searched through the
+        // separate search index, which each seed builds for the version it inserts.
         transaction(db) {
             SchemaUtils.create(VersionTable, ClassTable, MethodTable, FieldTable, SourceFileTable)
-            exec(
-                """
-                CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
-                    element_type UNINDEXED,
-                    element_id UNINDEXED,
-                    version_id UNINDEXED,
-                    yarn_name,
-                    mojmap_name,
-                    intermediary_name,
-                    obf_name,
-                    simple_name,
-                    tokenize='unicode61 remove_diacritics 2'
-                );
-                """.trimIndent()
-            )
         }
         return db
     }
@@ -118,23 +120,31 @@ object Fixtures {
     /** Inserts the canonical 1.21.1 slice. */
     fun seed_1_21_1(db: Database) = transaction(db) {
         val vId = insertVersion(V_1_21_1)
-        val blockId = insertClass(vId, block_1_21_1)
-        val blockStateId = insertClass(vId, blockState_1_21_1)
-        insertMethod(vId, blockId, getDefaultState)
-        insertField(vId, blockId, stateIds)
-        insertClass(vId, onlyIn1_21_1)
+        SearchIndex.openWritable(dbPath(db)).use { search ->
+            SearchIndex.createTable(search, vId)
+            val blockId = insertClass(search, vId, block_1_21_1)
+            insertClass(search, vId, blockState_1_21_1)
+            insertMethod(search, vId, blockId, getDefaultState)
+            insertField(search, vId, blockId, stateIds)
+            insertClass(search, vId, onlyIn1_21_1)
+            search.commit()
+        }
         Unit
     }
 
     /** Inserts a 1.21 slice that differs slightly from 1.21.1 for diff tests. */
     fun seed_1_21(db: Database) = transaction(db) {
         val vId = insertVersion(V_1_21)
-        val blockId = insertClass(vId, block_1_21_1)
-        insertClass(vId, blockState_1_21_1)
-        // same method, but renamed in this older version
-        insertMethod(vId, blockId, getDefaultState.copy(yarn = "getDefaultStateOld"))
-        insertField(vId, blockId, stateIds)
-        insertClass(vId, onlyIn1_21)
+        SearchIndex.openWritable(dbPath(db)).use { search ->
+            SearchIndex.createTable(search, vId)
+            val blockId = insertClass(search, vId, block_1_21_1)
+            insertClass(search, vId, blockState_1_21_1)
+            // same method, but renamed in this older version
+            insertMethod(search, vId, blockId, getDefaultState.copy(yarn = "getDefaultStateOld"))
+            insertField(search, vId, blockId, stateIds)
+            insertClass(search, vId, onlyIn1_21)
+            search.commit()
+        }
         Unit
     }
 
@@ -147,7 +157,7 @@ object Fixtures {
         it[hasIntermediary] = true
     }.value
 
-    private fun insertClass(vId: Int, c: ClassEntry): Int {
+    private fun insertClass(search: java.sql.Connection, vId: Int, c: ClassEntry): Int {
         val id = ClassTable.insertAndGetId {
             it[versionId] = org.jetbrains.exposed.dao.id.EntityID(vId, VersionTable)
             it[obfName] = c.obf
@@ -157,19 +167,14 @@ object Fixtures {
             it[packagePath] = c.yarn.substringBeforeLast('/')
             it[simpleName] = c.yarn.substringAfterLast('/')
         }.value
-        // Mirror into FTS5 for search tests
-        org.jetbrains.exposed.sql.transactions.TransactionManager.current().exec(
-            """
-            INSERT INTO search_index(element_type, element_id, version_id, yarn_name, mojmap_name, intermediary_name, obf_name, simple_name)
-            VALUES ('class', $id, $vId,
-                    ${q(c.yarn)}, ${q(c.mojmap)}, ${q(c.intermediary)}, ${q(c.obf)},
-                    ${q(c.yarn.substringAfterLast('/'))});
-            """.trimIndent()
-        )
+        // Mirror into the search index for search tests
+        SearchIndex.insertRows(search, vId, "class", listOf(id)) {
+            SearchIndex.Names(c.yarn, c.mojmap, c.intermediary, c.obf, c.yarn.substringAfterLast('/'))
+        }
         return id
     }
 
-    private fun insertMethod(vId: Int, classRowId: Int, m: MemberEntry) {
+    private fun insertMethod(search: java.sql.Connection, vId: Int, classRowId: Int, m: MemberEntry) {
         val id = MethodTable.insertAndGetId {
             it[versionId] = org.jetbrains.exposed.dao.id.EntityID(vId, VersionTable)
             it[classId] = org.jetbrains.exposed.dao.id.EntityID(classRowId, ClassTable)
@@ -181,17 +186,15 @@ object Fixtures {
             it[mojmapName] = m.mojmap
             it[simpleName] = m.yarn
         }.value
-        org.jetbrains.exposed.sql.transactions.TransactionManager.current().exec(
-            """
-            INSERT INTO search_index(element_type, element_id, version_id, yarn_name, mojmap_name, intermediary_name, obf_name, simple_name)
-            VALUES ('method', $id, $vId,
-                    ${q("${block_1_21_1.yarn}#${m.yarn}")}, ${q("${block_1_21_1.mojmap}#${m.mojmap}")},
-                    ${q("${block_1_21_1.intermediary}#${m.intermediary}")}, ${q("${block_1_21_1.obf}#${m.obfName}")}, ${q(m.yarn)});
-            """.trimIndent()
-        )
+        SearchIndex.insertRows(search, vId, "method", listOf(id)) {
+            SearchIndex.Names(
+                "${block_1_21_1.yarn}#${m.yarn}", "${block_1_21_1.mojmap}#${m.mojmap}",
+                "${block_1_21_1.intermediary}#${m.intermediary}", "${block_1_21_1.obf}#${m.obfName}", m.yarn,
+            )
+        }
     }
 
-    private fun insertField(vId: Int, classRowId: Int, f: MemberEntry) {
+    private fun insertField(search: java.sql.Connection, vId: Int, classRowId: Int, f: MemberEntry) {
         val id = FieldTable.insertAndGetId {
             it[versionId] = org.jetbrains.exposed.dao.id.EntityID(vId, VersionTable)
             it[classId] = org.jetbrains.exposed.dao.id.EntityID(classRowId, ClassTable)
@@ -203,15 +206,12 @@ object Fixtures {
             it[mojmapName] = f.mojmap
             it[simpleName] = f.yarn
         }.value
-        org.jetbrains.exposed.sql.transactions.TransactionManager.current().exec(
-            """
-            INSERT INTO search_index(element_type, element_id, version_id, yarn_name, mojmap_name, intermediary_name, obf_name, simple_name)
-            VALUES ('field', $id, $vId,
-                    ${q("${block_1_21_1.yarn}#${f.yarn}")}, ${q("${block_1_21_1.mojmap}#${f.mojmap}")},
-                    ${q("${block_1_21_1.intermediary}#${f.intermediary}")}, ${q("${block_1_21_1.obf}#${f.obfName}")}, ${q(f.yarn)});
-            """.trimIndent()
-        )
+        SearchIndex.insertRows(search, vId, "field", listOf(id)) {
+            SearchIndex.Names(
+                "${block_1_21_1.yarn}#${f.yarn}", "${block_1_21_1.mojmap}#${f.mojmap}",
+                "${block_1_21_1.intermediary}#${f.intermediary}", "${block_1_21_1.obf}#${f.obfName}", f.yarn,
+            )
+        }
     }
 
-    private fun q(s: String?): String = if (s == null) "''" else "'" + s.replace("'", "''") + "'"
 }

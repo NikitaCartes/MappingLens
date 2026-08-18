@@ -1,16 +1,28 @@
 package xyz.nikitacartes.mappinglens.service
 
+import xyz.nikitacartes.mappinglens.db.SearchIndex
 import xyz.nikitacartes.mappinglens.db.tables.*
 import xyz.nikitacartes.mappinglens.model.ClassRef
 import xyz.nikitacartes.mappinglens.model.SearchResponse
 import xyz.nikitacartes.mappinglens.model.SearchResultEntry
+import org.jetbrains.exposed.dao.id.IntIdTable
 import org.jetbrains.exposed.sql.Database
+import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
+import java.sql.Connection
 import java.sql.ResultSet
 
-class SearchService(private val db: Database, private val versionService: VersionService) {
+/**
+ * Name search. The match runs against [SearchIndex], one FTS5 table for each version in a file of
+ * its own; the names of the rows it returns are read back from the main index here.
+ */
+class SearchService(
+    private val db: Database,
+    private val versionService: VersionService,
+    private val databasePath: String,
+) {
 
     private val log = org.slf4j.LoggerFactory.getLogger(SearchService::class.java)
 
@@ -27,36 +39,21 @@ class SearchService(private val db: Database, private val versionService: Versio
             ?: return@transaction SearchResponse(query, "", 0, emptyList())
         val versionRow = VersionTable.selectAll().where { VersionTable.versionId eq effectiveVersion }
             .singleOrNull() ?: return@transaction SearchResponse(query, effectiveVersion, 0, emptyList())
-        val scope = VersionScope(
-            rowId = versionRow[VersionTable.id].value,
-            ftsLo = versionRow[VersionTable.ftsMinRowid],
-            ftsHi = versionRow[VersionTable.ftsMaxRowid],
-        )
+        val table = SearchIndex.table(versionRow[VersionTable.id].value)
 
         // Owner#member, owner.member or short owner/member splitting.
         val ownerMember = splitOwnerMemberQuery(query.trim())
         val ownerPart = ownerMember?.first
         val memberPart = ownerMember?.second
 
-        val results = if (ownerPart != null && memberPart != null) {
-            searchOwnerMember(scope, ownerPart, memberPart, type, namespace, limit, offset, exact)
-        } else {
-            searchSingle(scope, query.trim(), type, namespace, limit, offset, exact)
+        val results = SearchIndex.openReadOnly(databasePath).use { search ->
+            if (ownerPart != null && memberPart != null) {
+                searchOwnerMember(search, table, ownerPart, memberPart, type, namespace, limit, offset, exact)
+            } else {
+                searchSingle(search, table, query.trim(), type, namespace, limit, offset, exact)
+            }
         }
         SearchResponse(query, effectiveVersion, results.size, results)
-    }
-
-    /**
-     * One version's identity for an FTS query. [ftsLo]/[ftsHi] are its inclusive search_index rowid
-     * range; when present we constrain `rowid BETWEEN ftsLo AND ftsHi` so FTS5 ranks only this
-     * version's rows. Falls back to the version_id post-filter when the range is absent (an index
-     * built before this column existed) — same results, just the old slow scan.
-     */
-    private class VersionScope(val rowId: Int, val ftsLo: Long?, val ftsHi: Long?) {
-        /** Returns the SQL fragment scoping the match to this version plus its bound parameters. */
-        fun clause(): Pair<String, List<Any>> =
-            if (ftsLo != null && ftsHi != null) "rowid BETWEEN ? AND ?" to listOf(ftsLo, ftsHi)
-            else "version_id = ?" to listOf(rowId)
     }
 
     private fun splitOwnerMemberQuery(query: String): Pair<String, String>? {
@@ -75,118 +72,70 @@ class SearchService(private val db: Database, private val versionService: Versio
     }
 
     private fun searchSingle(
-        scope: VersionScope, q: String, type: String, namespace: String,
+        search: Connection, table: String, q: String, type: String, namespace: String,
         limit: Int, offset: Int, exact: Boolean,
     ): List<SearchResultEntry> {
-        val typeFilter = typeFilterClause(type)
+        val kind = SearchIndex.kindCode(type)
         val matchExpr = buildFtsMatch(q, namespace, exact)
-        val (versionClause, versionParams) = scope.clause()
+        // The kind sits in the low two bits of the rowid in ranking order, so `rowid & 3` both
+        // filters by element type and groups classes before methods before fields.
         val sql = """
-            SELECT element_type, element_id, version_id, bm25(search_index) AS rank
-            FROM search_index
-            WHERE search_index MATCH ?
-              AND $versionClause
-              $typeFilter
-                        ORDER BY CASE element_type
-                                             WHEN 'class' THEN 0
-                                             WHEN 'method' THEN 1
-                                             WHEN 'field' THEN 2
-                                             ELSE 3
-                                         END ASC,
-                                         rank ASC
+            SELECT rowid, bm25($table) AS rank
+            FROM $table
+            WHERE $table MATCH ?
+              ${if (kind != null) "AND (rowid & 3) = ?" else ""}
+            ORDER BY rowid & 3 ASC, rank ASC
             LIMIT ? OFFSET ?
         """.trimIndent()
         val params = buildList<Any> {
-            add(matchExpr); addAll(versionParams)
-            if (typeFilter.isNotEmpty()) add(type)
+            add(matchExpr)
+            if (kind != null) add(kind)
             add(limit); add(offset)
         }
-        val rows = mutableListOf<Triple<String, Int, Double>>()
-        execRaw(sql, params) { rs ->
-            while (rs.next()) {
-                val rank = rs.getDouble("rank")
-                // FTS5 bm25 returns negative-ish lower=better; convert to positive score
-                val score = scoreFromBm25(rank)
-                rows += Triple(rs.getString("element_type"), rs.getInt("element_id"), score)
-            }
-        }
-        return rows.mapNotNull { (etype, eid, score) -> hydrate(etype, eid, score) }
+        return resolve(search, hits(search, sql, params)).map { it.entry }
     }
 
     private fun searchOwnerMember(
-        scope: VersionScope, ownerPart: String, memberPart: String,
+        search: Connection, table: String, ownerPart: String, memberPart: String,
         type: String, namespace: String, limit: Int, offset: Int, exact: Boolean,
     ): List<SearchResultEntry> {
-        val (versionClause, versionParams) = scope.clause()
         // First, find candidate class ids matching ownerPart.
         val ownerMatch = buildFtsMatch(ownerPart, namespace, exact)
-        val classIds = mutableListOf<Int>()
         val ownerSql = """
-            SELECT element_id FROM search_index
-            WHERE search_index MATCH ?
-              AND $versionClause
-              AND element_type = 'class'
-            ORDER BY bm25(search_index) ASC
+            SELECT rowid, bm25($table) AS rank
+            FROM $table
+            WHERE $table MATCH ?
+              AND (rowid & 3) = ?
+            ORDER BY rank ASC
             LIMIT 50
         """.trimIndent()
-        execRaw(ownerSql, buildList<Any> { add(ownerMatch); addAll(versionParams) }) { rs ->
-            while (rs.next()) classIds += rs.getInt("element_id")
-        }
+        val classIds = hits(search, ownerSql, listOf(ownerMatch, SearchIndex.kindCode("class")!!))
+            .map { SearchIndex.elementId(it.rowid) }
         if (classIds.isEmpty()) return emptyList()
         val typeForMember = if (type == "class") "method" else type
-        val typeFilter = typeFilterClause(typeForMember)
+        val kind = SearchIndex.kindCode(typeForMember)
         val memberMatch = buildFtsMatch(memberPart, namespace, exact)
 
-        // Look up methods/fields filtering by class_id IN list. The FTS index stores class_id NOT directly,
-        // so we resolve element_id -> class_id via the relational tables.
+        // The FTS index does not store the owner, so members are matched on their own name and then
+        // kept only where the class they belong to is one of the candidates above.
         val classIdSet = classIds.toSet()
-        val results = mutableListOf<SearchResultEntry>()
         val sql = """
-            SELECT element_type, element_id, bm25(search_index) AS rank
-            FROM search_index
-            WHERE search_index MATCH ?
-              AND $versionClause
-              $typeFilter
-                        ORDER BY CASE element_type
-                                             WHEN 'method' THEN 0
-                                             WHEN 'field' THEN 1
-                                             ELSE 2
-                                         END ASC,
-                                         rank ASC
+            SELECT rowid, bm25($table) AS rank
+            FROM $table
+            WHERE $table MATCH ?
+              ${if (kind != null) "AND (rowid & 3) = ?" else ""}
+            ORDER BY CASE rowid & 3 WHEN 1 THEN 0 WHEN 2 THEN 1 ELSE 2 END ASC, rank ASC
             LIMIT ? OFFSET ?
         """.trimIndent()
         val memberParams = buildList<Any> {
-            add(memberMatch); addAll(versionParams)
-            if (typeFilter.isNotEmpty()) add(typeForMember)
+            add(memberMatch)
+            if (kind != null) add(kind)
             add(limit * 4); add(offset)
         }
-        execRaw(sql, memberParams) { rs ->
-            while (rs.next()) {
-                val etype = rs.getString("element_type")
-                val eid = rs.getInt("element_id")
-                val rank = rs.getDouble("rank")
-                val classId = lookupOwnerClassId(etype, eid) ?: continue
-                if (classId !in classIdSet) continue
-                val entry = hydrate(etype, eid, scoreFromBm25(rank)) ?: continue
-                results += entry
-                if (results.size >= limit) break
-            }
-        }
-        return results
-    }
-
-    private fun lookupOwnerClassId(elementType: String, elementId: Int): Int? {
-        return when (elementType) {
-            "method" -> MethodTable.selectAll().where { MethodTable.id eq elementId }.singleOrNull()?.get(MethodTable.classId)?.value
-            "field" -> FieldTable.selectAll().where { FieldTable.id eq elementId }.singleOrNull()?.get(FieldTable.classId)?.value
-            "class" -> elementId
-            else -> null
-        }
-    }
-
-    private fun typeFilterClause(type: String): String = when (type) {
-        "class", "method", "field" -> "AND element_type = ?"
-        else -> ""
+        return resolve(search, hits(search, sql, memberParams))
+            .filter { it.ownerClassId in classIdSet }
+            .take(limit)
+            .map { it.entry }
     }
 
     private fun buildFtsMatch(q: String, namespace: String, exact: Boolean): String {
@@ -205,41 +154,87 @@ class SearchService(private val db: Database, private val versionService: Versio
     /** bm25 returns lower=better (negative-ish). Convert to a [0..1+] score. */
     private fun scoreFromBm25(rank: Double): Double = 1.0 / (1.0 + Math.abs(rank))
 
-    private fun hydrate(elementType: String, elementId: Int, score: Double): SearchResultEntry? {
-        if (elementType == "class") {
-            val r = ClassTable.selectAll().where { ClassTable.id eq elementId }.singleOrNull() ?: return null
-            return SearchResultEntry(
-                type = "class",
-                intermediary = r[ClassTable.intermediaryName],
-                yarn = r[ClassTable.yarnName],
-                mojmap = r[ClassTable.mojmapName],
-                obfuscated = r[ClassTable.obfName],
+    /** One match: the packed row identity the FTS index returns, and its score. */
+    private class Hit(val rowid: Long, val score: Double)
+
+    /** A hydrated hit plus the class it belongs to, which owner#member search filters on. */
+    private class Resolved(val entry: SearchResultEntry, val ownerClassId: Int?)
+
+    private fun hits(search: Connection, sql: String, params: List<Any>): List<Hit> {
+        val rows = mutableListOf<Hit>()
+        execRaw(search, sql, params) { rs ->
+            // FTS5 bm25 returns negative-ish lower=better; convert to positive score
+            while (rs.next()) rows += Hit(rs.getLong("rowid"), scoreFromBm25(rs.getDouble("rank")))
+        }
+        return rows
+    }
+
+    /**
+     * Reads the names of every hit in one query per element table plus one for the owner classes.
+     * Row by row this cost two statements for each result and about 250ms of the 1214ms that
+     * `/search?q=get` took, for lookups SQLite itself answers in a millisecond.
+     */
+    private fun resolve(search: Connection, hits: List<Hit>): List<Resolved> {
+        if (hits.isEmpty()) return emptyList()
+        val idsByKind = hits.groupBy({ SearchIndex.elementType(it.rowid) }, { SearchIndex.elementId(it.rowid) })
+        val methods = rowsById(MethodTable, idsByKind["method"].orEmpty())
+        val fields = rowsById(FieldTable, idsByKind["field"].orEmpty())
+        val classes = rowsById(
+            ClassTable,
+            methods.values.map { it[MethodTable.classId].value } +
+                fields.values.map { it[FieldTable.classId].value } +
+                idsByKind["class"].orEmpty(),
+        )
+        return hits.mapNotNull { hit ->
+            val elementId = SearchIndex.elementId(hit.rowid)
+            when (SearchIndex.elementType(hit.rowid)) {
+                "class" -> classes[elementId]?.let { Resolved(classEntry(it, hit.score), elementId) }
+                "method" -> methods[elementId]?.let { memberEntry(MethodTable, it, classes, hit.score) }
+                "field" -> fields[elementId]?.let { memberEntry(FieldTable, it, classes, hit.score) }
+                else -> null
+            }
+        }
+    }
+
+    /** Reads rows by id, in batches, because SQLite binds a limited number of parameters. */
+    private fun rowsById(table: IntIdTable, ids: Collection<Int>): Map<Int, ResultRow> =
+        ids.distinct().chunked(500)
+            .flatMap { chunk -> table.selectAll().where { table.id inList chunk }.toList() }
+            .associateBy { it[table.id].value }
+
+    private fun classEntry(r: ResultRow, score: Double) = SearchResultEntry(
+        type = "class",
+        intermediary = r[ClassTable.intermediaryName],
+        yarn = r[ClassTable.yarnName],
+        mojmap = r[ClassTable.mojmapName],
+        obfuscated = r[ClassTable.obfName],
+        score = score,
+    )
+
+    private fun memberEntry(
+        cols: MemberTable, r: ResultRow, classes: Map<Int, ResultRow>, score: Double,
+    ): Resolved {
+        val ownerId = r[cols.classId].value
+        val classRow = classes[ownerId]
+        return Resolved(
+            SearchResultEntry(
+                type = cols.kind,
+                intermediary = combine(classRow?.get(ClassTable.intermediaryName), r[cols.intermediaryName]),
+                yarn = combine(classRow?.get(ClassTable.yarnName), r[cols.yarnName]),
+                mojmap = combine(classRow?.get(ClassTable.mojmapName), r[cols.mojmapName]),
+                obfuscated = combine(classRow?.get(ClassTable.obfName), r[cols.obfName]),
+                owner = classRow?.let {
+                    ClassRef(
+                        intermediary = it[ClassTable.intermediaryName],
+                        yarn = it[ClassTable.yarnName],
+                        mojmap = it[ClassTable.mojmapName],
+                        obfuscated = it[ClassTable.obfName],
+                    )
+                },
+                intermediaryDescriptor = r[cols.intermediaryDesc] ?: r[cols.obfDesc],
                 score = score,
-            )
-        }
-        val cols = when (elementType) {
-            "method" -> MethodTable
-            "field" -> FieldTable
-            else -> return null
-        }
-        val r = cols.selectAll().where { cols.id eq elementId }.singleOrNull() ?: return null
-        val classRow = ClassTable.selectAll().where { ClassTable.id eq r[cols.classId] }.singleOrNull()
-        return SearchResultEntry(
-            type = elementType,
-            intermediary = combine(classRow?.get(ClassTable.intermediaryName), r[cols.intermediaryName]),
-            yarn = combine(classRow?.get(ClassTable.yarnName), r[cols.yarnName]),
-            mojmap = combine(classRow?.get(ClassTable.mojmapName), r[cols.mojmapName]),
-            obfuscated = combine(classRow?.get(ClassTable.obfName), r[cols.obfName]),
-            owner = classRow?.let {
-                ClassRef(
-                    intermediary = it[ClassTable.intermediaryName],
-                    yarn = it[ClassTable.yarnName],
-                    mojmap = it[ClassTable.mojmapName],
-                    obfuscated = it[ClassTable.obfName],
-                )
-            },
-            intermediaryDescriptor = r[cols.intermediaryDesc] ?: r[cols.obfDesc],
-            score = score,
+            ),
+            ownerId,
         )
     }
 
@@ -250,9 +245,7 @@ class SearchService(private val db: Database, private val versionService: Versio
     }
 
     /** Runs a parameterized FTS query; parameters are bound, never string-substituted. */
-    private fun execRaw(sql: String, params: List<Any>, action: (ResultSet) -> Unit) {
-        val conn = org.jetbrains.exposed.sql.transactions.TransactionManager.current().connection
-            .connection as java.sql.Connection
+    private fun execRaw(conn: Connection, sql: String, params: List<Any>, action: (ResultSet) -> Unit) {
         try {
             conn.prepareStatement(sql).use { ps ->
                 params.forEachIndexed { i, p ->

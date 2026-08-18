@@ -73,22 +73,11 @@ object DatabaseFactory {
                 SourceFileTable,
             )
 
-            // FTS5 virtual table
-            exec(
-                """
-                CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
-                    element_type UNINDEXED,
-                    element_id UNINDEXED,
-                    version_id UNINDEXED,
-                    yarn_name,
-                    mojmap_name,
-                    intermediary_name,
-                    obf_name,
-                    simple_name,
-                    tokenize='unicode61 remove_diacritics 2'
-                );
-                """.trimIndent()
-            )
+            // Names used to be searched through one FTS5 table here, over every version at once.
+            // They now live in a file of its own, one table for each version (see SearchIndex), so
+            // an index built before that carries a table nothing reads: 14.9 GB of a 37.8 GB index.
+            // Dropping it frees the pages; VACUUM returns them to the file system.
+            exec("DROP TABLE IF EXISTS search_index;")
 
             // The cross-version identity of a member, spelled exactly as the diff spells it: the
             // stable name (the intermediary name, or the display name where the tiny files leave it
@@ -107,6 +96,10 @@ object DatabaseFactory {
                 )
             }
         }
+        // Names are searched through a file of its own, one FTS5 table for each version; see
+        // SearchIndex. Create it here so an index always carries both files, even before the first
+        // version is ingested — the server refuses to start without it.
+        SearchIndex.openWritable(databasePath).close()
         return db
     }
 }

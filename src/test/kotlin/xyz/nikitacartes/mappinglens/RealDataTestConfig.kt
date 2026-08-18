@@ -11,6 +11,7 @@ import xyz.nikitacartes.mappinglens.db.tables.VersionTable
 import xyz.nikitacartes.mappinglens.ingestion.Hashing
 import xyz.nikitacartes.mappinglens.ingestion.Names
 import org.jetbrains.exposed.dao.id.EntityID
+import xyz.nikitacartes.mappinglens.db.SearchIndex
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.insertAndGetId
 import org.jetbrains.exposed.sql.transactions.TransactionManager
@@ -316,6 +317,8 @@ object RealDataTestConfig {
     fun jarDirFor(version: String): Path = minecraftVersionsDir.resolve(version)
 
     fun seedMappingSlice(db: Database, seededVersions: List<String> = versions) {
+        val search = SearchIndex.openWritable(Fixtures.dbPath(db))
+        search.use {
         transaction(db) {
             for (version in seededVersions) {
                 val versionRowId = VersionTable.insertAndGetId {
@@ -327,21 +330,25 @@ object RealDataTestConfig {
                     it[hasIntermediary] = true
                 }.value
 
+                SearchIndex.createTable(search, versionRowId)
+
                 val classIds = mutableMapOf<String, Int>()
                 classCases.filter { it.version == version }.forEach { cls ->
-                    classIds[cls.intermediary] = insertClass(versionRowId, cls)
+                    classIds[cls.intermediary] = insertClass(search, versionRowId, cls)
                 }
 
                 memberCases.filter { it.version == version }.forEach { member ->
                     val ownerId = classIds.getValue(member.ownerIntermediary)
                     when (member.kind) {
-                        "method" -> insertMethod(versionRowId, ownerId, member)
-                        "field" -> insertField(versionRowId, ownerId, member)
+                        "method" -> insertMethod(search, versionRowId, ownerId, member)
+                        "field" -> insertField(search, versionRowId, ownerId, member)
                     }
                 }
 
                 insertSourceRows(versionRowId)
+                search.commit()
             }
+        }
         }
     }
 
@@ -358,7 +365,7 @@ object RealDataTestConfig {
         minecraftVersionsDir,
     )
 
-    private fun insertClass(versionRowId: Int, cls: RealClassCase): Int {
+    private fun insertClass(search: java.sql.Connection, versionRowId: Int, cls: RealClassCase): Int {
         val id = ClassTable.insertAndGetId {
             it[versionId] = EntityID(versionRowId, VersionTable)
             it[obfName] = cls.obf
@@ -369,6 +376,7 @@ object RealDataTestConfig {
             it[simpleName] = Names.simpleName(cls.yarn)
         }.value
         insertFts(
+            search = search,
             elementType = "class",
             elementId = id,
             versionRowId = versionRowId,
@@ -381,7 +389,7 @@ object RealDataTestConfig {
         return id
     }
 
-    private fun insertMethod(versionRowId: Int, ownerId: Int, member: RealMemberCase) {
+    private fun insertMethod(search: java.sql.Connection, versionRowId: Int, ownerId: Int, member: RealMemberCase) {
         val id = MethodTable.insertAndGetId {
             it[versionId] = EntityID(versionRowId, VersionTable)
             it[classId] = EntityID(ownerId, ClassTable)
@@ -394,6 +402,7 @@ object RealDataTestConfig {
             it[simpleName] = member.yarnName
         }.value
         insertFts(
+            search = search,
             elementType = "method",
             elementId = id,
             versionRowId = versionRowId,
@@ -405,7 +414,7 @@ object RealDataTestConfig {
         )
     }
 
-    private fun insertField(versionRowId: Int, ownerId: Int, member: RealMemberCase) {
+    private fun insertField(search: java.sql.Connection, versionRowId: Int, ownerId: Int, member: RealMemberCase) {
         val id = FieldTable.insertAndGetId {
             it[versionId] = EntityID(versionRowId, VersionTable)
             it[classId] = EntityID(ownerId, ClassTable)
@@ -418,6 +427,7 @@ object RealDataTestConfig {
             it[simpleName] = member.yarnName
         }.value
         insertFts(
+            search = search,
             elementType = "field",
             elementId = id,
             versionRowId = versionRowId,
@@ -444,6 +454,7 @@ object RealDataTestConfig {
     }
 
     private fun insertFts(
+        search: java.sql.Connection,
         elementType: String,
         elementId: Int,
         versionRowId: Int,
@@ -452,14 +463,7 @@ object RealDataTestConfig {
         intermediary: String?,
         obf: String?,
         simpleName: String?,
-    ) {
-        TransactionManager.current().exec(
-            """
-            INSERT INTO search_index(element_type, element_id, version_id, yarn_name, mojmap_name, intermediary_name, obf_name, simple_name)
-            VALUES (${quote(elementType)}, $elementId, $versionRowId, ${quote(yarn)}, ${quote(mojmap)}, ${quote(intermediary)}, ${quote(obf)}, ${quote(simpleName)});
-            """.trimIndent()
-        )
+    ) = SearchIndex.insertRows(search, versionRowId, elementType, listOf(elementId)) {
+        SearchIndex.Names(yarn, mojmap, intermediary, obf, simpleName)
     }
-
-    private fun quote(value: String?): String = if (value == null) "''" else "'" + value.replace("'", "''") + "'"
 }

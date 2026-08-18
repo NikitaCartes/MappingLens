@@ -23,13 +23,6 @@ object VersionTable : IntIdTable("versions") {
     // rows unless asked for them; a direct lookup by id still answers.
     val variantOf = text("variant_of").nullable()
 
-    // Inclusive [min,max] FTS5 rowid range of this version's search_index rows. Each version's rows
-    // are inserted contiguously, so the server prunes a search MATCH with `rowid BETWEEN ? AND ?`
-    // (which FTS5 pushes into the scan) instead of post-filtering the version-agnostic match across
-    // all ~500 versions — same results, but it ranks only one version's rows. See IngestPipeline.
-    val ftsMinRowid = long("fts_min_rowid").nullable()
-    val ftsMaxRowid = long("fts_max_rowid").nullable()
-
     // Number of class, method and field rows of this version. The indexer holds these three numbers
     // while it writes the rows, so recording them costs it nothing. Without them the version catalog
     // has to derive them, and that means three grouped COUNTs over ~51M rows on every server start.

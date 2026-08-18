@@ -52,7 +52,7 @@ class RoutesTest {
         val db = Fixtures.newDb(tmp)
         Fixtures.seed_1_21_1(db)
         val versionService = VersionService(db)
-        val searchService = SearchService(db, versionService)
+        val searchService = SearchService(db, versionService, Fixtures.dbPath(db))
         val translationService = TranslationService(db, versionService)
         val diffService = DiffService(db)
 
@@ -152,7 +152,7 @@ class RoutesTest {
         val db = Fixtures.newDb(tmp)
         Fixtures.seed_1_21_1(db)
         val versionService = VersionService(db)
-        val searchService = SearchService(db, versionService)
+        val searchService = SearchService(db, versionService, Fixtures.dbPath(db))
 
         application {
             installJson()
@@ -171,7 +171,7 @@ class RoutesTest {
         val db = Fixtures.newDb(tmp)
         Fixtures.seed_1_21_1(db)
         val versionService = VersionService(db)
-        val searchService = SearchService(db, versionService)
+        val searchService = SearchService(db, versionService, Fixtures.dbPath(db))
 
         application {
             installJson()

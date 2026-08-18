@@ -44,7 +44,7 @@ from a read-only GitCraft store. The server opens the index with `PRAGMA query_o
 - **Node.js** (for the frontend).
 - **Data on disk:**
   - For `index`: the sources `artifact-store` (with subfolders `mappings/`, `mc-versions/`, `decompiled/<version>/`, `remapped-mc/<version>/`), `yarn`, `mojmap`, `intermediary`.
-  - For `serve`: a **built index** at `database.path` (otherwise the server exits at startup with a hint to run `index`). Source repositories are not needed at startup, but `diff`, `bytecode`, and `source` read jars from `artifact-store` on demand, during the request.
+  - For `serve`: a **built index** at `database.path`, plus the search index beside it (`mappinglens.db` gives `mappinglens-search.db`). The server exits at startup when either is missing, with a hint to run `index`. Source repositories are not needed at startup, but `diff`, `bytecode`, and `source` read jars from `artifact-store` on demand, during the request.
   - For `/openapi.*` and `/docs`: the classpath resource `openapi/mappinglens-api.yaml` (bundled in the jar).
   - For `/skill.md`: the classpath resource `SKILL.md`. Gradle places `.github/skills/mappinglens/SKILL.md` into the jar under that name.
 
@@ -52,10 +52,12 @@ from a read-only GitCraft store. The server opens the index with `PRAGMA query_o
 > `classes.presence` column, and `serve` fails on it with `500 no such column: versions.sort_index`.
 > Rebuild it with `index` to fix this.
 >
-> An index built before the search and diff optimization has no `versions.fts_min_rowid` /
-> `fts_max_rowid` columns and no composite index on `classes(version_id, intermediary_name)`. A
-> fresh `index` build adds both. Until a large existing index is rebuilt, search falls back to
-> the older, slower path automatically; the results are the same either way.
+> Names are searched through a second file, `mappinglens-search.db`, beside `database.path`.
+> `serve` exits at startup when it is missing, and an index built before it has only the old
+> single `search_index` table inside the main file. One ordinary `index` run fixes both: it builds
+> the search table of every version that has none, reading the names out of the index itself
+> (52.3M rows in 485s over 526 versions, no re-index of the mappings), and drops the old table.
+> `VACUUM` on the main file then returns its 14.9 GB to the file system.
 >
 > An index built before the version-count columns has no `versions.class_count` / `method_count` /
 > `field_count`, and `serve` fails on it with `500 no such column: versions.class_count`. A fresh
@@ -461,10 +463,21 @@ to a supertype, or the name is gone, and answering that took a `/source` read pe
 ## What the index stores
 
 The SQLite index (built by `index`, opened read-only by `serve`) holds: `versions`
-(metadata, semver order, counts, and each version's FTS rowid range), unified obf-keyed rows
-in `classes`/`methods`/`fields` (with `presence` in `{both, yarn_only, mojmap_only}`), and
-the FTS5 table `search_index` over names. It does not store decompiled source, bytecode, or
-git blobs; those are read on demand from the read-only store.
+(metadata, semver order, counts), and unified obf-keyed rows in `classes`/`methods`/`fields`
+(with `presence` in `{both, yarn_only, mojmap_only}`). It does not store decompiled source,
+bytecode, or git blobs; those are read on demand from the read-only store.
+
+Names are searched through a second file, `mappinglens-search.db`, which holds one contentless
+FTS5 table for each version, named `search_v<version row id>`. FTS5 answers a prefix term by
+merging the doclists of every term carrying that prefix over the whole table, before a rowid
+filter narrows anything, so one table over all versions read 5.5M postings of `get*` to rank the
+13697 of the version asked for. One table for each version answers the same query in 24ms instead
+of 959ms and costs 2% more bytes. The tables are contentless because the server reads no name back
+out of them, only which row matched and its bm25 rank: the row identity rides in the rowid, the
+element kind in its low two bits. Over 52.3M rows that makes the whole file 5.3 GB, where the
+single table it replaces held 14.9 GB. The file is separate because 526 virtual tables add about
+2600 rows to `sqlite_master`, and the server opens a fresh connection for each request; parsing
+them costs 7ms that every endpoint would otherwise pay.
 
 ### Members of an unobfuscated release
 

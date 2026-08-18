@@ -1,5 +1,6 @@
 package xyz.nikitacartes.mappinglens.realdata
 
+import xyz.nikitacartes.mappinglens.Fixtures
 import xyz.nikitacartes.mappinglens.RealDataTestConfig
 import xyz.nikitacartes.mappinglens.config.AppConfig
 import xyz.nikitacartes.mappinglens.db.DatabaseFactory
@@ -99,7 +100,7 @@ class RealCrossVersionContractTest {
         routing {
             versionRoutes(versionService)
             translationRoutes(TranslationService(db, versionService))
-            searchRoutes(SearchService(db, versionService), config)
+            searchRoutes(SearchService(db, versionService, Fixtures.dbPath(db)), config)
             diffRoutes(DiffService(db))
             bytecodeRoutes(BytecodeService(config, db))
         }

@@ -3,6 +3,7 @@ package xyz.nikitacartes.mappinglens
 import xyz.nikitacartes.mappinglens.config.AppConfig
 import xyz.nikitacartes.mappinglens.config.RuntimeBootstrap
 import xyz.nikitacartes.mappinglens.db.DatabaseFactory
+import xyz.nikitacartes.mappinglens.db.SearchIndex
 import xyz.nikitacartes.mappinglens.ingestion.IngestPipeline
 import xyz.nikitacartes.mappinglens.model.ApiError
 import xyz.nikitacartes.mappinglens.routes.*
@@ -138,8 +139,10 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
     }
 
     val database = DatabaseFactory.openReadOnly(appConfig.databasePath)
+    // Fail at startup rather than on the first search when the search index is missing.
+    SearchIndex.openReadOnly(appConfig.databasePath).close()
     val versionService = VersionService(database)
-    val searchService = SearchService(database, versionService)
+    val searchService = SearchService(database, versionService, appConfig.databasePath)
     val diffService = DiffService(database, appConfig)
     val translationService = TranslationService(database, versionService)
     val bytecodeService = BytecodeService(appConfig, database)

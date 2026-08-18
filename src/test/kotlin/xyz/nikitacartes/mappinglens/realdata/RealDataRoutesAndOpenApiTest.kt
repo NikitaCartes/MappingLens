@@ -57,7 +57,7 @@ class RealDataRoutesAndOpenApiTest {
             routing {
                 versionRoutes(versionService)
                 translationRoutes(TranslationService(db, versionService))
-                searchRoutes(SearchService(db, versionService), config)
+                searchRoutes(SearchService(db, versionService, Fixtures.dbPath(db)), config)
                 diffRoutes(DiffService(db))
                 bytecodeRoutes(BytecodeService(config, db))
             }
@@ -162,7 +162,7 @@ class RealDataRoutesAndOpenApiTest {
         application {
             installJson()
             routing {
-                searchRoutes(SearchService(db, versionService), config)
+                searchRoutes(SearchService(db, versionService, Fixtures.dbPath(db)), config)
                 translationRoutes(TranslationService(db, versionService))
                 diffRoutes(DiffService(db))
             }

@@ -25,7 +25,7 @@ services:
       #   /data/artifact-store  GitCraft artifact store (mappings, mc-versions, decompiled, ...)
       #   /data/repos/yarn      decompiled sources, yarn
       #   /data/repos/mojmap    decompiled sources, mojmap
-      #   /data/index           mappinglens.db
+      #   /data/index           mappinglens.db and mappinglens-search.db
       #   /data/state           update markers
       #   /data/gradle          gradle home for the GitCraft runs
       # - /path/to/artifact-store:/data/artifact-store

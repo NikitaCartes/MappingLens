@@ -2,6 +2,7 @@ package xyz.nikitacartes.mappinglens.ingestion
 
 import xyz.nikitacartes.mappinglens.config.AppConfig
 import xyz.nikitacartes.mappinglens.data.GitCraftStore
+import xyz.nikitacartes.mappinglens.db.SearchIndex
 import xyz.nikitacartes.mappinglens.db.tables.*
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
@@ -52,16 +53,122 @@ class IngestPipeline(private val config: AppConfig) {
         log.info("Indexing {} of {} versions", targets.size, allSorted.size)
 
         val known = allSorted.toSet()
-        for (version in targets) {
-            try {
-                ingestVersion(version, rankOf[version], variantBase(version, known))
-            } catch (e: Exception) {
-                log.error("Failed to index version {}: {}", version, e.message, e)
+        SearchIndex.openWritable(config.databasePath).use { search ->
+            for (version in targets) {
+                try {
+                    ingestVersion(version, rankOf[version], variantBase(version, known), search)
+                    search.commit()
+                } catch (e: Exception) {
+                    search.rollback()
+                    log.error("Failed to index version {}: {}", version, e.message, e)
+                }
             }
+            backfillSearchIndex(search)
         }
 
         syncSortIndex(rankOf)
-        populateFtsRanges()
+    }
+
+    /**
+     * Builds the search table of every indexed version that has none. The names are read back out of
+     * the index, so an index built before the search index moved to a file of its own is filled in
+     * minutes instead of being re-read from the GitCraft store. It also repairs a version whose run
+     * failed between writing its rows and writing its names, which are separate files and so are
+     * written in separate transactions.
+     */
+    private fun backfillSearchIndex(search: java.sql.Connection) {
+        val built = search.createStatement().use { st ->
+            st.executeQuery("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'search\\_v%' ESCAPE '\\'")
+                .use { rs -> buildSet { while (rs.next()) add(rs.getString(1)) } }
+        }
+        val missing = transaction {
+            VersionTable.selectAll()
+                .map { it[VersionTable.id].value to it[VersionTable.versionId] }
+                .filter { SearchIndex.table(it.first) !in built }
+        }
+        if (missing.isEmpty()) return
+        log.info("Building the search index of {} versions from the index itself", missing.size)
+        val started = System.currentTimeMillis()
+        var rows = 0L
+        missing.forEach { (versionRowId, version) ->
+            SearchIndex.createTable(search, versionRowId)
+            rows += transaction {
+                val conn = TransactionManager.current().connection.connection as java.sql.Connection
+                var n = 0L
+                SearchIndex.insertStatement(search, versionRowId).use { ps ->
+                    n += copyClasses(conn, ps, versionRowId)
+                    n += copyMembers(conn, ps, versionRowId, "method")
+                    n += copyMembers(conn, ps, versionRowId, "field")
+                    ps.executeBatch()
+                }
+                n
+            }
+            search.commit()
+            search.createStatement().use { st ->
+                val table = SearchIndex.table(versionRowId)
+                st.execute("INSERT INTO $table($table) VALUES('optimize');")
+            }
+            log.debug("  search index of {} built", version)
+        }
+        log.info("Built {} rows in {}s", rows, (System.currentTimeMillis() - started) / 1000)
+    }
+
+    private fun copyClasses(conn: java.sql.Connection, ps: java.sql.PreparedStatement, versionRowId: Int): Long {
+        var n = 0L
+        conn.prepareStatement(
+            "SELECT id, yarn_name, mojmap_name, intermediary_name, obf_name, simple_name " +
+                "FROM classes WHERE version_id = ?"
+        ).use { q ->
+            q.setInt(1, versionRowId)
+            q.executeQuery().use { rs ->
+                while (rs.next()) {
+                    SearchIndex.addRow(
+                        ps, "class", rs.getInt(1),
+                        SearchIndex.Names(rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5), rs.getString(6)),
+                    )
+                    n++
+                }
+            }
+        }
+        return n
+    }
+
+    /** Member names are indexed qualified by their class, exactly as [insertMemberFtsBatch] writes them. */
+    private fun copyMembers(
+        conn: java.sql.Connection,
+        ps: java.sql.PreparedStatement,
+        versionRowId: Int,
+        elementType: String,
+    ): Long {
+        var n = 0L
+        conn.prepareStatement(
+            "SELECT m.id, m.yarn_name, m.mojmap_name, m.intermediary_name, m.obf_name, m.simple_name, " +
+                "c.yarn_name, c.mojmap_name, c.intermediary_name " +
+                "FROM ${elementType}s m JOIN classes c ON c.id = m.class_id WHERE m.version_id = ?"
+        ).use { q ->
+            q.setInt(1, versionRowId)
+            q.executeQuery().use { rs ->
+                while (rs.next()) {
+                    fun qualified(member: Int, owner: Int): String? {
+                        val m = rs.getString(member) ?: return null
+                        val o = rs.getString(owner) ?: return m
+                        return "$o#$m"
+                    }
+                    SearchIndex.addRow(
+                        ps, elementType, rs.getInt(1),
+                        SearchIndex.Names(
+                            yarn = qualified(2, 7),
+                            mojmap = qualified(3, 8),
+                            intermediary = qualified(4, 9),
+                            obf = rs.getString(5),
+                            simple = rs.getString(6),
+                        ),
+                    )
+                    n++
+                }
+            }
+        }
+        return n
     }
 
     /**
@@ -83,29 +190,6 @@ class IngestPipeline(private val config: AppConfig) {
     }
 
     /**
-     * Records each version's inclusive [min,max] search_index rowid range so the server can prune a
-     * search MATCH by rowid instead of post-filtering version_id (see VersionTable.ftsMinRowid).
-     * A version's FTS rows are inserted contiguously, so one grouped scan over the FTS yields the
-     * ranges; run once at the end of indexing (its cost is trivial next to building the index).
-     */
-    private fun populateFtsRanges() = transaction {
-        val ranges = ArrayList<Triple<Int, Long, Long>>()
-        val conn = TransactionManager.current().connection.connection as java.sql.Connection
-        conn.createStatement().use { st ->
-            st.executeQuery("SELECT version_id, MIN(rowid), MAX(rowid) FROM search_index GROUP BY version_id").use { rs ->
-                while (rs.next()) ranges += Triple(rs.getInt(1), rs.getLong(2), rs.getLong(3))
-            }
-        }
-        ranges.forEach { (vid, lo, hi) ->
-            VersionTable.update({ VersionTable.id eq vid }) {
-                it[ftsMinRowid] = lo
-                it[ftsMaxRowid] = hi
-            }
-        }
-        log.info("Recorded FTS rowid ranges for {} versions", ranges.size)
-    }
-
-    /**
      * The version [version] re-indexes, or null when it stands on its own. GitCraft derives
      * `<id>_unobfuscated` from Mojang's pre-deobfuscated jar for a build it also indexes normally,
      * so the two describe one build. The suffix alone does not make a variant: the base id has to be
@@ -114,7 +198,7 @@ class IngestPipeline(private val config: AppConfig) {
     private fun variantBase(version: String, known: Set<String>): String? =
         version.removeSuffix("_unobfuscated").takeIf { it != version && it in known }
 
-    private fun ingestVersion(version: String, sortRank: Int?, variantBase: String?) {
+    private fun ingestVersion(version: String, sortRank: Int?, variantBase: String?, search: java.sql.Connection) {
         val src = store.resolve(version)
         if (!src.hasAny) {
             log.warn("Skipping {} (no resolvable mappings)", version)
@@ -148,7 +232,6 @@ class IngestPipeline(private val config: AppConfig) {
                 FieldTable.deleteWhere { FieldTable.versionId eq existingId }
                 ClassTable.deleteWhere { ClassTable.versionId eq existingId }
                 SourceFileTable.deleteWhere { SourceFileTable.versionId eq existingId }
-                exec("DELETE FROM search_index WHERE version_id = $existingId;")
                 VersionTable.update({ VersionTable.id eq existingId }) {
                     it[releaseTime] = release
                     it[releaseType] = classifiedType
@@ -181,6 +264,11 @@ class IngestPipeline(private val config: AppConfig) {
                     it[fieldCount] = fields
                 }.value
             }
+
+            // The names go to the search index, which is a file of its own, so writing them is not
+            // part of this transaction. A version that fails part-way through leaves a search table
+            // that does not match its rows; re-indexing that version drops and rebuilds the table.
+            SearchIndex.createTable(search, versionRowId)
 
             // Insert classes (and capture generated ids in order)
             val classIds = ArrayList<Int>(unified.size)
@@ -224,7 +312,7 @@ class IngestPipeline(private val config: AppConfig) {
                         this[MethodTable.mojmapName] = m.mojmapName
                         this[MethodTable.simpleName] = m.yarnName ?: m.mojmapName ?: m.intermediaryName
                     }.map { it[MethodTable.id].value }
-                    insertMemberFtsBatch(versionRowId, cls, cls.methods, methodIds, "method")
+                    insertMemberFtsBatch(search, versionRowId, cls, cls.methods, methodIds, "method")
                 }
                 if (cls.fields.isNotEmpty()) {
                     val fieldIds = FieldTable.batchInsert(cls.fields, shouldReturnGeneratedValues = true) { f ->
@@ -239,12 +327,12 @@ class IngestPipeline(private val config: AppConfig) {
                         this[FieldTable.mojmapName] = f.mojmapName
                         this[FieldTable.simpleName] = f.yarnName ?: f.mojmapName ?: f.intermediaryName
                     }.map { it[FieldTable.id].value }
-                    insertMemberFtsBatch(versionRowId, cls, cls.fields, fieldIds, "field")
+                    insertMemberFtsBatch(search, versionRowId, cls, cls.fields, fieldIds, "field")
                 }
             }
 
             // Class FTS rows
-            insertClassFtsBatch(versionRowId, unified, classIds)
+            insertClassFtsBatch(search, versionRowId, unified, classIds)
         }
 
         // Source files outside the heavy mapping transaction
@@ -252,62 +340,39 @@ class IngestPipeline(private val config: AppConfig) {
         log.info("Done indexing {}", version)
     }
 
-    private fun Transaction.insertClassFtsBatch(versionRowId: Int, classes: List<UnifiedClassEntry>, classIds: List<Int>) {
-        if (classes.isEmpty()) return
-        // Build multi-row inserts in chunks. Real Minecraft versions have thousands of classes;
-        // one giant VALUES statement can exceed SQLite's statement size limit.
-        classes.indices.chunked(500).forEach { chunk ->
-            val sb = StringBuilder("INSERT INTO search_index(element_type, element_id, version_id, yarn_name, mojmap_name, intermediary_name, obf_name, simple_name) VALUES ")
-            chunk.forEachIndexed { chunkIdx, idx ->
-                val c = classes[idx]
-                if (chunkIdx > 0) sb.append(',')
-                sb.append("('class',")
-                sb.append(classIds[idx]).append(',')
-                sb.append(versionRowId).append(',')
-                sb.append(quote(c.yarnName)).append(',')
-                sb.append(quote(c.mojmapName)).append(',')
-                sb.append(quote(c.intermediaryName)).append(',')
-                sb.append(quote(c.obfName)).append(',')
-                sb.append(quote(Names.simpleName(c.yarnName ?: c.mojmapName ?: c.intermediaryName)))
-                sb.append(')')
-            }
-            sb.append(';')
-            exec(sb.toString())
-        }
+    private fun insertClassFtsBatch(
+        search: java.sql.Connection,
+        versionRowId: Int,
+        classes: List<UnifiedClassEntry>,
+        classIds: List<Int>,
+    ) = SearchIndex.insertRows(search, versionRowId, "class", classIds) { idx ->
+        val c = classes[idx]
+        SearchIndex.Names(
+            yarn = c.yarnName,
+            mojmap = c.mojmapName,
+            intermediary = c.intermediaryName,
+            obf = c.obfName,
+            simple = Names.simpleName(c.yarnName ?: c.mojmapName ?: c.intermediaryName),
+        )
     }
 
-    /** Method and field FTS rows differ only in [elementType], so one insert serves both. */
-    private fun Transaction.insertMemberFtsBatch(
+    /** Method and field rows differ only in [elementType], so one insert serves both. */
+    private fun insertMemberFtsBatch(
+        search: java.sql.Connection,
         versionRowId: Int,
         cls: UnifiedClassEntry,
         members: List<UnifiedMemberEntry>,
         memberIds: List<Int>,
         elementType: String,
-    ) {
-        if (members.isEmpty()) return
-        val sb = StringBuilder("INSERT INTO search_index(element_type, element_id, version_id, yarn_name, mojmap_name, intermediary_name, obf_name, simple_name) VALUES ")
-        members.forEachIndexed { idx, m ->
-            if (idx > 0) sb.append(',')
-            val yarn = if (m.yarnName != null && cls.yarnName != null) "${cls.yarnName}#${m.yarnName}" else m.yarnName
-            val moj = if (m.mojmapName != null && cls.mojmapName != null) "${cls.mojmapName}#${m.mojmapName}" else m.mojmapName
-            val interm = if (m.intermediaryName != null && cls.intermediaryName != null) "${cls.intermediaryName}#${m.intermediaryName}" else m.intermediaryName
-            sb.append("('").append(elementType).append("',")
-            sb.append(memberIds[idx]).append(',')
-            sb.append(versionRowId).append(',')
-            sb.append(quote(yarn)).append(',')
-            sb.append(quote(moj)).append(',')
-            sb.append(quote(interm)).append(',')
-            sb.append(quote(m.obfName)).append(',')
-            sb.append(quote(m.yarnName ?: m.mojmapName ?: m.intermediaryName))
-            sb.append(')')
-        }
-        sb.append(';')
-        exec(sb.toString())
-    }
-
-    private fun quote(s: String?): String {
-        if (s == null) return "''"
-        return "'" + s.replace("'", "''") + "'"
+    ) = SearchIndex.insertRows(search, versionRowId, elementType, memberIds) { idx ->
+        val m = members[idx]
+        SearchIndex.Names(
+            yarn = if (m.yarnName != null && cls.yarnName != null) "${cls.yarnName}#${m.yarnName}" else m.yarnName,
+            mojmap = if (m.mojmapName != null && cls.mojmapName != null) "${cls.mojmapName}#${m.mojmapName}" else m.mojmapName,
+            intermediary = if (m.intermediaryName != null && cls.intermediaryName != null) "${cls.intermediaryName}#${m.intermediaryName}" else m.intermediaryName,
+            obf = m.obfName,
+            simple = m.yarnName ?: m.mojmapName ?: m.intermediaryName,
+        )
     }
 
     private fun indexSourceFiles(versionId: String) {

@@ -175,7 +175,7 @@ class SearchServiceTest {
     private fun setup(@TempDir tmp: Path): SearchService {
         val db = Fixtures.newDb(tmp)
         Fixtures.seed_1_21_1(db)
-        return SearchService(db, VersionService(db))
+        return SearchService(db, VersionService(db), Fixtures.dbPath(db))
     }
 
     @Test
