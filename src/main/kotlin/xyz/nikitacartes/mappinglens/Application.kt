@@ -159,7 +159,7 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
             bytecodeRoutes(bytecodeService)
             compareRoutes(compareService)
             hierarchyRoutes(hierarchyService)
-            referenceRoutes(referenceService)
+            referenceRoutes(referenceService, versionService)
             existsRoutes(existsService)
             tokenRoutes(tokenService)
             historyRoutes(historyService)

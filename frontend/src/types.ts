@@ -36,7 +36,8 @@ export interface SearchResultEntry {
   mojmap?: string | null;
   obfuscated?: string | null;
   owner?: ClassRef | null;
-  descriptor?: string | null;
+  // Intermediary whatever `namespace` asked for; named descriptors are not indexed.
+  intermediaryDescriptor?: string | null;
   score: number;
 }
 
@@ -181,11 +182,15 @@ export interface ReferenceItem {
   kind: string; // class | method | field
 }
 
-export interface ReferenceResponse {
+export interface ReferenceGroup {
   version: string;
-  namespace: string;
   query: string;
   references: ReferenceItem[];
+}
+
+export interface ReferenceResponse {
+  namespace: string;
+  results: ReferenceGroup[];
 }
 
 export interface SourceToken {

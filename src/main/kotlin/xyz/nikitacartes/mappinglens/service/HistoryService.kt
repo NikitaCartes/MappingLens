@@ -29,7 +29,13 @@ import org.jetbrains.exposed.sql.transactions.transaction
 class HistoryService(private val db: Database) {
 
     /** One indexed version in canonical semver order. */
-    private data class Ver(val rowId: Int, val versionId: String, val hasIntermediary: Boolean)
+    private data class Ver(
+        val rowId: Int,
+        val versionId: String,
+        val hasIntermediary: Boolean,
+        val releaseType: String,
+        val isVariant: Boolean,
+    )
 
     /** What makes two versions answer alike. Data-class equality decides where a span breaks. */
     private data class SpanKey(
@@ -50,8 +56,19 @@ class HistoryService(private val db: Database) {
     /**
      * One entry per query, in the order given. Returns null when [from] or [to] names a version that
      * is not indexed; either bound may be the older one.
+     *
+     * [releasesOnly] and [includeVariants] narrow the versions that reach the spans, not the ones
+     * the bounds may name: a caller can bound the walk by a snapshot and still read releases. The
+     * anchoring below reads the whole index either way, so a narrowed walk follows the same class.
      */
-    fun history(queries: List<String>, namespace: String, from: String?, to: String?): HistoryResponse? = transaction(db) {
+    fun history(
+        queries: List<String>,
+        namespace: String,
+        from: String?,
+        to: String?,
+        releasesOnly: Boolean = false,
+        includeVariants: Boolean = false,
+    ): HistoryResponse? = transaction(db) {
         val all = orderedVersions()
         var lo = 0
         var hi = all.size - 1
@@ -64,6 +81,7 @@ class HistoryService(private val db: Database) {
             if (hi < 0) return@transaction null
         }
         val versions = all.subList(minOf(lo, hi), maxOf(lo, hi) + 1)
+            .filter { (includeVariants || !it.isVariant) && (!releasesOnly || it.releaseType == "release") }
         // Anchoring picks the newest match over the whole index, not just the requested range, so a
         // narrow range still follows the same class the caller meant.
         val order = all.withIndex().associate { (i, v) -> v.rowId to i }
@@ -262,7 +280,15 @@ class HistoryService(private val db: Database) {
 
     private fun orderedVersions(): List<Ver> = VersionTable.selectAll()
         .orderBy(VersionTable.sortIndex to SortOrder.ASC_NULLS_LAST, VersionTable.versionId to SortOrder.ASC)
-        .map { Ver(it[VersionTable.id].value, it[VersionTable.versionId], it[VersionTable.hasIntermediary]) }
+        .map {
+            Ver(
+                rowId = it[VersionTable.id].value,
+                versionId = it[VersionTable.versionId],
+                hasIntermediary = it[VersionTable.hasIntermediary],
+                releaseType = it[VersionTable.releaseType],
+                isVariant = it[VersionTable.variantOf] != null,
+            )
+        }
 
     private fun classNameColumn(namespace: String): Column<String?> = when (namespace) {
         "yarn" -> ClassTable.yarnName

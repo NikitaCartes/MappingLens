@@ -41,7 +41,7 @@ export function ResultRow({ entry }: { entry: SearchResultEntry }) {
         ) : (
           <span className="result-name">{heading}</span>
         )}
-        {entry.descriptor && <span className="result-desc">{entry.descriptor}</span>}
+        {entry.intermediaryDescriptor && <span className="result-desc">{entry.intermediaryDescriptor}</span>}
       </div>
       <table className="ns-table">
         <tbody>

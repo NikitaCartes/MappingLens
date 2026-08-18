@@ -18,6 +18,8 @@ data class VersionInfo(
     val hasYarn: Boolean,
     val hasMojmap: Boolean,
     val hasIntermediary: Boolean,
+    /** The version this one re-indexes from the pre-deobfuscated jar, or null when it stands alone. */
+    val variantOf: String? = null,
     val classCount: Long = 0,
     val methodCount: Long = 0,
     val fieldCount: Long = 0,
@@ -59,7 +61,13 @@ data class SearchResultEntry(
     val mojmap: String? = null,
     val obfuscated: String? = null,
     val owner: ClassRef? = null,
-    val descriptor: String? = null,
+    /**
+     * Named descriptors are not indexed, so this is the intermediary one whatever `namespace` asked
+     * for. Named after what it holds: read as a plain `descriptor` it invites being pasted into
+     * `/exists`, which wants the descriptor of the requested namespace and rejects this one.
+     * `POST /translate/{version}` converts a key from one namespace to another, descriptor included.
+     */
+    val intermediaryDescriptor: String? = null,
     val score: Double = 0.0,
 )
 
@@ -88,12 +96,42 @@ data class TranslateResponse(
 )
 
 @Serializable
+data class BatchTranslateRequest(
+    val from: String = "yarn",
+    val to: String = "mojmap",
+    /** Class internal names, or `owner:name:descriptor` member keys, spelled in `from`. */
+    val keys: List<String> = emptyList(),
+)
+
+@Serializable
+data class BatchTranslateItem(
+    val key: String,
+    /**
+     * The same key in the `to` namespace, descriptor included, or null when the version has no such
+     * class or member. Ready to post to `/exists/{version}` unchanged, which is the point of the
+     * endpoint: `/search` reports intermediary descriptors, and `/exists` matches named ones.
+     */
+    val translated: String? = null,
+    val type: String? = null, // class | method | field
+    val intermediary: String? = null,
+)
+
+@Serializable
+data class BatchTranslateResponse(
+    val version: String,
+    val from: String,
+    val to: String,
+    val results: List<BatchTranslateItem>,
+)
+
+@Serializable
 data class DiffEntryItem(
     val type: String,
     val name: String? = null,
     val intermediary: String? = null,
     val owner: String? = null,
-    val descriptor: String? = null,
+    /** The intermediary descriptor, for the reason given on [SearchResultEntry.intermediaryDescriptor]. */
+    val intermediaryDescriptor: String? = null,
     val oldName: String? = null,
     val newName: String? = null,
 )
@@ -253,12 +291,19 @@ data class ReferenceItem(
     val kind: String, // class | method | field (of the referring site)
 )
 
+/** The sites referencing one target in one version. */
 @Serializable
-data class ReferenceResponse(
+data class ReferenceGroup(
     val version: String,
-    val namespace: String,
     val query: String,
     val references: List<ReferenceItem>,
+)
+
+@Serializable
+data class ReferenceResponse(
+    val namespace: String,
+    /** One group per (version, target), versions oldest first and targets in request order. */
+    val results: List<ReferenceGroup>,
 )
 
 @Serializable
@@ -271,7 +316,19 @@ data class ExistsRequest(
 data class ExistsResult(
     val key: String,
     val exists: Boolean,
-    val renamedTo: String? = null,
+    /**
+     * The nearest declaration to a key that missed, in the same key form, or null when the version
+     * declares nothing of that name. Answers "what changed?" without a second call: a bare `false`
+     * reads the same whether the descriptor moved, the member moved to a supertype, or the name is
+     * gone. Null when [exists] is true.
+     */
+    val closest: String? = null,
+    /**
+     * Why [closest] is not the key asked for:
+     *  - `inherited`: a supertype declares this exact signature, so the call still resolves.
+     *  - `descriptor`: the owner declares this name under another descriptor, so the signature moved.
+     */
+    val reason: String? = null,
 )
 
 @Serializable

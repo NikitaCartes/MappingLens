@@ -238,7 +238,7 @@ class SearchService(private val db: Database, private val versionService: Versio
                     obfuscated = it[ClassTable.obfName],
                 )
             },
-            descriptor = r[cols.intermediaryDesc] ?: r[cols.obfDesc],
+            intermediaryDescriptor = r[cols.intermediaryDesc] ?: r[cols.obfDesc],
             score = score,
         )
     }

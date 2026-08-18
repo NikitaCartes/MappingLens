@@ -1,6 +1,7 @@
 package xyz.nikitacartes.mappinglens.service
 
 import xyz.nikitacartes.mappinglens.config.AppConfig
+import xyz.nikitacartes.mappinglens.model.ReferenceGroup
 import xyz.nikitacartes.mappinglens.model.ReferenceItem
 import xyz.nikitacartes.mappinglens.model.ReferenceResponse
 import org.objectweb.asm.ClassReader
@@ -29,23 +30,37 @@ class ReferenceService(private val config: AppConfig) {
 
     private val cache = ConcurrentHashMap<Pair<String, String>, Map<String, Set<Referrer>>>()
 
-    fun references(versionId: String, target: String, namespace: String): ReferenceResponse? {
+    /**
+     * One group per (version, target). Returns null when the namespace is unsupported or no
+     * requested version has a named jar; a version that has one but knows nothing of a target gives
+     * an empty group, which is the honest answer.
+     *
+     * Several targets against several versions in one call is the shape the work has: checking that
+     * a mixin still holds means asking the same handful of targets of every version being collapsed,
+     * and the per-version index is built once and reused across every target of that version.
+     */
+    fun references(versions: List<String>, targets: List<String>, namespace: String): ReferenceResponse? {
         if (namespace != "yarn" && namespace != "mojmap") return null
-        val index = cache.computeIfAbsent(versionId to namespace) { (v, ns) -> buildIndex(v, ns) ?: emptyMap() }
-        val referrers = index[target] ?: emptySet()
-        val items = referrers
-            .sortedWith(compareBy({ it.owner }, { it.member ?: "" }))
-            .map { r ->
-                ReferenceItem(
-                    owner = r.owner,
-                    ownerSimple = r.owner.substringAfterLast('/'),
-                    member = r.member,
-                    descriptor = r.descriptor,
-                    kind = r.kind,
-                )
-            }
-        return ReferenceResponse(versionId, namespace, target, items)
+        val available = versions.filter { config.sources.remappedJar(it, namespace) != null }
+        if (available.isEmpty()) return null
+        val groups = available.flatMap { version ->
+            val index = cache.computeIfAbsent(version to namespace) { (v, ns) -> buildIndex(v, ns) ?: emptyMap() }
+            targets.map { target -> ReferenceGroup(version, target, items(index[target].orEmpty())) }
+        }
+        return ReferenceResponse(namespace, groups)
     }
+
+    private fun items(referrers: Set<Referrer>): List<ReferenceItem> = referrers
+        .sortedWith(compareBy({ it.owner }, { it.member ?: "" }))
+        .map { r ->
+            ReferenceItem(
+                owner = r.owner,
+                ownerSimple = r.owner.substringAfterLast('/'),
+                member = r.member,
+                descriptor = r.descriptor,
+                kind = r.kind,
+            )
+        }
 
     private fun buildIndex(versionId: String, namespace: String): Map<String, Set<Referrer>>? {
         val jar = config.sources.remappedJar(versionId, namespace)?.toFile() ?: return null

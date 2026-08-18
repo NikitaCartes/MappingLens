@@ -10,7 +10,8 @@ import io.ktor.server.routing.*
 fun Route.versionRoutes(versionService: VersionService) {
     route("/api/v1/versions") {
         get {
-            call.respond(versionService.listVersions())
+            val includeVariants = call.booleanQuery("includeVariants", false) ?: return@get
+            call.respond(versionService.listVersions(includeVariants))
         }
         get("{version}") {
             val v = call.parameters["version"]!!

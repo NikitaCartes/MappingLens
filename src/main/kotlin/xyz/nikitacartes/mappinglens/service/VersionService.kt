@@ -9,14 +9,8 @@ import xyz.nikitacartes.mappinglens.model.ClassListResponse
 import xyz.nikitacartes.mappinglens.model.VersionInfo
 import xyz.nikitacartes.mappinglens.model.VersionListResponse
 import org.jetbrains.exposed.dao.id.EntityID
-import org.jetbrains.exposed.sql.Column
-import org.jetbrains.exposed.sql.Database
-import org.jetbrains.exposed.sql.ResultRow
-import org.jetbrains.exposed.sql.SortOrder
+import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
-import org.jetbrains.exposed.sql.count
-import org.jetbrains.exposed.sql.select
-import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 
 class VersionService(private val db: Database) {
@@ -61,8 +55,14 @@ class VersionService(private val db: Database) {
         return Triple(classes, methods, fields)
     }
 
-    fun listVersions(): VersionListResponse = transaction(db) {
+    /**
+     * Every indexed version, newest first. Variants are left out unless [includeVariants] is set:
+     * `1.21.11_unobfuscated` is the same build as `1.21.11` and listing both makes the version line
+     * read as if the game shipped twice. A variant still answers `/versions/{id}` by name.
+     */
+    fun listVersions(includeVariants: Boolean = false): VersionListResponse = transaction(db) {
         val rows = VersionTable.selectAll()
+            .apply { if (!includeVariants) andWhere { VersionTable.variantOf.isNull() } }
             .orderBy(VersionTable.sortIndex to SortOrder.DESC_NULLS_LAST, VersionTable.versionId to SortOrder.DESC)
             .toList()
         // One grouped scan serves every row that lacks recorded counts; skip it when none does.
@@ -89,11 +89,30 @@ class VersionService(private val db: Database) {
         hasYarn = row[VersionTable.hasYarn],
         hasMojmap = row[VersionTable.hasMojmap],
         hasIntermediary = row[VersionTable.hasIntermediary],
+        variantOf = row[VersionTable.variantOf],
         classCount = classes,
         methodCount = methods,
         fieldCount = fields,
         indexedAt = row[VersionTable.indexedAt],
     )
+
+    /**
+     * The indexed versions from [from] to [to] inclusive, oldest first. Either bound may be the
+     * older one. Returns null when a bound is not indexed. Variants are dropped unless
+     * [includeVariants] is set, for the reason given on [listVersions] — but a bound may still name
+     * one, so bounding a walk by `1.21.11_unobfuscated` works and simply does not repeat it.
+     */
+    fun versionRange(from: String, to: String, includeVariants: Boolean = false): List<String>? = transaction(db) {
+        val ordered = VersionTable.selectAll()
+            .orderBy(VersionTable.sortIndex to SortOrder.ASC_NULLS_LAST, VersionTable.versionId to SortOrder.ASC)
+            .map { it[VersionTable.versionId] to (it[VersionTable.variantOf] != null) }
+        val lo = ordered.indexOfFirst { it.first == from }
+        val hi = ordered.indexOfFirst { it.first == to }
+        if (lo < 0 || hi < 0) return@transaction null
+        ordered.subList(minOf(lo, hi), maxOf(lo, hi) + 1)
+            .filter { includeVariants || !it.second }
+            .map { it.first }
+    }
 
     /** Every class of one version (names per namespace + presence), for the client-side structure tree. */
     fun listClasses(versionId: String): ClassListResponse? = transaction(db) {
@@ -116,15 +135,19 @@ class VersionService(private val db: Database) {
     /**
      * Returns the latest "release" version by semver order (via the persisted sort index),
      * falling back to any version if none. Versions without a sort index fall back to name order.
+     * Variants never win the default, because answering for `1.21.11_unobfuscated` when the caller
+     * gave no version at all would be answering for a version they cannot have meant.
      */
     fun latestRelease(): String? = transaction(db) {
         val byRank = listOf(
             VersionTable.sortIndex to SortOrder.DESC_NULLS_LAST,
             VersionTable.versionId to SortOrder.DESC,
         ).toTypedArray()
-        VersionTable.selectAll().where { VersionTable.releaseType eq "release" }
+        VersionTable.selectAll()
+            .where { VersionTable.variantOf.isNull() and (VersionTable.releaseType eq "release") }
             .orderBy(*byRank).limit(1).singleOrNull()?.get(VersionTable.versionId)
-            ?: VersionTable.selectAll().orderBy(*byRank).limit(1).singleOrNull()?.get(VersionTable.versionId)
+            ?: VersionTable.selectAll().where { VersionTable.variantOf.isNull() }
+                .orderBy(*byRank).limit(1).singleOrNull()?.get(VersionTable.versionId)
     }
 
     private fun countsFor(versionRowId: Int): Triple<Long, Long, Long> {

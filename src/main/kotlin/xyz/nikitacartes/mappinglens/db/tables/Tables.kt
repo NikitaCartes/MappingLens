@@ -16,6 +16,13 @@ object VersionTable : IntIdTable("versions") {
     // order versions and resolve "latest release" correctly without re-reading the semver cache.
     val sortIndex = integer("sort_index").nullable().index()
 
+    // The version this one is a re-indexing of, or null when it is a version in its own right.
+    // `1.21.11_unobfuscated` is the same build as `1.21.11`, read from Mojang's pre-deobfuscated jar
+    // instead of the obfuscated one, so the two sit next to each other in semver order and every
+    // walk over the versions reports the pair as a change. Endpoints that walk versions skip these
+    // rows unless asked for them; a direct lookup by id still answers.
+    val variantOf = text("variant_of").nullable()
+
     // Inclusive [min,max] FTS5 rowid range of this version's search_index rows. Each version's rows
     // are inserted contiguously, so the server prunes a search MATCH with `rowid BETWEEN ? AND ?`
     // (which FTS5 pushes into the scan) instead of post-filtering the version-agnostic match across

@@ -6,6 +6,7 @@ import type {
   DiffResponse,
   FileDiffResponse,
   HierarchyResponse,
+  ReferenceGroup,
   ReferenceResponse,
   TokensResponse,
   SearchNamespace,
@@ -119,16 +120,18 @@ export function fetchTokens(
   return getJson<TokensResponse>(`${BASE}/tokens/${v(version)}/${cls(className)}?namespace=${namespace}`, signal);
 }
 
+// The endpoint answers several targets across a range of versions; the UI asks about one of each,
+// so unwrap that single group here and leave the views on the shape they already read.
 export function fetchReferences(
   version: string,
   query: string,
   namespace: SourceNamespace,
   signal?: AbortSignal,
-): Promise<ReferenceResponse> {
+): Promise<ReferenceGroup> {
   return getJson<ReferenceResponse>(
     `${BASE}/references/${v(version)}?q=${encodeURIComponent(query)}&namespace=${namespace}`,
     signal,
-  );
+  ).then((r) => r.results[0] ?? { version, query, references: [] });
 }
 
 export function fetchBytecode(

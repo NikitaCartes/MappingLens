@@ -17,11 +17,22 @@ import java.util.zip.ZipFile
  * Keys are the mcsrc convention: a class internal name `owner`, or a member `owner:name:descriptor`.
  * The named jar carries the namespace's own descriptors, so a mojmap descriptor matches a mojmap jar
  * exactly — no descriptor remapping needed. Used to validate mixin/shadow targets when updating a mod.
+ *
+ * A key that misses also reports the nearest declaration, so one call says what changed instead of
+ * only that something did. See [ExistsResult.closest].
  */
 class ExistsService(private val config: AppConfig) {
 
-    /** Declared class internal names + `owner:name:descriptor` member keys for one (version, namespace). */
-    private class Declarations(val classes: Set<String>, val members: Set<String>)
+    /** What one (version, namespace) declares, indexed for the three questions [exists] asks. */
+    private class Declarations(
+        val classes: Set<String>,
+        /** `owner:name:descriptor` for every declared method and field. */
+        val members: Set<String>,
+        /** Class internal name -> its direct supertypes, superclass first. */
+        val supertypes: Map<String, List<String>>,
+        /** `owner:name` -> the descriptors declared under that name. */
+        val overloads: Map<String, List<String>>,
+    )
 
     private val cache = ConcurrentHashMap<Pair<String, String>, Declarations>()
 
@@ -33,41 +44,90 @@ class ExistsService(private val config: AppConfig) {
             ?: return null
         val results = keys.map { key ->
             val exists = if (key.contains(':')) key in decls.members else key in decls.classes
-            ExistsResult(key = key, exists = exists)
+            if (exists) return@map ExistsResult(key = key, exists = true)
+            val (closest, reason) = nearest(key, decls) ?: (null to null)
+            ExistsResult(key = key, exists = false, closest = closest, reason = reason)
         }
         return ExistsResponse(versionId, namespace, results)
+    }
+
+    /**
+     * The nearest declaration to a member key that missed, with the reason it differs. Two probes,
+     * in the order a mod author cares about: an inherited declaration still resolves at runtime, so
+     * the mixin is fine and the key only names the wrong owner; a changed descriptor does not, and
+     * is the edit to make. A class key, an unknown owner, or an unknown name gives null.
+     */
+    private fun nearest(key: String, decls: Declarations): Pair<String, String>? {
+        val owner = key.substringBefore(':')
+        val name = key.substringAfter(':', "").substringBefore(':')
+        val descriptor = key.substringAfter(':', "").substringAfter(':', "")
+        if (name.isEmpty() || descriptor.isEmpty() || owner !in decls.classes) return null
+
+        supertypesOf(owner, decls).firstOrNull { "$it:$name:$descriptor" in decls.members }
+            ?.let { return "$it:$name:$descriptor" to "inherited" }
+        decls.overloads["$owner:$name"]?.firstOrNull()
+            ?.let { return "$owner:$name:$it" to "descriptor" }
+        return null
+    }
+
+    /** Every supertype of [owner], nearest first. Breadth-first, so a direct parent beats a distant one. */
+    private fun supertypesOf(owner: String, decls: Declarations): List<String> {
+        val seen = LinkedHashSet<String>()
+        val queue = ArrayDeque(decls.supertypes[owner].orEmpty())
+        while (queue.isNotEmpty()) {
+            val next = queue.removeFirst()
+            if (!seen.add(next)) continue
+            queue.addAll(decls.supertypes[next].orEmpty())
+        }
+        return seen.toList()
     }
 
     private fun buildIndex(versionId: String, namespace: String): Declarations? {
         val jar = config.sources.remappedJar(versionId, namespace)?.toFile() ?: return null
         val classes = HashSet<String>()
         val members = HashSet<String>()
+        val supertypes = HashMap<String, List<String>>()
+        val overloads = HashMap<String, MutableList<String>>()
         ZipFile(jar).use { zip ->
             val entries = zip.entries()
             while (entries.hasMoreElements()) {
                 val entry = entries.nextElement()
                 if (entry.isDirectory || !entry.name.endsWith(".class")) continue
                 val bytes = zip.getInputStream(entry).use { it.readBytes() }
-                ClassReader(bytes).accept(collector(classes, members), ClassReader.SKIP_CODE or ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES)
+                ClassReader(bytes).accept(
+                    collector(classes, members, supertypes, overloads),
+                    ClassReader.SKIP_CODE or ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES,
+                )
             }
         }
-        return Declarations(classes, members)
+        return Declarations(classes, members, supertypes, overloads)
     }
 
-    private fun collector(classes: MutableSet<String>, members: MutableSet<String>): ClassVisitor =
+    private fun collector(
+        classes: MutableSet<String>,
+        members: MutableSet<String>,
+        supertypes: MutableMap<String, List<String>>,
+        overloads: MutableMap<String, MutableList<String>>,
+    ): ClassVisitor =
         object : ClassVisitor(Opcodes.ASM9) {
             private lateinit var owner: String
             override fun visit(version: Int, access: Int, name: String, sig: String?, superName: String?, interfaces: Array<String>?) {
                 owner = name
                 classes += name
+                val parents = listOfNotNull(superName) + interfaces.orEmpty()
+                if (parents.isNotEmpty()) supertypes[name] = parents
             }
             override fun visitMethod(access: Int, name: String, descriptor: String, sig: String?, ex: Array<String>?): MethodVisitor? {
-                members += "$owner:$name:$descriptor"
+                record(name, descriptor)
                 return null
             }
             override fun visitField(access: Int, name: String, descriptor: String, sig: String?, value: Any?): FieldVisitor? {
-                members += "$owner:$name:$descriptor"
+                record(name, descriptor)
                 return null
+            }
+            private fun record(name: String, descriptor: String) {
+                members += "$owner:$name:$descriptor"
+                overloads.getOrPut("$owner:$name") { ArrayList(1) } += descriptor
             }
         }
 }

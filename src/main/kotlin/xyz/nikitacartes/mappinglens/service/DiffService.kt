@@ -181,12 +181,12 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         val to = memberRecords(cols, toCid, namespace)
         val fromByKey = from.associateBy { it.key }
         val toByKey = to.associateBy { it.key }
-        fun item(r: MemberRec) = DiffEntryItem(type = kind, name = r.name, owner = owner, descriptor = r.descriptor)
+        fun item(r: MemberRec) = DiffEntryItem(type = kind, name = r.name, owner = owner, intermediaryDescriptor = r.descriptor)
         val added = (toByKey.keys - fromByKey.keys).map { item(toByKey.getValue(it)) }
         val removed = (fromByKey.keys - toByKey.keys).map { item(fromByKey.getValue(it)) }
         val renamed = (fromByKey.keys intersect toByKey.keys)
             .filter { fromByKey.getValue(it).name != toByKey.getValue(it).name }
-            .map { DiffEntryItem(type = kind, owner = owner, oldName = fromByKey.getValue(it).name, newName = toByKey.getValue(it).name, descriptor = toByKey.getValue(it).descriptor) }
+            .map { DiffEntryItem(type = kind, owner = owner, oldName = fromByKey.getValue(it).name, newName = toByKey.getValue(it).name, intermediaryDescriptor = toByKey.getValue(it).descriptor) }
         return TypedDiff(added, removed, renamed)
     }
 

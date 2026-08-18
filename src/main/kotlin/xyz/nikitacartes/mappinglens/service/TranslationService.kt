@@ -1,9 +1,12 @@
 package xyz.nikitacartes.mappinglens.service
 
 import xyz.nikitacartes.mappinglens.db.tables.*
+import xyz.nikitacartes.mappinglens.model.BatchTranslateItem
+import xyz.nikitacartes.mappinglens.model.BatchTranslateResponse
 import xyz.nikitacartes.mappinglens.model.TranslateInput
 import xyz.nikitacartes.mappinglens.model.TranslateOutput
 import xyz.nikitacartes.mappinglens.model.TranslateResponse
+import xyz.nikitacartes.mappinglens.routes.normalizeClassName
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -116,6 +119,119 @@ class TranslationService(private val db: Database, private val versionService: V
             version = "",
             type = cols.kind,
         )
+    }
+
+    /**
+     * Translates a batch of `/exists`-shaped keys from one namespace to another, descriptors
+     * included. Returns null when [version] is not indexed.
+     *
+     * Named descriptors are not stored, so a descriptor is translated through the class table
+     * instead: a descriptor is class names and primitives, and the class table knows every class of
+     * the version in every namespace. The official descriptor is the pivot, because it is the one
+     * column both the input and the output side can be matched against.
+     *
+     * Two queries serve the whole batch — one over the version's classes, one per member table over
+     * the names asked for — so a mod's whole mixin surface is one request instead of one call per
+     * member.
+     */
+    fun translateBatch(version: String, from: String, to: String, keys: List<String>): BatchTranslateResponse? =
+        transaction(db) {
+            val versionRowId = VersionTable.selectAll().where { VersionTable.versionId eq version }
+                .singleOrNull()?.get(VersionTable.id)?.value ?: return@transaction null
+
+            val classes = classIndex(versionRowId, from, to)
+            val memberNames = keys.mapNotNull { it.split(':').getOrNull(1)?.takeIf(String::isNotEmpty) }.distinct()
+            val members = if (memberNames.isEmpty()) emptyMap() else
+                merge(
+                    memberIndex(MethodTable, versionRowId, from, memberNames),
+                    memberIndex(FieldTable, versionRowId, from, memberNames),
+                )
+
+            val results = keys.map { key -> translateKey(key, classes, members, to) }
+            BatchTranslateResponse(version, from, to, results)
+        }
+
+    /** One class of the version, as the batch translation needs to see it. */
+    private class ClassRec(val rowId: Int, val obf: String?, val target: String?, val intermediary: String?)
+
+    /** The version's classes, by their `from` name, plus `official name -> to name` for descriptors. */
+    private class ClassIndex(val byFromName: Map<String, ClassRec>, val targetByObf: Map<String, String>)
+
+    private fun classIndex(versionRowId: Int, from: String, to: String): ClassIndex {
+        val fromCol = nameColumnClass(from)
+        val toCol = nameColumnClass(to)
+        val byFromName = HashMap<String, ClassRec>()
+        val targetByObf = HashMap<String, String>()
+        ClassTable.selectAll().where { ClassTable.versionId eq versionRowId }.forEach { row ->
+            val obf = row[ClassTable.obfName]
+            val target = row[toCol]
+            row[fromCol]?.let {
+                byFromName[it] = ClassRec(row[ClassTable.id].value, obf, target, row[ClassTable.intermediaryName])
+            }
+            if (obf != null && target != null) targetByObf[obf] = target
+        }
+        return ClassIndex(byFromName, targetByObf)
+    }
+
+    /** One member row, carrying the table it came from so the reader knows which columns to ask for. */
+    private class MemberHit(val cols: MemberTable, val row: ResultRow)
+
+    /** Rows of one member table for the requested names, keyed by (class row id, `from` name). */
+    private fun memberIndex(
+        cols: MemberTable,
+        versionRowId: Int,
+        from: String,
+        names: List<String>,
+    ): Map<Pair<Int, String>, List<MemberHit>> {
+        val nameCol = nameColumnMember(cols, from)
+        // SQLite binds each `IN` element as its own parameter and the batch cap is well past the
+        // limit of older builds, so ask in chunks rather than in one statement.
+        return names.chunked(500)
+            .flatMap { chunk ->
+                cols.selectAll()
+                    .where { (cols.versionId eq versionRowId) and (nameCol inList chunk) }
+                    .toList()
+            }
+            .groupBy({ it[cols.classId].value to it[nameCol].orEmpty() }, { MemberHit(cols, it) })
+    }
+
+    private fun merge(
+        methods: Map<Pair<Int, String>, List<MemberHit>>,
+        fields: Map<Pair<Int, String>, List<MemberHit>>,
+    ): Map<Pair<Int, String>, List<MemberHit>> {
+        val merged = HashMap(methods)
+        fields.forEach { (key, hits) -> merged.merge(key, hits) { a, b -> a + b } }
+        return merged
+    }
+
+    private fun translateKey(
+        key: String,
+        classes: ClassIndex,
+        members: Map<Pair<Int, String>, List<MemberHit>>,
+        to: String,
+    ): BatchTranslateItem {
+        val parts = key.split(':')
+        val ownerRec = classes.byFromName[normalizeClassName(parts[0])] ?: return BatchTranslateItem(key)
+        if (parts.size == 1) return BatchTranslateItem(key, ownerRec.target, "class", ownerRec.intermediary)
+
+        val hits = members[ownerRec.rowId to parts[1]].orEmpty()
+        // The descriptor given names its classes in `from`; the stored one names them officially,
+        // so the match runs on the official spelling of what the caller asked for.
+        val wanted = parts.getOrNull(2)?.takeIf { it.isNotEmpty() }
+            ?.let { Descriptors.mapTypes(it) { c -> classes.byFromName[c]?.obf } }
+        val hit = when {
+            wanted != null -> hits.firstOrNull { it.row[it.cols.obfDesc] == wanted }
+            hits.size == 1 -> hits.single()
+            // Without a descriptor an overloaded name has no single answer, and picking one would
+            // hand back a key for a member the caller did not name.
+            else -> null
+        } ?: return BatchTranslateItem(key)
+
+        val targetOwner = ownerRec.target ?: return BatchTranslateItem(key)
+        val targetName = hit.row[nameColumnMember(hit.cols, to)] ?: return BatchTranslateItem(key)
+        val targetDesc = hit.row[hit.cols.obfDesc]?.let { Descriptors.mapTypes(it) { c -> classes.targetByObf[c] } }
+        val translated = if (targetDesc != null) "$targetOwner:$targetName:$targetDesc" else "$targetOwner:$targetName"
+        return BatchTranslateItem(key, translated, hit.cols.kind, hit.row[hit.cols.intermediaryName])
     }
 
     private fun readClassName(row: ResultRow, namespace: String): String? = when (namespace) {

@@ -4,6 +4,7 @@ import xyz.nikitacartes.mappinglens.ingestion.CorrespondenceResolver
 import xyz.nikitacartes.mappinglens.ingestion.MojmapMerge
 import xyz.nikitacartes.mappinglens.ingestion.TinyV2Parser
 import xyz.nikitacartes.mappinglens.ingestion.UnifiedClassEntry
+import xyz.nikitacartes.mappinglens.ingestion.UnifiedMemberEntry
 import xyz.nikitacartes.mappinglens.ingestion.UnobfuscatedJarScanner
 import xyz.nikitacartes.mappinglens.version.VersionCatalog
 import xyz.nikitacartes.mappinglens.version.VersionMeta
@@ -234,7 +235,11 @@ class GitCraftStore(
             }
         }
         return VersionSources(
-            version, intermediary, yarn, mojmaps, unobfuscated = false, unobfuscatedJar = null,
+            version, intermediary, yarn, mojmaps, unobfuscated = false,
+            // Resolved for a yarn-covered unobfuscated release too, although the mappings drive the
+            // parse there. The jar is the only complete record of what the version declares, and
+            // [parseUnified] reads it to fill the members the tiny file leaves out.
+            unobfuscatedJar = if (unobfuscatedIntermediary != null) unobfuscatedJar(version) else null,
             meta = catalog.get(version), unobfuscatedIntermediary = unobfuscatedIntermediary,
         )
     }
@@ -264,7 +269,57 @@ class GitCraftStore(
         // An unobfuscated release that yarn covers: the `official` namespace of the yarn tiny holds
         // the Mojang name, and no mojmap tiny exists to carry it. Read the mojmap namespace off
         // official, otherwise the version reaches the index with yarn names alone.
-        return unified.map(::mojmapFromOfficial)
+        val named = unified.map(::mojmapFromOfficial)
+        val jar = src.unobfuscatedJar ?: return named
+        return withDeclaredMembers(named, UnobfuscatedJarScanner.scan(jar))
+    }
+
+    /**
+     * Adds the members the mappings do not list. Intermediary names an overriding method only in the
+     * class that first declares it, and the name propagates down the hierarchy instead of being
+     * written again for each subclass. An obfuscated release hides that, because its mojmap tiny
+     * lists every declared member and fills the gap. An unobfuscated release has no mojmap tiny, so
+     * without this every override reaches the index as if the subclass did not declare it: 1.21.11
+     * indexed through yarn holds 56,986 methods against 89,606 for the same build indexed through
+     * its mojmap tiny, and `/diff` between the two reports 32,355 phantom removals.
+     *
+     * The jar carries the declaration itself, so it decides what exists. Members the mappings do
+     * know keep their yarn and intermediary names; the ones only the jar knows enter mojmap-only,
+     * which is what they are.
+     *
+     * ponytail: members only. Classes agree to within 0.2% (10,272 against 10,291 on 1.21.11) and a
+     * class the mappings miss would need presence and package fields invented for it. Widen this to
+     * classes if that delta ever turns out to matter.
+     *
+     * Pure over the two lists (no jar, no config), so it is unit-testable.
+     */
+    internal fun withDeclaredMembers(
+        entries: List<UnifiedClassEntry>,
+        declared: List<UnifiedClassEntry>,
+    ): List<UnifiedClassEntry> {
+        val byName = declared.associateBy { it.mojmapName }
+        return entries.map { cls ->
+            val fromJar = byName[cls.mojmapName] ?: return@map cls
+            cls.copy(
+                methods = cls.methods + missingMembers(cls.methods, fromJar.methods),
+                fields = cls.fields + missingMembers(cls.fields, fromJar.fields),
+            )
+        }
+    }
+
+    /**
+     * The [fromJar] members absent from [mapped], keyed by (name, descriptor) — both sides spell the
+     * name the same way here, because `official` is the Mojang name on these versions. The official
+     * name is copied onto the additions for the same reason, so every row of the version keeps
+     * answering to the obf-keyed joins that Compare and Diff run.
+     */
+    private fun missingMembers(
+        mapped: List<UnifiedMemberEntry>,
+        fromJar: List<UnifiedMemberEntry>,
+    ): List<UnifiedMemberEntry> {
+        val known = mapped.mapTo(HashSet()) { it.mojmapName to it.obfDesc }
+        return fromJar.filter { (it.mojmapName to it.obfDesc) !in known }
+            .map { it.copy(obfName = it.mojmapName) }
     }
 
     /** Every class of an unobfuscated release exists in both namespaces, hence `PRESENCE_BOTH`. */

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { List, Spin, Tag, Typography } from "antd";
 import { fetchReferences } from "../api";
 import { messageOf } from "../util";
-import type { ReferenceItem, ReferenceResponse } from "../types";
+import type { ReferenceGroup, ReferenceItem } from "../types";
 import type { ReferencesTab } from "../tabs";
 import { useOpenClass } from "../openClass";
 
@@ -10,7 +10,7 @@ const KIND_COLOR: Record<string, string> = { class: "blue", method: "green", fie
 
 export function ReferencesView({ tab }: { tab: ReferencesTab }) {
   const openClass = useOpenClass();
-  const [data, setData] = useState<ReferenceResponse | undefined>(undefined);
+  const [data, setData] = useState<ReferenceGroup | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
 

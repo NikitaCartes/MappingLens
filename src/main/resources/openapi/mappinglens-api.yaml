@@ -22,6 +22,12 @@ paths:
     get:
       tags: [Versions]
       summary: List all indexed versions
+      description: >
+        Variants (`<id>_unobfuscated`, a second indexing of a build already listed under its own id)
+        are left out unless `includeVariants` is set. `variantOf` names the build a variant
+        re-indexes, and is null on a version in its own right.
+      parameters:
+        - $ref: "#/components/parameters/IncludeVariants"
       responses:
         "200":
           description: Indexed versions with aggregate counts.
@@ -357,6 +363,41 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+  /api/v1/translate/{version}:
+    post:
+      tags: [Translation]
+      summary: Translate a batch of class and member keys between namespaces
+      description: >
+        Takes the same keys as `/exists` — a class internal name, or `owner:name:descriptor` —
+        spelled in `from`. `translated` is the whole key in `to`, descriptor included, so a result
+        posts to `/exists/{version}` unchanged. Descriptors are translated type by type through the
+        class table; a type the version does not know is left as it is. A key with no descriptor
+        resolves only when the name has a single match.
+      parameters:
+        - $ref: "#/components/parameters/VersionPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchTranslateRequest"
+      responses:
+        "200":
+          description: One result per key, in request order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchTranslateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: A requested namespace has no mappings on that version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /api/v1/translate/class/{name}:
     get:
       tags: [Translation]
@@ -634,11 +675,22 @@ paths:
           name: from
           schema:
             type: string
-          description: Limit the version walk. Either bound may be the older one.
+          description: >
+            Limit the version walk. Either bound may be the older one. A bound may name a version
+            the walk then skips, so bounding by a snapshot or by a variant works.
         - in: query
           name: to
           schema:
             type: string
+        - in: query
+          name: releasesOnly
+          schema:
+            type: boolean
+            default: false
+          description: >
+            Walk releases alone. Snapshots between two releases split a span whenever a name moved
+            and moved back, which makes the span list hard to read by eye.
+        - $ref: "#/components/parameters/IncludeVariants"
       responses:
         "200":
           description: One entry per query, in the order given.
@@ -689,28 +741,46 @@ paths:
   /api/v1/references/{version}:
     get:
       tags: [References]
-      summary: Find all references to a class or member
+      summary: Find all references to classes or members
       description: >
-        Every site referencing the target (`q`), found by scanning the version's named jar via ASM.
+        Every site referencing each target (`q`), found by scanning the version's named jar via ASM.
         Only references to Minecraft classes in the same jar are indexed; JDK/library targets are
-        dropped. The reverse index is cached per (version, namespace).
+        dropped. The reverse index is cached per (version, namespace) and served to every target of
+        that version, so asking many targets of one version costs one scan. Descriptors here are in
+        the requested namespace, so a key from this endpoint posts to `/exists` unchanged.
+        Use the batch form for the `@At(target = ...)` half of a mixin: `/exists` covers the method
+        injected into, and a signature can survive a version while a call inside its body moves
+        elsewhere.
       parameters:
         - $ref: "#/components/parameters/VersionPath"
         - in: query
           name: q
           required: true
           schema:
-            type: string
-          description: "Target key: a class internal name (`net/minecraft/.../Block`) or a member key `owner:name:descriptor`."
+            type: array
+            items:
+              type: string
+            maxItems: 25
+          explode: true
+          style: form
+          description: "Target key: a class internal name (`net/minecraft/.../Block`) or a member key `owner:name:descriptor`. Repeatable."
         - in: query
           name: namespace
           schema:
             type: string
             enum: [yarn, mojmap]
             default: mojmap
+        - in: query
+          name: to
+          schema:
+            type: string
+          description: >
+            The far end of a version range whose near end is `{version}`. Either bound may be the
+            older one, and the range covers at most 25 versions. Omit it to ask one version.
+        - $ref: "#/components/parameters/IncludeVariants"
       responses:
         "200":
-          description: Referencing sites for the target.
+          description: Referencing sites, one group per (version, target).
           content:
             application/json:
               schema:
@@ -797,6 +867,13 @@ components:
       required: true
       schema:
         type: string
+    IncludeVariants:
+      in: query
+      name: includeVariants
+      description: Include `<id>_unobfuscated` variants, which are hidden by default.
+      schema:
+        type: boolean
+        default: false
   responses:
     BadRequest:
       description: Invalid request parameters.
@@ -872,6 +949,12 @@ components:
             exists. Yarn's merged tiny v2 is official->intermediary->named, so every yarn version
             has them. A Mojang unobfuscated release that yarn does not cover carries intermediary
             only when the indexer was given a separate source for it.
+        variantOf:
+          type: [string, "null"]
+          description: >
+            The build this version re-indexes from the pre-deobfuscated jar, or null when it stands
+            on its own. A variant is left out of the listing, of the history walk and of the
+            default-version choice unless asked for.
         classCount:
           type: integer
           format: int64
@@ -921,8 +1004,12 @@ components:
           anyOf:
             - $ref: "#/components/schemas/ClassRef"
             - type: "null"
-        descriptor:
+        intermediaryDescriptor:
           type: [string, "null"]
+          description: >
+            Always the intermediary descriptor, whatever `namespace` asked for: named descriptors
+            are not indexed. Do not paste it into `/exists`, which matches the descriptor of its own
+            namespace. Pass the key through `POST /api/v1/translate/{version}` first.
         score:
           type: number
     SearchResponse:
@@ -985,8 +1072,9 @@ components:
           type: [string, "null"]
         owner:
           type: [string, "null"]
-        descriptor:
+        intermediaryDescriptor:
           type: [string, "null"]
+          description: The intermediary descriptor, as on SearchResultEntry.
         oldName:
           type: [string, "null"]
         newName:
@@ -1335,8 +1423,18 @@ components:
           type: string
         exists:
           type: boolean
-        renamedTo:
+        closest:
           type: [string, "null"]
+          description: >
+            The nearest declaration to a key that missed, in the same key form. Null when the version
+            declares nothing of that name, and when `exists` is true.
+        reason:
+          type: [string, "null"]
+          enum: [inherited, descriptor, null]
+          description: >
+            Why `closest` is not the key asked for. `inherited`: a supertype declares this exact
+            signature, so the call still resolves. `descriptor`: the owner declares this name under
+            another descriptor, so the signature changed.
     ExistsResponse:
       type: object
       required: [version, namespace, results]
@@ -1420,18 +1518,72 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/HistoryEntry"
-    ReferenceResponse:
+    BatchTranslateRequest:
       type: object
-      required: [version, namespace, query, references]
+      required: [keys]
+      properties:
+        from:
+          $ref: "#/components/schemas/LookupNamespace"
+        to:
+          $ref: "#/components/schemas/LookupNamespace"
+        keys:
+          type: array
+          maxItems: 2000
+          description: Class internal names, or `owner:name:descriptor` member keys, spelled in `from`.
+          items:
+            type: string
+    BatchTranslateItem:
+      type: object
+      required: [key]
+      properties:
+        key:
+          type: string
+        translated:
+          type: [string, "null"]
+          description: >
+            The same key in the `to` namespace, descriptor included, ready to post to
+            `/exists/{version}`. Null when the version has no such class or member, and when an
+            overloaded name was given without a descriptor.
+        type:
+          type: [string, "null"]
+          enum: [class, method, field, null]
+        intermediary:
+          type: [string, "null"]
+    BatchTranslateResponse:
+      type: object
+      required: [version, from, to, results]
       properties:
         version:
           type: string
-        namespace:
+        from:
+          $ref: "#/components/schemas/LookupNamespace"
+        to:
+          $ref: "#/components/schemas/LookupNamespace"
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/BatchTranslateItem"
+    ReferenceGroup:
+      type: object
+      required: [version, query, references]
+      properties:
+        version:
           type: string
-          enum: [yarn, mojmap]
         query:
           type: string
         references:
           type: array
           items:
             $ref: "#/components/schemas/ReferenceItem"
+    ReferenceResponse:
+      type: object
+      required: [namespace, results]
+      properties:
+        namespace:
+          type: string
+          enum: [yarn, mojmap]
+        results:
+          type: array
+          description: One group per (version, target), versions oldest first and targets in request order.
+          items:
+            $ref: "#/components/schemas/ReferenceGroup"

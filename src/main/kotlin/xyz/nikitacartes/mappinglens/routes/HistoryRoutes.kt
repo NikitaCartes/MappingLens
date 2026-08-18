@@ -20,7 +20,13 @@ fun Route.historyRoutes(service: HistoryService) {
         }
         val ns = call.request.queryParameters["namespace"] ?: "mojmap"
         if (!call.ensureOneOf("namespace", ns, setOf("yarn", "mojmap", "intermediary"))) return@get
-        val r = service.history(queries, ns, call.request.queryParameters["from"], call.request.queryParameters["to"])
+        val releasesOnly = call.booleanQuery("releasesOnly", false) ?: return@get
+        val includeVariants = call.booleanQuery("includeVariants", false) ?: return@get
+        val r = service.history(
+            queries, ns,
+            call.request.queryParameters["from"], call.request.queryParameters["to"],
+            releasesOnly, includeVariants,
+        )
         if (r == null) call.respond(HttpStatusCode.NotFound, ApiError("not_found", "Unknown version in 'from'/'to'", 404))
         else call.respond(r)
     }

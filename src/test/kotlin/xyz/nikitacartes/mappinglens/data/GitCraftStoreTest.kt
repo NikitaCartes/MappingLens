@@ -2,6 +2,9 @@ package xyz.nikitacartes.mappinglens.data
 
 import xyz.nikitacartes.mappinglens.RealDataTestConfig
 import xyz.nikitacartes.mappinglens.ingestion.CorrespondenceResolver
+import xyz.nikitacartes.mappinglens.ingestion.UnifiedClassEntry
+import xyz.nikitacartes.mappinglens.ingestion.UnifiedMemberEntry
+import xyz.nikitacartes.mappinglens.version.VersionCatalog
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -174,5 +177,55 @@ class GitCraftStoreTest {
         )
         assertFalse(s.resolve("18w43b").hasMojmap)
         assertNull(s.parseUnified("18w43b").single().mojmapName)
+    }
+}
+
+/**
+ * The union that fills in the members an unobfuscated release's mappings leave out. Intermediary
+ * names an override only where it is first declared, so without this every override of such a
+ * version reaches the index as if the subclass did not declare it.
+ */
+class DeclaredMemberUnionTest {
+
+    private val store = GitCraftStore(
+        artifactStore = Path.of("."),
+        intermediaryMappingsDir = Path.of("."),
+        catalog = VersionCatalog(emptyMap()),
+    )
+
+    private fun member(name: String, desc: String, intermediary: String? = null) = UnifiedMemberEntry(
+        obfName = name, obfDesc = desc,
+        intermediaryName = intermediary, intermediaryDesc = null,
+        yarnName = null, mojmapName = name,
+    )
+
+    private fun cls(name: String, methods: List<UnifiedMemberEntry>) = UnifiedClassEntry(
+        obfName = name, intermediaryName = null, yarnName = null, mojmapName = name,
+        methods = methods, fields = emptyList(), presence = CorrespondenceResolver.PRESENCE_BOTH,
+    )
+
+    @Test
+    fun `adds the members only the jar declares and keeps the mapped ones intact`() {
+        val mapped = listOf(cls("A", listOf(member("tick", "()V", intermediary = "method_1"))))
+        val declared = listOf(
+            cls("A", listOf(member("tick", "()V"), member("render", "()V"), member("tick", "(I)V"))),
+        )
+
+        val merged = store.withDeclaredMembers(mapped, declared).single()
+
+        assertEquals(listOf("tick", "render", "tick"), merged.methods.map { it.mojmapName })
+        // The mapped row keeps its intermediary name; the two the jar alone knows carry none, and
+        // an overload is told apart by its descriptor rather than swallowed by the same name.
+        assertEquals("method_1", merged.methods[0].intermediaryName)
+        assertEquals(listOf("()V", "()V", "(I)V"), merged.methods.map { it.obfDesc })
+        assertNull(merged.methods[1].intermediaryName)
+        // `official` is the Mojang name here, so an addition has to answer the obf-keyed joins too.
+        assertEquals("render", merged.methods[1].obfName)
+    }
+
+    @Test
+    fun `leaves a class the jar does not carry alone`() {
+        val mapped = listOf(cls("Gone", listOf(member("tick", "()V"))))
+        assertEquals(mapped, store.withDeclaredMembers(mapped, emptyList()))
     }
 }

@@ -226,6 +226,14 @@ class internal name.
 | `GET /api/v1/versions`           | All versions (`hasYarn`/`hasMojmap`/`hasIntermediary` flags plus counts), semver order (newest first) |
 | `GET /api/v1/versions/{version}` | Metadata for one version (`404 version_not_found` if absent)                                          |
 
+A **variant** is a second indexing of a build that the list already carries under its own id:
+GitCraft derives `<id>_unobfuscated` from Mojang's pre-deobfuscated jar. `variantOf` names the
+build a variant re-indexes, and is null on a version in its own right. Variants are left out of
+the listing, out of the `/history` walk, and out of the default-version choice, because one build
+listed twice reads as two versions and puts a step between every pair of neighbours.
+`includeVariants=true` brings them back on `/versions`, `/history` and `/references`. A variant
+answers `/versions/{id}` and every other endpoint by name either way.
+
 ### Search
 
 | Endpoint             | Description                                                                                               |
@@ -237,12 +245,31 @@ Parameters: `q` (required), `version` (default: the latest release), `type`
 (1 to 200, default 50), `offset` (0 or more), `exact` (`true`/`false`). `q` also accepts the
 form `Owner#member`, `Owner.member`, or `Owner/member`.
 
+A member row carries `intermediaryDescriptor`, never a named descriptor, whatever `namespace`
+asked for: named descriptors are not indexed. The field is named after what it holds, because
+read as a plain `descriptor` it invites being pasted into `/exists`, which matches the descriptor
+of its own namespace and rejects an intermediary one. `POST /api/v1/translate/{version}` converts
+a whole key, descriptor included. `/diff` reports the same field for the same reason.
+
 ### Translate
 
 | Endpoint                                | Description                                                                                           |
 |-----------------------------------------|-------------------------------------------------------------------------------------------------------|
 | `GET /api/v1/translate`                 | Translates a name between namespaces (`name`, `from`, `to`, `version?`, `type=auto`)                  |
 | `GET /api/v1/translate/class/{name...}` | Shortcut for a class translation (`type` fixed to `class`; `from`/`to` default to `yarn` to `mojmap`) |
+| `POST /api/v1/translate/{version}`      | Batch key translation; body `{from, to, keys[]}`; response `{results:[{key, translated, type, intermediary}]}` |
+
+The batch form takes the same keys as `/exists` — a class internal name, or
+`owner:name:descriptor` — spelled in `from`, and up to 2000 per request. `translated` is the whole
+key in `to`, descriptor included, so a result posts to `/exists/{version}` unchanged. That is the
+point of the endpoint: `/search` and `/diff` report intermediary descriptors, `/exists` matches
+named ones, and translating a batch by hand is what the gap costs otherwise.
+
+Descriptors are translated type by type through the class table, because a descriptor is class
+names and primitives and the class table knows every class of the version in every namespace. The
+official descriptor is the pivot. A type the version does not know (a JDK class) is left as it is.
+A key with no descriptor resolves only when the name has a single match: an overloaded name gives
+`translated: null` rather than a guess.
 
 ### Diff
 
@@ -274,7 +301,10 @@ for `/diff/files` and `/diff/patch`: `yarn`/`mojmap` only); `type`, `package`, `
 
 Parameters: `q` (required, repeatable: up to 50 keys per request), `namespace`
 (`yarn`/`mojmap`/`intermediary`, default `mojmap`), `from`/`to` (bound the version walk;
-either bound may be the older one; an unknown version returns `404`). The key `q` is a class
+either bound may be the older one; an unknown version returns `404`), `releasesOnly`
+(default `false`: walk releases alone), `includeVariants` (default `false`, see Versions).
+A bound may name a version the walk then skips, so bounding by a snapshot or by a variant
+works. The key `q` is a class
 internal name (dots allowed) or `owner:name`. A third `:descriptor` segment is accepted, for
 compatibility with keys from `/references` and `/exists`, but it does not filter the result.
 
@@ -301,11 +331,14 @@ and `members[]` (one entry per overload).
   gets no history before 1.21.11.
 - Named descriptors are not indexed, so a signature change is visible only as a changed
   `members[].intermediaryDescriptor`, and only on versions that carry intermediary.
-- `present: false` with a non-null `owner` means the class is still there and the member is
-  gone. `owner: null` means the class itself is gone.
+- `present: false` with a non-null `owner` means the class is still there and **the index holds
+  no member of that name under it**. `owner: null` means the class itself is gone. Read it as
+  "not declared here", not as "removed from the game": `/history` reads the mapping index, and
+  `/exists` reads the jar the mod runs against. When the two disagree, the jar is right.
 - Twin versions (`1.21.11` and `1.21.11_unobfuscated`) sit next to each other in the version
-  list, and the twin's yarn and intermediary names are empty, so such a pair always yields two
-  adjacent spans. `from`/`to` narrow the walk.
+  order, and the twin's yarn and intermediary names are empty, so such a pair used to yield two
+  adjacent spans. The walk now skips variants; `includeVariants=true` brings the old behavior
+  back. `releasesOnly=true` drops the snapshots as well.
 
 ### Compare
 
@@ -355,16 +388,34 @@ version indexed from the artifact store alone has no source repository and retur
 | Endpoint                                         | Description                                                                                                                                                             |
 |--------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `GET /api/v1/hierarchy/{version}/{className...}` | Supertypes and subtypes of a class (nodes/edges, ASM scan of the named jar); `namespace=yarn/mojmap`                                                                    |
-| `GET /api/v1/references/{version}?q=<key>`       | Uses of a class or member (`q` is `owner` or `owner:name:descriptor`); `namespace=yarn/mojmap`                                                                          |
-| `POST /api/v1/exists/{version}`                  | Batch existence check for classes/members; body `{namespace, members[]}` (keys are `owner` or `owner:name:descriptor`); response `{results:[{key, exists, renamedTo}]}` |
+| `GET /api/v1/references/{version}?q=<key>`       | Uses of classes or members (`q` is `owner` or `owner:name:descriptor`, repeatable); `namespace=yarn/mojmap`                                                            |
+| `POST /api/v1/exists/{version}`                  | Batch existence check for classes/members; body `{namespace, members[]}` (keys are `owner` or `owner:name:descriptor`); response `{results:[{key, exists, closest, reason}]}` |
+
+`references` takes up to 25 `q` values, and `to` extends the walk from `{version}` to a second
+version, up to 25 versions per call. The response is `{namespace, results[]}`, one entry per
+(version, target) as `{version, query, references[]}`. The per-version index is built once and
+served to every target of that version, so asking many targets of one version costs one scan.
+Use the batch form for the `@At(target = ...)` half of a mixin: `/exists` covers the method
+injected into, and a signature can survive a version while a call inside its body moves
+elsewhere. `404` when no requested version has a named jar in that namespace.
 
 `exists` scans the version's named jar with ASM (cached per version and namespace), so
 descriptors match exactly, without remapping. It accepts up to 2000 keys per request, and
 returns `404` when the named jar for the version is missing. This is the only `POST`
-endpoint, and the only endpoint never cached: the result depends on the request body.
-`renamedTo` is reserved and always `null` today, because detecting a rename needs an anchor
-version, which a single-version check does not have. Intended for validating mixin or shadow
-targets before a mod update, in one call.
+endpoint under `/exists`, and one of two endpoints never cached: the result depends on the
+request body. Intended for validating mixin or shadow targets before a mod update, in one call.
+
+A key that missed carries the nearest declaration in `closest`, in the same key form, with
+`reason` for why it differs:
+
+- `inherited`: a supertype declares this exact signature, so the call still resolves at runtime.
+  A mixin `@At` target is valid; a `@Shadow` has to name the supertype.
+- `descriptor`: the owner declares this name under another descriptor, so the signature changed.
+  `closest` carries the descriptor the version has.
+
+Both are null when the version declares nothing of that name under that owner, and when `exists`
+is true. Without them a bare `false` reads the same whether the descriptor moved, the member moved
+to a supertype, or the name is gone, and answering that took a `/source` read per key.
 
 ---
 
@@ -408,6 +459,26 @@ The SQLite index (built by `index`, opened read-only by `serve`) holds: `version
 in `classes`/`methods`/`fields` (with `presence` in `{both, yarn_only, mojmap_only}`), and
 the FTS5 table `search_index` over names. It does not store decompiled source, bytecode, or
 git blobs; those are read on demand from the read-only store.
+
+### Members of an unobfuscated release
+
+Intermediary names an overriding method only in the class that first declares it, and the name
+propagates down the hierarchy instead of being written again for each subclass. An obfuscated
+release hides that, because its mojmap tiny lists every declared member and fills the gap. An
+unobfuscated release has no mojmap tiny, so a mapping-only parse gives it no overrides at all.
+
+The indexer therefore reads the version's own jar for these releases and adds the members the
+mappings leave out. Members the mappings know keep their yarn and intermediary names; the ones
+only the jar knows enter mojmap-only, which is what they are. The classes come from the mappings
+either way.
+
+Scale of the gap before the fix, measured on one build indexed both ways: `1.21.11` held 89,606
+methods against 56,986 for `1.21.11_unobfuscated`, and a `/diff` between the two reported 32,355
+methods removed with nothing having changed. Fields were within 1% (45,679 against 45,263),
+because a field is never overridden. Reaching `/diff` from 1.21.11 to 26.1, that same gap made
+49 of 62 members reported as removed from `ServerLevel` still declared in 26.1.
+
+An index built before this fix carries the gap until the affected versions are re-indexed.
 
 ---
 

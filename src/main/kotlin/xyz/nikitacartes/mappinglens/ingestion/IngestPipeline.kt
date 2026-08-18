@@ -50,9 +50,10 @@ class IngestPipeline(private val config: AppConfig) {
 
         log.info("Indexing {} of {} versions", targets.size, allSorted.size)
 
+        val known = allSorted.toSet()
         for (version in targets) {
             try {
-                ingestVersion(version, rankOf[version])
+                ingestVersion(version, rankOf[version], variantBase(version, known))
             } catch (e: Exception) {
                 log.error("Failed to index version {}: {}", version, e.message, e)
             }
@@ -103,7 +104,16 @@ class IngestPipeline(private val config: AppConfig) {
         log.info("Recorded FTS rowid ranges for {} versions", ranges.size)
     }
 
-    private fun ingestVersion(version: String, sortRank: Int?) {
+    /**
+     * The version [version] re-indexes, or null when it stands on its own. GitCraft derives
+     * `<id>_unobfuscated` from Mojang's pre-deobfuscated jar for a build it also indexes normally,
+     * so the two describe one build. The suffix alone does not make a variant: the base id has to be
+     * indexed as well, otherwise the unobfuscated jar is that build's only record.
+     */
+    private fun variantBase(version: String, known: Set<String>): String? =
+        version.removeSuffix("_unobfuscated").takeIf { it != version && it in known }
+
+    private fun ingestVersion(version: String, sortRank: Int?, variantBase: String?) {
         val src = store.resolve(version)
         if (!src.hasAny) {
             log.warn("Skipping {} (no resolvable mappings)", version)
@@ -147,6 +157,7 @@ class IngestPipeline(private val config: AppConfig) {
                     it[hasYarn] = src.hasYarn
                     it[hasMojmap] = src.hasMojmap
                     it[hasIntermediary] = src.hasIntermediaryNames
+                    it[variantOf] = variantBase
                     it[classCount] = classes
                     it[methodCount] = methods
                     it[fieldCount] = fields
@@ -163,6 +174,7 @@ class IngestPipeline(private val config: AppConfig) {
                     it[hasYarn] = src.hasYarn
                     it[hasMojmap] = src.hasMojmap
                     it[hasIntermediary] = src.hasIntermediaryNames
+                    it[variantOf] = variantBase
                     it[classCount] = classes
                     it[methodCount] = methods
                     it[fieldCount] = fields

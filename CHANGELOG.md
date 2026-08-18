@@ -3,6 +3,67 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [10.0]
+
+### Fixed
+- The index held no overriding method of an unobfuscated release. Intermediary names an override
+  only in the class that first declares it, and the name propagates down the hierarchy instead of
+  being written again for each subclass. An obfuscated release hides that, because its mojmap tiny
+  lists every declared member; an unobfuscated release has no mojmap tiny, so a mapping-only parse
+  gave it no overrides at all. The indexer now reads the version's own jar and adds the members the
+  mappings leave out.
+
+  The gap was a third of the methods. One build indexed both ways: `1.21.11` held 89,606 methods
+  against 56,986 for `1.21.11_unobfuscated`, and `/diff` between the two reported 32,355 methods
+  removed with nothing having changed. Fields were within 1%, because a field is never overridden.
+  It reached every DB-backed endpoint, not only `/history`: `/diff` from 1.21.11 to 26.1 reported 66
+  members removed from `ServerLevel`, of which 49 of the 62 distinct names are still declared in
+  26.1 — `getWorldBorder`, `addFreshEntity` and `neighborChanged` among them.
+
+  **Re-index the affected versions.** An existing index keeps the gap until they are rebuilt.
+
+### Added
+- `POST /api/v1/translate/{version}` translates a batch of keys between namespaces, descriptors
+  included. It takes the same keys as `/exists` and returns each one whole in the target namespace,
+  so a result posts to `/exists/{version}` unchanged. `/search` and `/diff` report intermediary
+  descriptors and `/exists` matches named ones, and closing that gap by hand was one type at a time.
+- `GET /api/v1/references/{version}` accepts a repeatable `q` (up to 25) and a `to` version, which
+  extends the walk to a range (up to 25 versions). It answered only the first `q` before, silently.
+  This is the batch form the `@At(target = ...)` half of a mixin needs: a signature can survive a
+  version while a call inside its body moves elsewhere.
+- `POST /api/v1/exists/{version}` reports the nearest declaration for a key that missed, as
+  `closest` and `reason` (`inherited` when a supertype declares the same signature, `descriptor`
+  when the owner declares that name under another one). A bare `false` read the same whether the
+  descriptor moved, the member moved to a supertype, or the name is gone.
+- `GET /api/v1/history` takes `releasesOnly` to walk releases alone, and `includeVariants`.
+
+### Changed
+- Variants (`<id>_unobfuscated`, a second indexing of a build already listed under its own id) are
+  left out of `/versions`, of the `/history` walk and of the default-version choice.
+  `includeVariants=true` brings them back. A variant sits next to the build it re-indexes and
+  carries no yarn or intermediary names, so every walk over the versions reported the pair as a
+  change: `Level:getRespawnData` from 1.21.9 to 26.1 came back as 21 spans, all of them `present`.
+  A variant still answers `/versions/{id}` and every other endpoint by name.
+
+  This adds the column `versions.variant_of`. An index built before it makes `serve` fail with
+  `500 no such column: versions.variant_of`; re-running `index` adds it.
+- `SearchResultEntry.descriptor` and `DiffEntryItem.descriptor` are now `intermediaryDescriptor`.
+  Both always held the intermediary descriptor, whatever `namespace` asked for, and the old name
+  invited pasting the value into `/exists`, which matches the descriptor of its own namespace.
+- `GET /api/v1/references/{version}` returns `{namespace, results[]}` with one group per
+  (version, target), instead of one flat `{version, namespace, query, references[]}`.
+- `ExistsResult.renamedTo` is gone. It was reserved and always null; `closest` answers the question
+  it was a placeholder for.
+- `VersionInfo` carries `variantOf`.
+
+### Documentation
+- `/history`: `present: false` with a non-null `owner` means the index holds no member of that name
+  under the class, which is not the same as the member being gone from the game. `/history` reads
+  the mapping index and `/exists` reads the jar the mod runs against; when they disagree, the jar is
+  right. The old wording ("the member is gone") sent readers to `/source` to find out otherwise.
+- The skill document carries one response example per endpoint. It had none, and the shape of a
+  nested answer (`/translate` puts the result in `output.name`) had to be guessed at or dumped.
+
 ## [9.9.1]
 
 ### Fixed
