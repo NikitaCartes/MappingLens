@@ -91,6 +91,21 @@ sealed class MemberTable(name: String, val kind: String) : IntIdTable(name) {
     }
 }
 
+/**
+ * A member's identity across versions in SQL, spelled as the diff keys on it: the stable name (the
+ * intermediary name, or the display name where the tiny files leave that empty) and the stable
+ * descriptor. [qualifier] is a table alias and its dot, or empty for a bare column list.
+ *
+ * SQLite reads an index on expressions only when the query repeats the expression as written, so
+ * `${table}_stable_ident` in DatabaseFactory and the rename query in DiffService both build the
+ * two expressions here. Apart they still answer the same, at 726ms instead of 33ms.
+ */
+fun stableMemberName(qualifier: String = ""): String =
+    "COALESCE(${qualifier}intermediary_name, ${qualifier}mojmap_name, ${qualifier}obf_name)"
+
+fun stableMemberDesc(qualifier: String = ""): String =
+    "IFNULL(${qualifier}stable_desc, ${qualifier}obf_desc)"
+
 object MethodTable : MemberTable("methods", "method")
 
 object FieldTable : MemberTable("fields", "field")

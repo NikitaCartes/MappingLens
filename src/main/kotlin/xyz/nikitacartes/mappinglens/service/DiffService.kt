@@ -963,7 +963,14 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         val keyCol = stableIdentityColumn(fromId, toId) ?: return TypedDiff(emptyList(), emptyList(), emptyList())
         // `stable_desc` is the same descriptor in both versions; `obf_desc` covers an index built
         // before that column existed, where it reads as it did before — wrong, but not empty.
-        fun keyDesc(m: String) = "IFNULL($m.stable_desc, $m.obf_desc)"
+        fun keyDesc(m: String) = stableMemberDesc("$m.")
+        // The tiny files name a method only in the class that first declares it, so `keyCol` reads
+        // NULL on every override and the row fell to the per-row sentinel below: added and removed at
+        // once, on every pair of versions. The mojmap name, then the official one, stand in — both
+        // read the same in both versions for a member the intermediary does not name. Classes keep
+        // plain [keyCol]; only members fall back.
+        fun memberKey(m: String) =
+            if (keyCol == "mojmap_name") "$m.mojmap_name" else stableMemberName("$m.")
         val addedCandidateSql = stableKeyCondition("c2", keyCol, candidateStableKeys)
         val removedCandidateSql = stableKeyCondition("c1", keyCol, candidateStableKeys)
         val renamedCandidateSql = stableKeyCondition("c1", keyCol, candidateStableKeys)
@@ -973,12 +980,12 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         // many-to-many cartesian and took minutes. A NULL in any key part means "no stable identity",
         // so that row can never match — `keyOrUnique` gives it a per-row sentinel (always added/removed)
         // and `keyNotNull` drops it from the lookup set, exactly replicating SQL join NULL semantics.
-        fun key(c: String, m: String) = "$c.$keyCol||char(1)||$m.$keyCol||char(1)||${keyDesc(m)}"
+        fun key(c: String, m: String) = "$c.$keyCol||char(1)||${memberKey(m)}||char(1)||${keyDesc(m)}"
         fun keyOrUnique(c: String, m: String) =
-            "CASE WHEN $m.$keyCol IS NULL OR $c.$keyCol IS NULL OR ${keyDesc(m)} IS NULL " +
+            "CASE WHEN ${memberKey(m)} IS NULL OR $c.$keyCol IS NULL OR ${keyDesc(m)} IS NULL " +
                 "THEN char(2)||$m.id ELSE ${key(c, m)} END"
         fun keyNotNull(c: String, m: String) =
-            "$m.$keyCol IS NOT NULL AND $c.$keyCol IS NOT NULL AND ${keyDesc(m)} IS NOT NULL"
+            "${memberKey(m)} IS NOT NULL AND $c.$keyCol IS NOT NULL AND ${keyDesc(m)} IS NOT NULL"
         val conn = org.jetbrains.exposed.sql.transactions.TransactionManager.current().connection
             .connection as java.sql.Connection
         conn.createStatement().use { st ->
@@ -1028,20 +1035,30 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
             // A rename is "same stable key, different display name". When the stable key IS the
             // display name (unobfuscated versions, where keyCol == nameCol) a rename is undetectable
             // by definition, so skip the query entirely instead of scanning to a guaranteed 0 rows.
+            // The class pair drives the join, and `CROSS JOIN` pins that order: SQLite otherwise
+            // starts from the member and pairs it by name across the whole version, which reads
+            // every member row of both versions and took 50s where this takes 0.4s. The members
+            // carry no `version_id` condition on purpose — a member belongs to the version of its
+            // class, so the condition is redundant, and adding it moves the member lookup off
+            // `${table}_class_id` and onto `${table}_version_id`, back to the 50s plan.
+            // A rename needs a name on both sides. Comparing them as `IFNULL(name,'')` instead read
+            // a constructor as renamed on the pair of versions where yarn started naming it, from
+            // nothing to `<init>`, 98 times on one pair.
             if (keyCol != nameCol) st.executeQuery(
                 """
                 SELECT m1.intermediary_name,
                        m1.$nameCol AS old_name,
                        m2.$nameCol AS new_name,
                        c2.$nameCol AS owner
-                FROM $table m1
-                JOIN classes c1 ON c1.id = m1.class_id
-                JOIN classes c2 ON c2.$keyCol = c1.$keyCol AND c2.version_id = $toId
-                JOIN $table m2 ON m2.class_id = c2.id AND m2.version_id = $toId
-                    AND m2.$keyCol = m1.$keyCol AND ${keyDesc("m2")} = ${keyDesc("m1")}
-                WHERE m1.version_id = $fromId
-                  AND m1.$keyCol IS NOT NULL
-                  AND IFNULL(m1.$nameCol,'') != IFNULL(m2.$nameCol,'')
+                FROM classes c1
+                CROSS JOIN classes c2 ON c2.$keyCol = c1.$keyCol AND c2.version_id = $toId
+                CROSS JOIN $table m1 ON m1.class_id = c1.id
+                CROSS JOIN $table m2 ON m2.class_id = c2.id
+                    AND ${memberKey("m2")} = ${memberKey("m1")} AND ${keyDesc("m2")} = ${keyDesc("m1")}
+                WHERE c1.version_id = $fromId
+                  AND c1.$keyCol IS NOT NULL
+                  AND m1.$nameCol IS NOT NULL AND m2.$nameCol IS NOT NULL
+                  AND m1.$nameCol != m2.$nameCol
                   $renamedPackageSql $renamedCandidateSql
                 """.trimIndent()
             ).use { rs ->

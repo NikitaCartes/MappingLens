@@ -23,6 +23,7 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import java.nio.file.Files
+import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -119,6 +120,41 @@ class RealDiffKeyTest {
                 "$namespace: package $pkg leaked entries from another package",
             )
         }
+    }
+
+    /**
+     * `class=` answers from Kotlin and `package=` from SQL, so the two build the member key
+     * separately. The SQL side keyed on `intermediary_name` alone, which reads NULL on an override,
+     * and every such member fell to a per-row sentinel: added and removed at once, 1529 of them in
+     * one package. Both paths must report the same members for the same class.
+     */
+    @Test
+    fun `the class path and the package path agree on one class`() = testApplication {
+        application { installRoutes() }
+        val client = jsonClient()
+
+        suspend fun diff(vararg extra: Pair<String, String>) = client.get("/api/v1/diff") {
+            url {
+                parameters.append("from", from)
+                parameters.append("to", to)
+                parameters.append("namespace", "mojmap")
+                parameters.append("type", "method")
+                parameters.append("limit", "5000")
+                extra.forEach { (k, v) -> parameters.append(k, v) }
+            }
+        }.body<DiffResponse>()
+
+        val byClass = diff("class" to SAMPLE_MOJMAP_CLASS).changes
+        val byPackage = diff("package" to SAMPLE_MOJMAP_CLASS.substringBeforeLast('/')).changes
+        fun ofClass(items: List<DiffEntryItem>) =
+            items.filter { it.owner == SAMPLE_MOJMAP_CLASS }.mapNotNull { it.name }.toSet()
+
+        assertEquals(ofClass(byClass.added), ofClass(byPackage.added), "added differ between the two paths")
+        assertEquals(ofClass(byClass.removed), ofClass(byPackage.removed), "removed differ between the two paths")
+
+        fun renames(items: List<DiffEntryItem>) =
+            items.filter { it.owner == SAMPLE_MOJMAP_CLASS }.map { it.oldName to it.newName }.toSet()
+        assertEquals(renames(byClass.renamed), renames(byPackage.renamed), "renamed differ between the two paths")
     }
 
     private companion object {

@@ -3,6 +3,21 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [11.1]
+
+### Fixed
+- `/api/v1/diff` still reported the same member as added and removed at once everywhere but `class=`.
+  A package diff of 1.21.10 to 1.21.11 dropped from 4627 additions to 323.
+- `/api/v1/diff` read a constructor as renamed from nothing on the version where yarn started naming it.
+
+### Changed
+- `/api/v1/diff` pairs members inside a class pair to find a rename. A whole-index diff of 1.21.11 to
+  26.1 went from 66s to 0.5s, and the answer is unchanged.
+- The index carries `methods_stable_ident` and `fields_stable_ident`, one index for each member table
+  on the identity a diff keys on. A whole-index diff of 1.21.11 to 26.1 went from 1.6s to 0.8s, and
+  the answer is unchanged. The two add 2.9 GB to a 34 GB index. One indexer run builds them over an
+  index that is already there, so no re-index is needed.
+
 ## [11.0]
 
 ### Fixed

@@ -89,6 +89,23 @@ object DatabaseFactory {
                 );
                 """.trimIndent()
             )
+
+            // The cross-version identity of a member, spelled exactly as the diff spells it: the
+            // stable name (the intermediary name, or the display name where the tiny files leave it
+            // empty) and the stable descriptor. Without these two the rename query pairs every
+            // member of a class against every member of its counterpart, which cost 726ms of a
+            // 1.6s diff on one pair of versions and costs 33ms with them.
+            // SQLite reads an index on expressions only when the query repeats the expression as
+            // written, so both stay in step with `memberKey` and `keyDesc` in DiffService.
+            listOf("methods", "fields").forEach { table ->
+                exec(
+                    """
+                    CREATE INDEX IF NOT EXISTS ${table}_stable_ident ON $table(
+                        class_id, ${stableMemberName()}, ${stableMemberDesc()}
+                    );
+                    """.trimIndent()
+                )
+            }
         }
         return db
     }
