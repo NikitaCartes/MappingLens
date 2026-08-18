@@ -1,16 +1,35 @@
 import { useState } from "react";
 
-/** A click-to-copy inline value. Falls back silently when the clipboard API is unavailable. */
+/** navigator.clipboard needs a secure context (https, or localhost); a plain-http LAN address does not
+ * qualify, so fall back to the old execCommand path, which has no such restriction. */
+async function copyToClipboard(text: string): Promise<boolean> {
+  if (navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // fall through to the legacy path below
+    }
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const ok = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  return ok;
+}
+
+/** A click-to-copy inline value. */
 export function Copyable({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
+    if (await copyToClipboard(text)) {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 900);
-    } catch {
-      // clipboard unavailable (e.g. insecure context) — ignore
     }
   };
 
