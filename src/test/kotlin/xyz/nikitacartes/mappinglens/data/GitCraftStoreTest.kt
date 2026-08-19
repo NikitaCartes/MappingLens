@@ -132,6 +132,26 @@ class GitCraftStoreTest {
     }
 
     @Test
+    fun `a namespace left out of indexing mappings resolves as absent`(@TempDir tmp: Path) {
+        val dir = Files.createDirectories(tmp.resolve("artifact-store/mappings"))
+        for (name in listOf("1.21-yarn-build.12.tiny", "1.21-client-moj.tiny")) {
+            Files.writeString(dir.resolve(name), "")
+        }
+        val store = tmp.resolve("artifact-store")
+        val noIntermediary = tmp.resolve("no-intermediary")
+
+        val mojmapOnly = GitCraftStore(store, noIntermediary, mappings = setOf("mojmap"))
+        assertNull(mojmapOnly.yarnTiny("1.21"), "yarn is not read")
+        assertFalse(mojmapOnly.resolve("1.21").hasYarn)
+        assertTrue(mojmapOnly.resolve("1.21").hasMojmap)
+
+        val yarnOnly = GitCraftStore(store, noIntermediary, mappings = setOf("yarn"))
+        assertEquals(emptyList(), yarnOnly.mojmapTinies("1.21"), "mojmap is not read")
+        assertFalse(yarnOnly.resolve("1.21").hasMojmap)
+        assertTrue(yarnOnly.resolve("1.21").hasYarn)
+    }
+
+    @Test
     fun `the intermediary repo underscore spelling resolves as its canonical id`(@TempDir tmp: Path) {
         // FabricMC/intermediary holds mappings/1_16_combat-0.tiny for the version the launcher calls
         // 1.16_combat-0. Both spellings once reached the index: the real version plus an

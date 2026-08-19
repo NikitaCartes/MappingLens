@@ -124,8 +124,30 @@ data class AppConfig(
     /** Version ids the `index` command restricts itself to; empty means every version in the store. */
     val initialVersions: List<String>,
     val search: SearchConfig,
+    /**
+     * The named mapping namespaces the `index` command reads: `yarn`, `mojmap` or both. A namespace
+     * left out here is not read from the store, not scanned for source files and gets no reference
+     * index, so its columns stay null and `/versions` reports it as absent. Intermediary is not part
+     * of the choice: it is the join key the other two are matched through.
+     */
+    val mappings: Set<String> = ALL_MAPPINGS,
+    /**
+     * Restricts the `index` command to Mojang's stable releases. Everything Mojang types as a
+     * snapshot is left out with it (pre-releases, release candidates, April Fools versions, combat
+     * snapshots), as are the `_unobfuscated` variants, which duplicate a build already indexed.
+     * The GitCraft counterpart is `--only-stable`.
+     */
+    val onlyReleases: Boolean = false,
 ) {
+    init {
+        require(mappings.isNotEmpty() && mappings.all { it in ALL_MAPPINGS }) {
+            "indexing.mappings must name yarn, mojmap or both, but was: $mappings"
+        }
+    }
+
     companion object {
+        val ALL_MAPPINGS = setOf("yarn", "mojmap")
+
         fun load(config: ApplicationConfig): AppConfig {
             val ml = config.config("mappinglens")
             return AppConfig(
@@ -139,6 +161,10 @@ data class AppConfig(
                         ml.propertyOrNull("sources.unobfuscated-intermediary-mappings")?.getString().orEmpty(),
                 ),
                 initialVersions = ml.propertyOrNull("indexing.initial-versions")?.getList() ?: emptyList(),
+                mappings = ml.propertyOrNull("indexing.mappings")?.getString()
+                    ?.split(',', ' ')?.map { it.trim().lowercase() }?.filter { it.isNotEmpty() }?.toSet()
+                    ?.takeIf { it.isNotEmpty() } ?: ALL_MAPPINGS,
+                onlyReleases = ml.propertyOrNull("indexing.only-releases")?.getString().toBoolean(),
                 search = SearchConfig(
                     maxResults = ml.property("search.max-results").getString().toInt(),
                     defaultResults = ml.property("search.default-results").getString().toInt(),

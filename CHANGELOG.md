@@ -3,6 +3,28 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [12.1]
+
+### Added
+- `indexing.mappings` (env `MAPPINGS`) names the mappings the `index` command reads: `yarn`,
+  `mojmap` or both. A mapping left out is not read from the store, is not scanned for source files
+  and gets no reference index, and `/versions` reports that namespace as absent. Intermediary is not
+  part of the choice: it is the join key the other two are matched through. In Docker the same
+  variable selects the GitCraft presets to build, which halves the decompile and the remap work. On
+  a store covering 1.14 to 26.2, yarn and mojmap hold 3.1 GB and 2.9 GB of decompiled sources and
+  8.1 GB and 7.9 GB of remapped jars.
+- `indexing.only-releases` (env `ONLY_RELEASES`) restricts the `index` command to the versions
+  Mojang types as a release. Everything Mojang types as a snapshot goes with the snapshots
+  (pre-releases, release candidates, April Fools versions, combat snapshots), as do the
+  `_unobfuscated` variants, each of which duplicates a build indexed under its own id. On the same
+  store that keeps 47 versions of 526 and 348,853 classes of 3,859,149. In Docker the variable adds
+  `--only-stable` to the GitCraft runs and narrows the manifest check to the release id.
+
+### Changed
+- The container passes `-refs=all` to every `index` run, so the reverse-reference index now covers
+  every indexed version rather than the releases alone. The `REFS` variable takes `all`, `releases`
+  or `none`. The default of the `index` command itself stays `releases`.
+
 ## [12]
 
 ### Added

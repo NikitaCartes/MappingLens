@@ -26,6 +26,8 @@ class RuntimeBootstrapTest {
         assertEquals(8080, startup.port)
         assertEquals("data/mappinglens.db", startup.appConfig.databasePath)
         assertEquals(emptyList(), startup.appConfig.initialVersions)
+        assertEquals(setOf("yarn", "mojmap"), startup.appConfig.mappings)
+        assertFalse(startup.appConfig.onlyReleases)
     }
 
     @Test
@@ -45,6 +47,10 @@ class RuntimeBootstrapTest {
                 database {
                     path = "custom/mappinglens.db"
                 }
+                indexing {
+                    mappings = "mojmap"
+                    only-releases = true
+                }
             }
             """.trimIndent(),
         )
@@ -56,6 +62,8 @@ class RuntimeBootstrapTest {
         assertEquals(8181, startup.port)
         assertEquals("custom/mappinglens.db", startup.appConfig.databasePath)
         assertEquals("data/artifact-store", startup.appConfig.sources.artifactStore)
+        assertEquals(setOf("mojmap"), startup.appConfig.mappings)
+        assertTrue(startup.appConfig.onlyReleases)
     }
 
     @Test

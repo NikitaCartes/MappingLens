@@ -10,6 +10,17 @@ services:
       - "8080:8080"
     user: "1000:1000"
     environment:
+      # The mappings to build and to index: "mojmap", "yarn" or both. Dropping one halves the
+      # decompile and remap work, and leaves that namespace out of the index.
+      MAPPINGS: mojmap yarn
+      # true builds and indexes Mojang's stable releases alone: no snapshots, pre-releases, release
+      # candidates, April Fools versions, combat snapshots or _unobfuscated variants. On the store
+      # measured from 1.14 to 26.2 that is 47 versions of 526, and about a tenth of the index rows.
+      ONLY_RELEASES: "false"
+      # Scope of the prebuilt reverse-reference index: "all", "releases" or "none". Every version
+      # costs 10.3 GB and 11 minutes on a full store, the releases alone 1.0 GB and 57 seconds. An
+      # uncovered version still answers /references, by scanning its named jar: 770ms against 27ms.
+      REFS: all
       UPDATE_INTERVAL_SECONDS: 3600
       # GitCraft's forked run JVM does the decompile and remap work.
       GITCRAFT_JAVA_OPTS: -Xmx16g

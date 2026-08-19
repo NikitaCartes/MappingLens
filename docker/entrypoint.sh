@@ -28,6 +28,43 @@ fingerprint=
 
 log() { echo "[mappinglens] $*"; }
 
+# MAPPINGS names the mappings to build and to index: "mojmap", "yarn" or both, separated by a space
+# or a comma. ONLY_RELEASES builds and indexes Mojang's stable releases alone. The indexer reads the
+# same two variables through its HOCON config, so the two halves of a cycle cannot disagree.
+MAPPINGS=$(printf '%s' "${MAPPINGS:-mojmap yarn}" | tr ',' ' ')
+ONLY_RELEASES=${ONLY_RELEASES:-false}
+has_mapping() { case " $MAPPINGS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+# The preset that builds a version the store does not hold yet. Mojmap is the one to run when it is
+# enabled: it needs neither intermediary nor yarn, so a new version reaches the store the day it is
+# published. With mojmap off, yarn takes that job and the store waits for the yarn build instead.
+if has_mapping mojmap; then
+	PRIMARY_PRESET=mojmap
+elif has_mapping yarn; then
+	PRIMARY_PRESET=yarn
+else
+	log "MAPPINGS must name mojmap, yarn or both, but is '$MAPPINGS'"
+	exit 1
+fi
+
+# REFS is the scope of the prebuilt reverse-reference index: "all", "releases" or "none". The
+# container builds every version, where the index command on its own builds the releases. A version
+# the file does not cover is answered by a scan of its named jar, which costs 0.4s to 0.8s.
+REFS=${REFS:-all}
+case "$REFS" in
+	all | releases | none) ;;
+	*) log "REFS must be all, releases or none, but is '$REFS'"; exit 1 ;;
+esac
+
+if [ "$ONLY_RELEASES" = "true" ]; then
+	GITCRAFT_VERSION_FILTER=--only-stable
+	# A new snapshot must not write the marker of a build that produces nothing.
+	LATEST_FILTER=.latest.release
+else
+	GITCRAFT_VERSION_FILTER=
+	LATEST_FILTER=.latest
+fi
+
 # Every child runs in the background so that a GitCraft run lasting hours does not delay SIGTERM.
 run() { "$@" & child=$!; wait "$child"; }
 
@@ -86,17 +123,17 @@ run_gitcraft() {
 	# The JVM reads JAVA_TOOL_OPTIONS before the command line, so the command line wins and the
 	# options given here are lost. The JVM reads _JAVA_OPTIONS after the command line, so the
 	# options given here win.
-	run env _JAVA_OPTIONS="$GITCRAFT_JAVA_OPTS" ./gradlew --no-daemon run --args="--preset=/opt/presets/$preset.args $*"
+	run env _JAVA_OPTIONS="$GITCRAFT_JAVA_OPTS" ./gradlew --no-daemon run --args="--preset=/opt/presets/$preset.args $GITCRAFT_VERSION_FILTER $*"
 }
 
 # The indexer skips versions that are already in the database, so a plain run picks up exactly the
 # versions the database does not hold yet, and an empty database means every version in the store.
-reindex() { run java $INDEX_JAVA_OPTS -jar "$JAR" index -config="$CONF"; }
+reindex() { run java $INDEX_JAVA_OPTS -jar "$JAR" index -config="$CONF" -refs="$REFS"; }
 
 # A version already in the database is not re-read by a plain run, so a rebuilt version needs
 # -force, and -versions restricts the rebuild to the versions given.
 reindex_versions() {
-	run java $INDEX_JAVA_OPTS -jar "$JAR" index -config="$CONF" -force "-versions=$(printf '%s' "$1" | paste -sd, -)"
+	run java $INDEX_JAVA_OPTS -jar "$JAR" index -config="$CONF" -refs="$REFS" -force "-versions=$(printf '%s' "$1" | paste -sd, -)"
 }
 
 # The mapping file names of the artifact store, which is what the indexer reads for a version. A
@@ -147,8 +184,8 @@ sync_index() {
 	cp /tmp/store.now "$STATE/store.files"
 }
 
-# Latest release/snapshot ids, the same manifest GitCraft reads.
-mc_latest() { curl -fsSL "$MC_MANIFEST" | jq -c .latest; }
+# Latest release/snapshot ids, the same manifest GitCraft reads. See LATEST_FILTER.
+mc_latest() { curl -fsSL "$MC_MANIFEST" | jq -c "$LATEST_FILTER"; }
 
 # Published yarn as "<version><tab><latest build>", from both publishers: Fabric up to 1.21.11,
 # RelativityMC's modern yarn after it. Modern yarn has no meta service, and its build number is the
@@ -181,18 +218,20 @@ check_minecraft() {
 
 	log "new Minecraft version: $latest"
 	# The run is not restricted to the new version: GitCraft builds every version the store lacks,
-	# which is also what fills an empty store. Mojmap needs no intermediary and no yarn, so a new
-	# version reaches the store in this cycle, and sync_index indexes it in this cycle too.
+	# which is also what fills an empty store. The preset is the one PRIMARY_PRESET names: mojmap
+	# needs neither intermediary nor yarn, so a new version reaches the store in this cycle, and
+	# sync_index indexes it in this cycle too.
 	# GitCraft stops at the first version it cannot build, and the marker stays unwritten then, which
 	# is what makes the next cycle build again. What did land is indexed either way.
-	if run_gitcraft mojmap; then
+	if run_gitcraft "$PRIMARY_PRESET"; then
 		printf '%s\n' "$latest" > "$STATE/mc.latest"
 	else
-		log "mojmap build incomplete, retrying next cycle"
+		log "$PRIMARY_PRESET build incomplete, retrying next cycle"
 	fi
 }
 
 check_yarn() {
+	has_mapping yarn || return
 	yarn_upstream > /tmp/yarn.upstream
 	if [ ! -s /tmp/yarn.upstream ]; then
 		log "yarn metadata unavailable"
@@ -264,7 +303,7 @@ mkdir -p "$STATE" /data/config /data/index /data/repos "$MAPPINGLENS_ARTIFACT_ST
 # every id that the cache alone carries one for (18w43b, 25w46a, 3D Shareware v1.34), and those ids
 # sort as if they were the newest version. GitCraft itself would rebuild the file over the network.
 cp -n /opt/gitcraft/semver-cache-mojang-launcher.json "$MAPPINGLENS_ARTIFACT_STORE/" 2>/dev/null
-log "starting, update interval ${UPDATE_INTERVAL_SECONDS}s"
+log "starting, mappings '$MAPPINGS', only-releases $ONLY_RELEASES, refs $REFS, update interval ${UPDATE_INTERVAL_SECONDS}s"
 serve_start
 while true; do
 	cycle

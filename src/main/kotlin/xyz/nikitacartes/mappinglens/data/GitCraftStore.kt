@@ -1,5 +1,6 @@
 package xyz.nikitacartes.mappinglens.data
 
+import xyz.nikitacartes.mappinglens.config.AppConfig
 import xyz.nikitacartes.mappinglens.ingestion.CorrespondenceResolver
 import xyz.nikitacartes.mappinglens.ingestion.MojmapMerge
 import xyz.nikitacartes.mappinglens.ingestion.TinyV2Parser
@@ -37,6 +38,11 @@ class GitCraftStore(
     /** Intermediary for the unobfuscated releases; see `SourcesConfig.unobfuscatedIntermediaryMappings`. */
     val unobfuscatedIntermediaryDir: Path? = null,
     val catalog: VersionCatalog = VersionCatalog.load(artifactStore),
+    /**
+     * The named namespaces to read; see `AppConfig.mappings`. A namespace left out is resolved as if
+     * the store held no file for it, which is what a store built without it looks like anyway.
+     */
+    val mappings: Set<String> = AppConfig.ALL_MAPPINGS,
 ) {
     private val log = LoggerFactory.getLogger(GitCraftStore::class.java)
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -130,6 +136,7 @@ class GitCraftStore(
 
     /** Yarn merged mappings (tiny v2, official->intermediary->named), highest build number. */
     fun yarnTiny(version: String): Path? {
+        if ("yarn" !in mappings) return null
         val prefix = "$version-yarn-build."
         return mappingNames.asSequence()
             .filter { it.startsWith(prefix) && it.endsWith(".tiny") && !it.contains("-constants") && !it.contains("-unpick") }
@@ -144,7 +151,8 @@ class GitCraftStore(
      * files, and such a store must stay readable.
      */
     fun mojmapTinies(version: String): List<Path> =
-        listOf("$version-moj.tiny", "$version-client-moj.tiny", "$version-server-moj.tiny")
+        if ("mojmap" !in mappings) emptyList()
+        else listOf("$version-moj.tiny", "$version-client-moj.tiny", "$version-server-moj.tiny")
             .filter { it in mappingNames }
             .map { mappingsDir.resolve(it) }
 

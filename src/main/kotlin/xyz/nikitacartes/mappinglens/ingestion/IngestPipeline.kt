@@ -29,6 +29,7 @@ class IngestPipeline(private val config: AppConfig) {
         intermediaryMappingsDir = Paths.get(config.sources.intermediaryMappings),
         unobfuscatedIntermediaryDir = config.sources.unobfuscatedIntermediaryMappings
             .takeIf { it.isNotBlank() }?.let { Paths.get(it) },
+        mappings = config.mappings,
     )
 
     /**
@@ -43,6 +44,12 @@ class IngestPipeline(private val config: AppConfig) {
         filterList?.minus(allSorted.toSet())?.takeIf { it.isNotEmpty() }
             ?.let { log.warn("Requested versions are not in the store: {}", it.joinToString()) }
         var targets = allSorted.filter { filterList == null || it in filterList }
+
+        if (config.onlyReleases) {
+            val before = targets.size
+            targets = targets.filter(::isStableRelease)
+            if (before != targets.size) log.info("Skipping {} versions that are not stable releases", before - targets.size)
+        }
 
         if (!force) {
             // Resume: skip versions already indexed (each version row is committed atomically with its
@@ -94,7 +101,7 @@ class IngestPipeline(private val config: AppConfig) {
             val built = ReferenceIndexStore.built(conn)
             val todo = versions
                 .filter { scope == "all" || it.second == "release" }
-                .flatMap { (version, _) -> listOf("mojmap", "yarn").map { version to it } }
+                .flatMap { (version, _) -> config.mappings.map { version to it } }
                 .filter { it !in built && config.sources.remappedJar(it.first, it.second) != null }
             if (todo.isEmpty()) return
             log.info("Building the reference index of {} version/namespace pairs", todo.size)
@@ -228,6 +235,18 @@ class IngestPipeline(private val config: AppConfig) {
         }
         if (changed > 0) log.info("Refreshed the sort index of {} versions", changed)
     }
+
+    /**
+     * True for the versions `indexing.only-releases` keeps. Mojang's own release type decides, so
+     * everything it types as a snapshot goes with the snapshots: pre-releases, release candidates,
+     * April Fools versions and the combat snapshots. A `_unobfuscated` variant duplicates a build
+     * that is indexed under its own id, and it inherits that build's release type, so the suffix
+     * drops it rather than the type. This is what GitCraft's `--only-stable` selects, apart from the
+     * `_unobfuscated` variants, which GitCraft types as `unobfuscated` rather than as a snapshot.
+     */
+    internal fun isStableRelease(version: String): Boolean =
+        !version.endsWith("_unobfuscated") &&
+            (store.catalog.get(version)?.releaseType ?: classifyReleaseType(version)) == "release"
 
     /**
      * The version [version] re-indexes, or null when it stands on its own. GitCraft derives
@@ -419,7 +438,7 @@ class IngestPipeline(private val config: AppConfig) {
         val sourcePairs = listOf(
             "yarn" to config.sources.yarnRepo,
             "mojmap" to config.sources.mojmapRepo,
-        )
+        ).filter { (mappingType, _) -> mappingType in config.mappings }
         for ((mappingType, root) in sourcePairs) {
             val rootPath = Paths.get(root)
             val scanner = SourceScanner(rootPath)

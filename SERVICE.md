@@ -87,6 +87,15 @@ not exist. Every path is overridable through an environment variable.
 | `mappinglens.search.max-results`                         | `200`                 | n/a                                     | Upper bound for the search `limit`                                                   |
 | `mappinglens.search.default-results`                     | `50`                  | n/a                                     | Default search `limit`                                                               |
 | `mappinglens.indexing.initial-versions`                  | `[]` (all)            | n/a                                     | Versions the `index` command builds; **ignored by `serve`**                          |
+| `mappinglens.indexing.mappings`                          | `"yarn,mojmap"`       | `MAPPINGS`                              | Named mappings the `index` command reads: `yarn`, `mojmap` or both                   |
+| `mappinglens.indexing.only-releases`                     | `false`               | `ONLY_RELEASES`                         | Index the stable releases alone; see the note below the table                        |
+
+`indexing.only-releases` keeps the versions Mojang types as a release. Everything Mojang types
+as a snapshot goes with the snapshots: pre-releases, release candidates, April Fools versions
+and the combat snapshots. The `_unobfuscated` variants go with them, because each duplicates a
+build that is indexed under its own id. `indexing.mappings` leaves a named mapping out of the
+mapping scan, out of the source-file scan and out of the reference index, and `/versions` then
+reports that namespace as absent for every version.
 
 **Ktor plugins:** ContentNegotiation (kotlinx JSON: `prettyPrint`, `encodeDefaults`,
 `ignoreUnknownKeys`), CallLogging, CORS (`anyHost`, GET and POST methods, `Content-Type`
@@ -165,12 +174,15 @@ In the API image: the MappingLens fat jar (built in its own layer on JDK 21), Gi
 `docker/entrypoint.sh` cycle, every `UPDATE_INTERVAL_SECONDS`:
 
 1. Updates the four checkouts and computes one fingerprint over their refs (`git ls-remote`).
-2. A new version in the Mojang manifest triggers the `mojmap` preset. The run is not limited
-   to the new version: GitCraft builds everything missing from the store, which is also what
-   fills an empty store. Mojmap needs neither intermediary nor yarn, so the version reaches
-   the search index in the same cycle.
+2. A new version in the Mojang manifest triggers the first preset `MAPPINGS` names, which is
+   `mojmap` unless mojmap is left out. The run is not limited to the new version: GitCraft
+   builds everything missing from the store, which is also what fills an empty store. Mojmap
+   needs neither intermediary nor yarn, so the version reaches the search index in the same
+   cycle. With `ONLY_RELEASES` the run carries `--only-stable`, and only the release id of the
+   manifest is compared, so a new snapshot starts no cycle.
 3. A published yarn build newer than the one in the artifact store, or no yarn on disk at
-   all, triggers the `yarn` preset, with `--refresh-only-version` when needed.
+   all, triggers the `yarn` preset, with `--refresh-only-version` when needed. `MAPPINGS`
+   without yarn skips this step.
 4. Indexing. Steps 2 and 3 only build; this step is the only one that indexes, and it checks
    the store, not a build's exit code. The `artifact-store/mappings` listing is compared
    against the snapshot `state/store.files`: first `index -force -versions=<...>` for
@@ -186,14 +198,17 @@ are still waiting on intermediary or yarn to be published.
 The presets `docker/presets/mojmap.args` and `docker/presets/yarn.args` hold one argument per
 line; lines starting with `#` are ignored. GitCraft receives them as `--preset=<file>`.
 
-| Variable                  | Default             | Purpose                                                 |
-|---------------------------|---------------------|---------------------------------------------------------|
-| `UPDATE_INTERVAL_SECONDS` | `3600`              | Pause between checks                                    |
-| `PORT`                    | `8080`              | `serve` port                                            |
-| `MAPPINGLENS_*`           | paths under `/data` | Same variables as outside the container                 |
-| `GITCRAFT_JAVA_OPTS`      | none                | JVM options for the GitCraft run, for example `-Xmx16g` |
-| `INDEX_JAVA_OPTS`         | none                | JVM options for `index`, for example `-Xmx4g`           |
-| `SERVE_JAVA_OPTS`         | none                | JVM options for `serve`, for example `-Xmx4g`           |
+| Variable                  | Default             | Purpose                                                                 |
+|---------------------------|---------------------|-------------------------------------------------------------------------|
+| `UPDATE_INTERVAL_SECONDS` | `3600`              | Pause between checks                                                    |
+| `MAPPINGS`                | `mojmap yarn`       | Mappings to build and to index; the indexer reads the same variable     |
+| `ONLY_RELEASES`           | `false`             | Builds and indexes the stable releases alone (GitCraft `--only-stable`) |
+| `REFS`                    | `all`               | Scope of the reverse-reference index: `all`, `releases` or `none`       |
+| `PORT`                    | `8080`              | `serve` port                                                            |
+| `MAPPINGLENS_*`           | paths under `/data` | Same variables as outside the container                                 |
+| `GITCRAFT_JAVA_OPTS`      | none                | JVM options for the GitCraft run, for example `-Xmx16g`                 |
+| `INDEX_JAVA_OPTS`         | none                | JVM options for `index`, for example `-Xmx4g`                           |
+| `SERVE_JAVA_OPTS`         | none                | JVM options for `serve`, for example `-Xmx4g`                           |
 
 The build args `GITCRAFT_REPO` and `GITCRAFT_REF` set where GitCraft comes from. It needs the
 `--preset`, `--artifact-store-path`, `--override-repo-target`, and `--fabric-intermediary-repo`
@@ -593,7 +608,8 @@ the class is the unit every reader asks for and because it deflates 6.8 times wh
 blobs of the same data reach 2.7.
 
 `index` builds it for the releases, which is 90 (version, namespace) pairs, 1.0 GB and 57s. Pass
-`-refs=all` for every version (10.3 GB, 11 minutes) or `-refs=none` to skip the step. A pair is
+`-refs=all` for every version (10.3 GB, 11 minutes) or `-refs=none` to skip the step. The container
+passes `-refs=all` by default, through the `REFS` variable. A pair is
 built once and then skipped, since the jar behind it never changes. The file is optional: a version
 it does not cover is answered by the scan, so a partial file is a valid file, and a server without
 the file behaves as it did before.
