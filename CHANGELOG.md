@@ -3,6 +3,92 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [12]
+
+### Added
+- `/api/v1/diff/references?from=&to=&q=` reports how the sites using a class or member changed
+  between two versions, as `{changes: {added, removed, moved}}`. `moved` pairs a removed site with
+  an added one when both reach exactly the same members. Between 26.1 and 26.2, `WorldBorder` gives
+  four such pairs, among them `Entity#collectColliders` to `Entity#collectCollidersIgnoringWorldBorder`,
+  a move that leaves every signature intact and that `/exists` therefore cannot see.
+- `/api/v1/references` takes `depth` (1 to 5). Above 1 the response carries `paths`, the caller
+  chains reaching the target, outermost frame first and at most 200 of them. On 1.21.1,
+  `DismountHelper:findSafeDismountLocation` answers with four chains in one call, where the same
+  question took three rounds of requests before.
+- Each referencing site carries `count`, the number of instructions in it that hit the target, which
+  is what `@At(ordinal = N)` numbers `0 .. count-1`. Repeated calls used to collapse into one entry:
+  `PortalForcer#createPortal` calls `WorldBorder.isWithinBounds` twice and was reported once.
+- Each referencing site carries `synthetic`, the javac lambda body a call sits in, while `member`
+  now names the method that lambda is written in. The lambda index moves between versions
+  (`lambda$stopSleeping$9` in 1.21.1, `$22` in 1.21.9, `$0` in 26.1), so a mixin can only be written
+  against the enclosing name.
+
+- `index` builds a prebuilt reverse-reference index beside the other two files,
+  `mappinglens-refs.db`: one row for each class of each (version, namespace). The server reads a row
+  instead of scanning the version's whole named jar, which turns a cold `/references` on 26.2 from
+  770ms into 27ms, a 16-release walk from 6.6s into 62ms, a `depth=3` walk from 410ms into 17ms and
+  `/diff/references` from 1.28s into 10ms. It also removes the memory the scan needed: the live heap
+  over those four checks stayed at 12 MB, where the scanning path reached 584 MB. Releases by
+  default, which is 90 (version, namespace) pairs, 1.0 GB and 57s to build; `-refs=all` covers every
+  version (10.3 GB, 11 minutes) and `-refs=none` skips the step. The file is optional and may be
+  partial: any version it does not cover is answered by the scan, exactly as before.
+
+- `/search` reports `yarnDescriptor` and `mojmapDescriptor` beside `intermediaryDescriptor`. The
+  index stores no named descriptor, so the official one is rewritten through the classes of that
+  version, in one query for the whole page. A key built out of a search row now posts to `/exists`
+  unchanged: all 14 keys of `WorldBorder#isWithinBounds` on 1.21.1, in both namespaces, come back
+  `exists: true`.
+- `/history` tells an inherited member from a missing one. `present: false` with
+  `reason: "inherited"` names the declaring supertype in `declaredIn` and describes its
+  declaration in `members`, so `ServerLevel:getBlockState` over 1.21 to 26.2 answers in one call
+  where it used to need a second one to `/exists`. The supertype is read from a named jar one class
+  header at a time, on the newest version of the range that has both the class and a jar, and is
+  then followed through the index like any other class.
+- `GET /api/v1/bodyhash` hashes one method's body for each version of a range and collapses equal
+  neighbours into spans, which answers "is there anything to re-check" where `/diff/patch` reports
+  the decompiler's cosmetics as a change. `normalize=intermediary` renames the class types first,
+  so a class rename does not move the hash. On `LivingEntity.baseTick` across the 16 releases from
+  1.21 to 26.2 the span breaks at 1.21.9, where `WorldBorder.getDamageSafeZone` became
+  `getSafeZone`; `WorldBorder.getCenterX` holds one hash across all 16.
+
+- `POST /api/v1/validate?from=&to=` checks a set of mixin targets against every version of a range
+  and collapses equal neighbours into spans, which is the whole update pass in one request instead
+  of five one-off scripts. A target is `{id, owner, method, descriptor?, at?}`, and each span
+  answers `ok` (with `atCount`), `renamed` or `inherited` (with `closest`), `call_moved` (with
+  `movedTo`) or `missing`. The spec's own two targets over the 16 releases from 1.21 to 26.2 answer
+  in 72ms: `DismountHelper:findSafeDismountLocation` holds `ok` throughout, and
+  `ServerPlayer:findRespawnPositionAndUseSpawnBlock` is `renamed` until 1.21.2. `call_moved` is the
+  answer `/exists` cannot give: `ServerPlayer#adjustSpawnLocation` survives to 26.2, but from 1.21.9
+  its border call sits in `PlayerSpawnFinder#findSpawn`.
+
+### Fixed
+- `/history` returned `type: "unknown"` with an empty span list for a member it could not find,
+  which read like a malformed query. It now answers with spans over the range, so an absent member
+  says where it is absent.
+
+### Changed
+- `/references` no longer caps the version range at 25. It caps how many of the range's versions the
+  prebuilt reference index does not cover, at 25, because those are the ones that cost a jar scan.
+  The index covers releases, so the whole release line now answers in one call: 1.14 to 26.2 is 47
+  releases, 43 of which have a mojmap jar to answer from, in 48ms. Without `releasesOnly` that same
+  range is 469 versions, 426 of them uncovered, and the refusal says exactly that.
+- The reverse index records calls made inside the calling class itself, and follows method
+  references (`Foo::bar`) through their `invokedynamic`. Without the first, a walk upwards stopped at
+  the first private helper; without the second, 22472 edges of 26.2 were missing altogether.
+- The reverse index keeps eight (version, namespace) entries instead of growing without a bound, and
+  builds without holding every class file of the jar in memory at once.
+
+### Added
+- `/api/v1/references` takes `releasesOnly`, the same parameter `/history` has. The 25-version limit
+  is counted after the filter, so `1.21` to `26.2` is one call over 16 releases instead of 145
+  versions over 6 calls.
+- `POST /api/v1/references/{version}` carries the targets in a body `{namespace, targets[], to,
+  releasesOnly, includeVariants}` and takes up to 2000 of them, matching `/exists`. `GET` keeps its
+  limit of 25: a request line above 4096 bytes is rejected by the HTTP parser before it reaches the
+  route, which is about 33 keys of the usual length. `QUERY` (RFC 10008) is accepted on the same
+  path with the same body. Neither body form is cached, because a URL-keyed cache cannot see the
+  body.
+
 ## [11.2]
 
 ### Changed

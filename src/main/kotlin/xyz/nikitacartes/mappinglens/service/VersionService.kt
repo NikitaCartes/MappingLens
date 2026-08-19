@@ -101,16 +101,31 @@ class VersionService(private val db: Database) {
      * older one. Returns null when a bound is not indexed. Variants are dropped unless
      * [includeVariants] is set, for the reason given on [listVersions] — but a bound may still name
      * one, so bounding a walk by `1.21.11_unobfuscated` works and simply does not repeat it.
+     *
+     * [releasesOnly] drops snapshots and pre-releases from the walk, the same way `/history` does.
+     * Like [includeVariants] it narrows what the range contains, not what may bound it, so
+     * `1.21 .. 26.2` over releases works even though both bounds are asked of the full order.
      */
-    fun versionRange(from: String, to: String, includeVariants: Boolean = false): List<String>? = transaction(db) {
+    fun versionRange(
+        from: String,
+        to: String,
+        includeVariants: Boolean = false,
+        releasesOnly: Boolean = false,
+    ): List<String>? = transaction(db) {
         val ordered = VersionTable.selectAll()
             .orderBy(VersionTable.sortIndex to SortOrder.ASC_NULLS_LAST, VersionTable.versionId to SortOrder.ASC)
-            .map { it[VersionTable.versionId] to (it[VersionTable.variantOf] != null) }
+            .map {
+                Triple(
+                    it[VersionTable.versionId],
+                    it[VersionTable.variantOf] != null,
+                    it[VersionTable.releaseType],
+                )
+            }
         val lo = ordered.indexOfFirst { it.first == from }
         val hi = ordered.indexOfFirst { it.first == to }
         if (lo < 0 || hi < 0) return@transaction null
         ordered.subList(minOf(lo, hi), maxOf(lo, hi) + 1)
-            .filter { includeVariants || !it.second }
+            .filter { (includeVariants || !it.second) && (!releasesOnly || it.third == "release") }
             .map { it.first }
     }
 

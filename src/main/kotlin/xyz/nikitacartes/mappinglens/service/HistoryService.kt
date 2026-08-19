@@ -1,5 +1,6 @@
 package xyz.nikitacartes.mappinglens.service
 
+import xyz.nikitacartes.mappinglens.config.AppConfig
 import xyz.nikitacartes.mappinglens.db.tables.ClassTable
 import xyz.nikitacartes.mappinglens.db.tables.FieldTable
 import xyz.nikitacartes.mappinglens.db.tables.MemberTable
@@ -12,6 +13,8 @@ import xyz.nikitacartes.mappinglens.model.HistorySpan
 import xyz.nikitacartes.mappinglens.routes.normalizeClassName
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
+import org.objectweb.asm.ClassReader
+import java.util.zip.ZipFile
 
 /**
  * "Which versions have this, and under what name?" — one class or member tracked across every
@@ -26,7 +29,7 @@ import org.jetbrains.exposed.sql.transactions.transaction
  * in a handful of entries. Named descriptors are not stored (only obf and intermediary are), so
  * signature changes are reported in intermediary terms.
  */
-class HistoryService(private val db: Database) {
+class HistoryService(private val db: Database, private val config: AppConfig? = null) {
 
     /** One indexed version in canonical semver order. */
     private data class Ver(
@@ -45,6 +48,8 @@ class HistoryService(private val db: Database) {
         val mojmap: String? = null,
         val owner: String? = null,
         val members: List<HistoryMember> = emptyList(),
+        val reason: String? = null,
+        val declaredIn: String? = null,
     )
 
     private fun MemberTable.named(namespace: String): Column<String?> = when (namespace) {
@@ -130,7 +135,111 @@ class HistoryService(private val db: Database) {
                 SpanKey(present = found.isNotEmpty(), owner = ownerName, members = found)
             })
         }
-        return HistoryEntry(query, "unknown", emptyList())
+        return inherited(query, namespace, member, ownerRows, versions, all, order)
+            ?: HistoryEntry(query, "unknown", collapse(versions) { v ->
+                // Neither the owner nor a supertype declares it. Saying so over the range is the
+                // answer; the empty history this used to return read like the query was malformed.
+                SpanKey(present = false, owner = ownerRows[v.rowId]?.get(ownerNameCol))
+            })
+    }
+
+    /**
+     * The history of a member the owner does not declare but inherits, or null when no supertype
+     * declares it either. `present` stays false, the way `/exists` keeps `exists` false, and
+     * `reason` carries the difference a second call to `/exists` used to have to explain.
+     *
+     * The supertype is found once, on the newest version the owner exists in, and is then followed
+     * through the index like any other class, so a supertype renamed later in the range still
+     * answers and a span breaks where its declaration changes.
+     */
+    private fun inherited(
+        query: String,
+        namespace: String,
+        member: String,
+        ownerRows: Map<Int, ResultRow>,
+        versions: List<Ver>,
+        all: List<Ver>,
+        order: Map<Int, Int>,
+    ): HistoryEntry? {
+        val declaring = declaringSupertype(namespace, member, ownerRows, versions) ?: return null
+        val superRows = classRows(declaring, namespace, all, order)
+        val ownerNameCol = classNameColumn(namespace)
+        for (cols in listOf(MethodTable, FieldTable)) {
+            val rows = memberRows(cols, superRows, member, namespace, order)
+            if (rows.isEmpty()) continue
+            return HistoryEntry(query, cols.kind, collapse(versions) { v ->
+                val found = rows[v.rowId].orEmpty().map {
+                    HistoryMember(
+                        intermediary = it[cols.intermediaryName],
+                        yarn = it[cols.yarnName],
+                        mojmap = it[cols.mojmapName],
+                        intermediaryDescriptor = it[cols.intermediaryDesc],
+                    )
+                }.sortedWith(compareBy({ it.intermediary ?: "" }, { it.intermediaryDescriptor ?: "" }))
+                SpanKey(
+                    present = false,
+                    owner = ownerRows[v.rowId]?.get(ownerNameCol),
+                    members = found,
+                    reason = if (found.isEmpty()) null else "inherited",
+                    declaredIn = if (found.isEmpty()) null else superRows[v.rowId]?.get(ownerNameCol),
+                )
+            })
+        }
+        return null
+    }
+
+    /**
+     * The nearest supertype of the owner that declares [member], read from a named jar one class
+     * header at a time. Only the classes on the chain are unzipped, so this costs a jar open and a
+     * handful of entries rather than the whole-jar scan `/hierarchy` pays for.
+     *
+     * The newest version of the range that has both the class and a jar is the one asked, not the
+     * newest of the index: 13 of the 2018-2019 snapshots carry no `sort_index`, which sorts them
+     * after everything else and would anchor the whole answer on 19w14b.
+     */
+    private fun declaringSupertype(
+        namespace: String,
+        member: String,
+        ownerRows: Map<Int, ResultRow>,
+        versions: List<Ver>,
+    ): String? {
+        val config = this.config ?: return null
+        val col = classNameColumn(namespace)
+        for (version in versions.asReversed()) {
+            val start = ownerRows[version.rowId]?.get(col) ?: continue
+            val jar = config.sources.remappedJar(version.versionId, namespace) ?: continue
+            val chain = ZipFile(jar.toFile()).use { zip -> supertypeChain(zip, start) }
+            val classIds = ClassTable.selectAll()
+                .where { (ClassTable.versionId eq version.rowId) and (col inList chain) }
+                .associate { (it[col] ?: "") to it[ClassTable.id].value }
+            return chain.firstOrNull { candidate ->
+                val classId = classIds[candidate] ?: return@firstOrNull false
+                listOf(MethodTable, FieldTable).any { cols ->
+                    cols.selectAll()
+                        .where { (cols.classId eq classId) and (cols.named(namespace) eq member) }
+                        .limit(1).any()
+                }
+            }
+        }
+        return null
+    }
+
+    /** Every supertype of [start], nearest first, breadth-first so a direct parent beats a distant one. */
+    private fun supertypeChain(zip: ZipFile, start: String): List<String> {
+        val seen = LinkedHashSet<String>()
+        val queue = ArrayDeque(parentsOf(zip, start))
+        while (queue.isNotEmpty()) {
+            val next = queue.removeFirst()
+            if (next == "java/lang/Object" || !seen.add(next)) continue
+            queue += parentsOf(zip, next)
+        }
+        return seen.toList()
+    }
+
+    private fun parentsOf(zip: ZipFile, name: String): List<String> {
+        val entry = zip.getEntry("$name.class") ?: return emptyList()
+        val reader = zip.getInputStream(entry).use { ClassReader(it.readBytes()) }
+        return listOfNotNull(reader.superName) + reader.interfaces
     }
 
     /** Every version's row for one class, keyed by version row id. */
@@ -261,7 +370,10 @@ class HistoryService(private val db: Database) {
         var count = 0
         fun flush() {
             val k = current ?: return
-            spans += HistorySpan(from, to, count, k.present, k.intermediary, k.yarn, k.mojmap, k.owner, k.members)
+            spans += HistorySpan(
+                from, to, count, k.present, k.intermediary, k.yarn, k.mojmap, k.owner, k.members,
+                k.reason, k.declaredIn,
+            )
         }
         for (v in versions) {
             val k = key(v)

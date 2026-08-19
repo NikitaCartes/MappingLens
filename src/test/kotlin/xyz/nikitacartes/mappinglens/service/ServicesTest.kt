@@ -79,6 +79,28 @@ class VersionServiceTest {
         Fixtures.seed_1_21(db)
         assertEquals("1.21.1", VersionService(db).latestRelease())
     }
+
+    @Test
+    fun `versionRange drops snapshots when releasesOnly is set`(@TempDir tmp: Path) {
+        val db = Fixtures.newDb(tmp)
+        Fixtures.seed_1_21(db)
+        Fixtures.seed_1_21_1(db)
+        // Sorts between the two releases by id, since the fixtures leave the sort index null.
+        transaction(db) {
+            VersionTable.insert {
+                it[versionId] = "1.21.0-snap"
+                it[releaseType] = "snapshot"
+                it[indexedAt] = "2024-01-01T00:00:00Z"
+                it[hasYarn] = true
+                it[hasMojmap] = true
+                it[hasIntermediary] = true
+            }
+        }
+
+        val service = VersionService(db)
+        assertEquals(listOf("1.21", "1.21.0-snap", "1.21.1"), service.versionRange("1.21", "1.21.1"))
+        assertEquals(listOf("1.21", "1.21.1"), service.versionRange("1.21", "1.21.1", releasesOnly = true))
+    }
 }
 
 class TranslationServiceTest {
@@ -206,6 +228,23 @@ class SearchServiceTest {
         assertEquals("field", r.type)
         assertTrue(r.yarn!!.endsWith("#STATE_IDS"))
         assertTrue(r.mojmap!!.endsWith("#BLOCK_STATE_REGISTRY"))
+    }
+
+    @Test
+    fun `a member hit carries the descriptor of every namespace it is named in`(@TempDir tmp: Path) {
+        val s = setup(tmp)
+        val r = s.search("defaultBlockState", "1.21.1", "method", "mojmap", 10, 0, exact = true).results.single()
+        assertEquals("()Lnet/minecraft/class_2680;", r.intermediaryDescriptor)
+        assertEquals("()Lnet/minecraft/block/BlockState;", r.yarnDescriptor)
+        assertEquals("()Lnet/minecraft/world/level/block/state/BlockState;", r.mojmapDescriptor)
+    }
+
+    @Test
+    fun `a type the version does not name stays as it came`(@TempDir tmp: Path) {
+        val s = setup(tmp)
+        // Lgs; is the registry, which this slice does not carry, the way a JDK class never is.
+        val r = s.search("STATE_IDS", "1.21.1", "field", "yarn", 10, 0, exact = true).results.single()
+        assertEquals("Lgs;", r.yarnDescriptor)
     }
 
     @Test

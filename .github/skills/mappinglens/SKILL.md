@@ -25,6 +25,7 @@ For the full OpenAPI contract in this repository, see `../../../src/main/resourc
 - Find all references to a class or member.
 - Resolve source identifiers to owner/name/descriptor tokens.
 - Batch-validate that classes and members still exist with the same signature in a target version, for example to check mixin or shadow targets before a mod update.
+- Check a whole set of mixin targets against a range of versions at once: whether the method still exists, whether its signature changed, and whether the injection point is still inside the body.
 - Validate which Minecraft versions are indexed before answering mapping questions.
 
 Do not use MappingLens as an authority for general Minecraft gameplay facts. It covers names, mappings, source paths, diffs, and bytecode/source lookup.
@@ -68,7 +69,19 @@ Unless a subsection says otherwise, `namespace` accepts `yarn` or `mojmap` and d
 - Use owner/member forms such as `Block#getDefaultState` or class simple names such as `BlockState`.
 - Use `exact=true` only for an exact-name lookup. Fuzzy or prefix search works better otherwise.
 - `totalResults` in the response is the count of results in the current page, not the total number of matches in the index.
-- A result carries `intermediaryDescriptor`, never a named one, whatever `namespace` asked for: named descriptors are not indexed. Do not paste it into `/exists`, which matches the descriptor of its own namespace. Pass the key through `POST /translate/{version}` first, or read the named descriptor off `/tokens`.
+- A member result carries the descriptor in three spellings: `intermediaryDescriptor`, `yarnDescriptor` and `mojmapDescriptor`. Build an `/exists` key straight out of the last two — `{mojmap}:{mojmapDescriptor}` with the `#` replaced by `:` — and it needs no translation. A namespace the version does not name gives null there, so a version without yarn returns `mojmapDescriptor` alone.
+
+### Body hash (did a method body change?)
+
+- `GET 127.0.0.1:8080/api/v1/bodyhash?q={key}&namespace={namespace}&from={version}&to={version}&releasesOnly={bool}&normalize={mode}`
+- Answers "is there anything to re-check between these versions", which `/diff/patch` cannot: that one works on decompiled source and reports the decompiler's own cosmetics as a change.
+- `q` (required, repeatable, up to 50): `owner:name` or `owner:name:descriptor`. Without a descriptor every overload of the name hashes together.
+- `namespace`: `yarn` or `mojmap` only, because the hash is read from a named jar. `from` and `to` are both required.
+- `normalize`: `named` (default) hashes the body as the namespace spells it, so a renamed callee moves the hash. `intermediary` renames the class types through intermediary first, so a class rename or a package move does not.
+- Returns `{namespace, normalize, results[]}`, each `{query, spans[]}`, each span `{from, to, versions, hash}`. `hash` is null on a version with no such method.
+- Equal hash means the body is the same and there is nothing to look at. A changed hash names the versions to read with `/source` or `/bytecode`.
+- A lambda body is a method of its own and is not followed, so a change confined to a lambda does not move the enclosing hash. The lambda index in `lambda$name$12` is normalized away, so an unrelated lambda added above does not move it either.
+- At most 60 versions per request. Pass `releasesOnly=true` to cover a wide range.
 
 ### Translate
 
@@ -131,8 +144,10 @@ Unless a subsection says otherwise, `namespace` accepts `yarn` or `mojmap` and d
 - Mojang's unobfuscated releases (everything after 1.21.11) ship no mappings of their own. When the indexer has the separate intermediary source for them, they carry intermediary like any other version and nothing below applies. Check `hasIntermediary` on `/api/v1/versions` to see which case the index is in.
 - Without that source, a name from one of those versions is also looked up in the newest mapped version before it, by simple name, which a package move preserves. That lookup is what recovers the rest of the history. Two names alive in the same version are never linked, because a class has one name per version. A class *renamed* after 1.21.11 then keeps only its post-1.21.11 history.
 - Named descriptors are not indexed, so a signature change appears only as a changed `members[].intermediaryDescriptor`, and only on versions that carry intermediary names.
-- `present: false` with a non-null `owner` means the class is still there and **the index holds no member of that name under it**. `owner: null` means the class itself is gone.
-- That is not the same as the member being gone from the game, and the difference matters for a mixin. `/history` reads the mapping index, which holds declarations. `/exists` reads the version's jar. When the two disagree, the jar is right: it is the artifact the mod runs against. Ask `/exists` before concluding that a member was removed.
+- `present: false` with a non-null `owner` means the class is still there and **the owner declares no member of that name**. `owner: null` means the class itself is gone.
+- `present: false` with `reason: "inherited"` means a supertype declares it and the call still resolves; `declaredIn` names that supertype and `members[]` describes its declaration. `present: false` with no `reason` means the member is really not there, on the owner or above it, so a second call to `/exists` is no longer needed to tell the two apart.
+- `type: "unknown"` now still carries spans: it means nothing in the index names this member, and the spans say over which versions.
+- `/history` reads the mapping index, which holds declarations. `/exists` reads the version's jar. When the two disagree, the jar is right: it is the artifact the mod runs against.
 
 ### Compare
 
@@ -184,14 +199,27 @@ Unless a subsection says otherwise, `namespace` accepts `yarn` or `mojmap` and d
 
 ### References
 
-- `GET 127.0.0.1:8080/api/v1/references/{version}?q={key}&namespace={namespace}&to={version}&includeVariants={bool}`
-- `q` (required, repeatable): the target, either a class internal name (`net/minecraft/world/level/block/Block`) or a member key `owner:name:descriptor`. Up to 25 per call.
-- `to`: the far end of a version range whose near end is `{version}`. Either bound may be the older one. Up to 25 versions per call. Omit it to ask one version.
+- `GET 127.0.0.1:8080/api/v1/references/{version}?q={key}&namespace={namespace}&to={version}&releasesOnly={bool}&includeVariants={bool}`
+- `POST 127.0.0.1:8080/api/v1/references/{version}` with `{"namespace", "targets": [...], "to", "releasesOnly", "includeVariants"}` for larger batches. `QUERY` works on the same path with the same body.
+- `q` (required, repeatable): the target, either a class internal name (`net/minecraft/world/level/block/Block`) or a member key `owner:name:descriptor`. Up to 25 per call on `GET`, up to 2000 in a body. A request line above 4096 bytes never reaches the route, so post anything longer.
+- `to`: the far end of a version range whose near end is `{version}`. Either bound may be the older one. Omit it to ask one version. The range is not capped; what is capped, at 25, is how many of its versions the prebuilt reference index does not cover, because each of those costs a jar scan.
+- `releasesOnly`: walk releases alone. The prebuilt index covers releases, so this walks the whole release line in one call — `1.14` to `26.2` is 47 releases. Without it, that range is 469 versions and is refused.
+- `depth` (1 to 5, default 1): frames of the caller chain to walk. Above 1 the response also carries `paths`, the chains that reach the target, outermost frame first, at most 200 of them. Use it for "which entry points reach this" instead of asking one level per round.
 - Returns `{namespace, results[]}`: one entry per (version, target) as `{version, query, references[]}`, versions oldest first and targets in request order. A version that has a named jar but knows nothing of a target gives an empty `references`.
-- Each referencing site is `{owner, ownerSimple, member, descriptor, kind}` (the enclosing method, or the class header). Only references to Minecraft classes in the same jar are indexed. JDK and library targets are dropped.
+- Each referencing site is `{owner, ownerSimple, member, descriptor, kind, count, synthetic}` (the enclosing method, or the class header). Only references to Minecraft classes in the same jar are indexed. JDK and library targets are dropped.
+- `count` is how many instructions in that site hit the target. `@At(ordinal = N)` numbers them `0 .. count-1`, so `count: 2` means two injection points in one method.
+- `synthetic` names the javac lambda body the call sits in (`lambda$stopSleeping$9`) while `member` names the method that lambda is written in. The lambda index moves between versions; write the mixin against `member`.
+- Calls inside the calling class itself are indexed, and method references (`Foo::bar`) are followed through their `invokedynamic`.
 - Descriptors here are in the requested namespace, so a key from `/references` posts to `/exists` unchanged.
 - **Use the batch form to check the `@At(target = ...)` half of a mixin**: `/exists` covers the method injected into, and nothing else covers the calls inside its body. A signature can survive a version while the call inside it moves to another method.
 - `404` when no requested version has a named jar in that namespace.
+
+### Reference diff
+
+- `GET 127.0.0.1:8080/api/v1/diff/references?from={version}&to={version}&q={key}&namespace={namespace}`
+- Returns `{from, to, namespace, query, changes: {added, removed, moved}}`. Each entry of `added` and `removed` is `{owner, ownerSimple, member, targets}`, where `targets` are the members of `q` that site reaches.
+- `moved` pairs a removed site with an added one when both reach exactly the same members: first by the same method name, then the same class, then a lone pair. An ambiguous group pairs nothing. A paired site stays in `added` and `removed` too.
+- **This is the check `/exists` cannot make.** A call that moves from one method to another leaves every signature intact, so `/exists` reports nothing while `@At(target = ...)` breaks in silence.
 
 ### Exists (batch member/class existence)
 
@@ -204,7 +232,32 @@ Unless a subsection says otherwise, `namespace` accepts `yarn` or `mojmap` and d
   - Both null — the version declares nothing of that name under that owner, or the owner itself is gone.
 - Both fields are null when `exists` is true.
 - Batch up to 2000 keys per call. Checks the version's pre-remapped named jar via ASM (cached per version+namespace), so descriptors match exactly with no remapping. Returns `404` if that jar is absent for the version.
-- **Use it to validate mixin/shadow targets when updating a mod**: confirm every injected method and shadowed field still exists with the same signature in one request instead of many `search`/`source` calls. This is the only `POST` endpoint. It is not cached, because results depend on the request body.
+- **Use it to validate mixin/shadow targets when updating a mod**: confirm every injected method and shadowed field still exists with the same signature in one request instead of many `search`/`source` calls. It checks one version; use `/validate` for a range. Like every `POST` endpoint it is not cached, because the results depend on the request body.
+
+### Validate (mixin targets across a version range)
+
+- `POST 127.0.0.1:8080/api/v1/validate?from={version}&to={version}&releasesOnly={bool}&includeVariants={bool}` with JSON body:
+
+```json
+{"namespace": "mojmap",
+ "targets": [{"id": "dismount",
+              "owner": "net/minecraft/world/entity/vehicle/DismountHelper",
+              "method": "findSafeDismountLocation",
+              "descriptor": "(Lnet/minecraft/world/entity/EntityType;...)Lnet/minecraft/world/phys/Vec3;",
+              "at": {"value": "INVOKE",
+                     "target": "net/minecraft/world/level/border/WorldBorder:isWithinBounds:(Lnet/minecraft/world/phys/AABB;)Z"}}]}
+```
+
+- One entry per target, one span per run of versions that answers alike. `from` and `to` are both required. At most 50 targets, and at most 60 versions counted after the filters, so `releasesOnly=true` is how a wide range is covered.
+- `id` is the caller's own label and comes back unchanged. `descriptor` may be omitted, which follows every overload of the name. `at` may be omitted, which checks the signature alone.
+- `at.value` is `INVOKE` or `FIELD`, because both name one instruction. `at.target` is always `owner:name:descriptor` in the requested namespace.
+- Five statuses:
+  - `ok` — the method is there, and when `at` was given so is the instruction it names. `atCount` says how many times, which is what `@At(ordinal = N)` numbers `0 .. atCount-1`.
+  - `renamed` — the name is there under another descriptor. `closest` carries the signature the version has.
+  - `inherited` — a supertype declares it. The call resolves at runtime, but a mixin applies to the class that declares the method, so the target has to name the supertype. `closest` names it.
+  - `call_moved` — the method is there and the `at` instruction is not. `movedTo` names the method that holds the call now. **This is the check `/exists` cannot make**: every signature is intact and the injection point breaks in silence.
+  - `missing` — neither the method nor a near declaration. `movedTo` is still set when the class holds the `at` call in exactly one other method, which is what a renamed method looks like from here.
+- A call that moved into a lambda of the same method reads as `call_moved`, and `movedTo` names `lambda$stopSleeping$9` literally, because that is what a mixin has to target. The lambda index moves between versions, so such a span breaks wherever the index does.
 
 ### Meta / Health
 
@@ -253,9 +306,13 @@ One example per endpoint, trimmed to one entry per array. Read the field off the
    "obfuscated": "net/minecraft/world/level/Level#getRespawnData",
    "owner": {"intermediary": "net/minecraft/class_1937", "yarn": "net/minecraft/world/World",
              "mojmap": "net/minecraft/world/level/Level", "obfuscated": "net/minecraft/world/level/Level"},
-   "intermediaryDescriptor": "()Lnet/minecraft/class_5217$class_12064;", "score": 0.078}
+   "intermediaryDescriptor": "()Lnet/minecraft/class_5217$class_12064;",
+   "yarnDescriptor": "()Lnet/minecraft/world/WorldProperties$SpawnPoint;",
+   "mojmapDescriptor": "()Lnet/minecraft/world/level/storage/LevelData$RespawnData;", "score": 0.089}
 ]}
 ```
+
+`{mojmap}:{mojmapDescriptor}` with the `#` replaced by `:` is an `/exists` key, ready as it is.
 
 ### `/translate`
 
@@ -330,6 +387,31 @@ The translated name is `output.name`.
 ```
 
 A class query fills `intermediary`/`yarn`/`mojmap` on the span and leaves `owner`/`members` empty; a member query does the reverse.
+
+A member the owner inherits rather than declares comes back `present: false` with a reason:
+
+```json
+{"from": "1.21", "to": "26.2", "versions": 16, "present": false,
+ "owner": "net/minecraft/server/level/ServerLevel",
+ "reason": "inherited", "declaredIn": "net/minecraft/world/level/Level",
+ "members": [{"intermediary": null, "yarn": null, "mojmap": "getBlockState",
+              "intermediaryDescriptor": null}]}
+```
+
+The intermediary side is empty here because the tiny files name a declaration, not an override, and
+`Level.getBlockState` overrides `BlockGetter.getBlockState`. That is the same reason a signature
+change is sometimes invisible in `members[].intermediaryDescriptor`.
+
+### `/bodyhash`
+
+```json
+{"namespace": "mojmap", "normalize": "named", "results": [
+  {"query": "net/minecraft/world/entity/LivingEntity:baseTick:()V", "spans": [
+    {"from": "1.21.5", "to": "1.21.8", "versions": 4, "hash": "d7f8e2ad7aebb3a2"},
+    {"from": "1.21.9", "to": "1.21.10", "versions": 2, "hash": "391f465f330464ab"}
+  ]}
+]}
+```
 
 ### `/compare/{version}/{className}`
 
@@ -417,6 +499,32 @@ A class query fills `intermediary`/`yarn`/`mojmap` on the span and leaves `owner
 ]}
 ```
 
+### `POST /validate`
+
+```json
+{"namespace": "mojmap", "results": [
+  {"id": "dismount", "spans": [
+    {"from": "1.21", "to": "26.2", "versions": 16, "status": "ok",
+     "atCount": 1, "closest": null, "movedTo": null}]},
+  {"id": "respawn", "spans": [
+    {"from": "1.21", "to": "1.21.1", "versions": 2, "status": "renamed", "atCount": null,
+     "closest": "net/minecraft/server/level/ServerPlayer:findRespawnPositionAndUseSpawnBlock:(ZLnet/minecraft/world/level/portal/DimensionTransition$PostDimensionTransition;)Lnet/minecraft/world/level/portal/DimensionTransition;",
+     "movedTo": null},
+    {"from": "1.21.2", "to": "26.2", "versions": 14, "status": "ok",
+     "atCount": null, "closest": null, "movedTo": null}]}
+]}
+```
+
+A `call_moved` span looks like this, and is the reason to send `at` at all:
+
+```json
+{"from": "1.21.9", "to": "26.2", "versions": 7, "status": "call_moved", "atCount": null,
+ "closest": null, "movedTo": "net/minecraft/server/level/PlayerSpawnFinder#findSpawn"}
+```
+
+`ServerPlayer#adjustSpawnLocation` still exists in all seven of those versions, so `/exists` reports
+nothing, while the border call it used to make lives in another class.
+
 ### Errors
 
 ```json
@@ -443,7 +551,8 @@ If wrapping MappingLens as an MCP server, expose these read-only tools and map t
 | `mappinglens_get_tokens` | Resolve source identifiers to owner/name/descriptor tokens | `version`, `className` | `namespace` |
 | `mappinglens_get_bytecode` | Fetch bytecode/disassembly | `version`, `className` | `namespace`, `format` |
 | `mappinglens_hierarchy` | Class supertypes/subtypes graph | `version`, `className` | `namespace` |
-| `mappinglens_references` | Find references to classes or members | `version`, `q` | `namespace`, `to`, `includeVariants` |
+| `mappinglens_references` | Find references to classes or members | `version`, `q` | `namespace`, `to`, `releasesOnly`, `depth`, `includeVariants` |
+| `mappinglens_diff_references` | How the sites using a class or member changed | `from`, `to`, `q` | `namespace` |
 | `mappinglens_exists` | Batch-check class/member existence in a version | `version`, `members` | `namespace` |
 | `mappinglens_get_openapi` | Fetch the API specification | none | `format` |
 

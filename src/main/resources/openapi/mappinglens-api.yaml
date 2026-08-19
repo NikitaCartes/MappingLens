@@ -13,9 +13,11 @@ tags:
   - name: Bytecode
   - name: Compare
   - name: History
+  - name: BodyHash
   - name: Hierarchy
   - name: References
   - name: Exists
+  - name: Validate
   - name: Docs
 paths:
   /api/v1/versions:
@@ -651,7 +653,10 @@ paths:
         simple name a package move preserves, and two names alive in the same version are never
         linked, as a class carries one name per version.
         Named descriptors are not indexed, so a signature change shows as a changed
-        `intermediaryDescriptor`. Repeat `q` to follow several keys in one request.
+        `intermediaryDescriptor`. A member the owner does not declare but inherits comes back
+        `present: false` with `reason: "inherited"` and the declaring supertype in `declaredIn`, so
+        telling "moved to a supertype" from "really gone" no longer needs a second call to
+        `/exists`. Repeat `q` to follow several keys in one request.
       parameters:
         - in: query
           name: q
@@ -708,6 +713,85 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ApiError"
+  /api/v1/bodyhash:
+    get:
+      tags: [BodyHash]
+      summary: Hash one method's body for each version of a range
+      description: >
+        Answers "did the behavior change between A and B", which `/diff/patch` cannot: that one
+        works on decompiled source and reports the decompiler's own cosmetics as a change. The hash
+        covers the instructions, the labels they jump to, the try/catch table and the frame sizes;
+        ASM resolves the constant pool as it reads and `SKIP_DEBUG` drops line numbers and local
+        variable names, so a recompile on its own does not move it. Consecutive versions that hash
+        alike collapse into one span. A lambda body is a method of its own and is not followed, so a
+        change confined to a lambda does not move the enclosing hash; the index in
+        `lambda$name$12` is normalized away.
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema:
+            type: array
+            items:
+              type: string
+            maxItems: 50
+          explode: true
+          style: form
+          description: >
+            `owner:name` or `owner:name:descriptor`. Without a descriptor every overload of the
+            name hashes together, sorted, so the answer does not depend on declaration order.
+            Repeatable.
+        - in: query
+          name: namespace
+          schema:
+            type: string
+            enum: [yarn, mojmap]
+            default: mojmap
+          description: The hash is read from a named jar, and only these two have one.
+        - in: query
+          name: from
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: to
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: releasesOnly
+          schema:
+            type: boolean
+            default: false
+          description: >
+            Walk releases alone. The 60-version cap is counted after the filters, so this is how a
+            wide range is covered.
+        - $ref: "#/components/parameters/IncludeVariants"
+        - in: query
+          name: normalize
+          schema:
+            type: string
+            enum: [named, intermediary]
+            default: named
+          description: >
+            `named` hashes the body as the namespace spells it, so a renamed callee moves the hash.
+            `intermediary` renames the class types through intermediary first, so a class rename or
+            a package move does not. Member names stay as the namespace spells them either way.
+      responses:
+        "200":
+          description: One entry per query, in the order given.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BodyHashResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: "`from` or `to` names a version that is not indexed."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /api/v1/hierarchy/{version}/{className}:
     get:
       tags: [Hierarchy]
@@ -736,6 +820,52 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HierarchyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/diff/references:
+    get:
+      tags: [References]
+      summary: How the sites using a class or member changed between two versions
+      description: >
+        Groups the sites that use `q` by the method they sit in, for both versions, and reports the
+        difference. The question a mod update asks is not "does the signature still exist" but "is
+        the call still where the mixin expects it": a call that moves from one method to another
+        leaves every signature intact, so `/exists` reports nothing while the injection point breaks
+        in silence. `moved` pairs a removed site with an added one when both reach exactly the same
+        members. A class query answers for its members; class-level uses such as a cast carry no
+        member to report, and a `new` shows through the constructor.
+      parameters:
+        - in: query
+          name: from
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: to
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: q
+          required: true
+          schema:
+            type: string
+          description: "A class internal name, or a member key `owner:name:descriptor`."
+        - in: query
+          name: namespace
+          schema:
+            type: string
+            enum: [yarn, mojmap]
+            default: mojmap
+      responses:
+        "200":
+          description: Added, removed and moved calling sites.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReferenceDiffResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -778,8 +908,59 @@ paths:
             type: string
           description: >
             The far end of a version range whose near end is `{version}`. Either bound may be the
-            older one, and the range covers at most 25 versions. Omit it to ask one version.
+            older one. Omit it to ask one version. The range itself is not capped; at most 25 of
+            its versions may be ones the prebuilt reference index does not cover, since each of
+            those costs a jar scan.
+        - in: query
+          name: releasesOnly
+          schema:
+            type: boolean
+            default: false
+          description: >
+            Walk releases alone. The prebuilt reference index covers releases, so this walks the
+            whole release line in one call. Without it, `1.21` to `26.2` is 137 versions, 121 of
+            them uncovered, and is refused. Same meaning as on `/history`.
+        - in: query
+          name: depth
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5
+            default: 1
+          description: >
+            Frames of the caller chain to walk. 1 answers "who calls this" and reports no paths;
+            above 1 the response also carries `paths`, the chains that reach the target, outermost
+            frame first and at most 200 of them.
         - $ref: "#/components/parameters/IncludeVariants"
+      responses:
+        "200":
+          description: Referencing sites, one group per (version, target).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReferenceResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [References]
+      summary: Find all references, with the targets in a body
+      description: >
+        The same call as `GET`, for batches a query string cannot hold. A request line above 4096
+        bytes is rejected by the HTTP parser before it reaches the route, which caps `q` at about 33
+        keys, so `GET` keeps its limit of 25 and this form takes up to 2000 targets, matching
+        `/exists`. The `QUERY` method (RFC 10008) is accepted on this path as well, with the same
+        body and the same answer; OpenAPI 3.1 has no field for it. Neither form is cached, because a
+        URL-keyed cache cannot see the body.
+      parameters:
+        - $ref: "#/components/parameters/VersionPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReferenceRequest"
       responses:
         "200":
           description: Referencing sites, one group per (version, target).
@@ -819,6 +1000,62 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+  /api/v1/validate:
+    post:
+      tags: [Validate]
+      summary: Check a set of mixin targets against every version of a range
+      description: >
+        The whole check a multi-version mod needs, as one request: does the hooked method still
+        exist, did its signature change, and is the instruction the injection point names still
+        inside the body. The last question is the one `/exists` cannot answer, because a call that
+        moves out of the hooked method leaves every signature intact, so the mixin compiles, applies
+        and does nothing.
+
+        One entry for each target, one span for each run of versions that answers alike. A pair
+        costs one read of one jar entry; only `call_moved` costs more, and only when the call left
+        the class, which is when the reverse index is asked to pair the old calling site with a new
+        one.
+      parameters:
+        - in: query
+          name: from
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: to
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: releasesOnly
+          schema:
+            type: boolean
+            default: false
+          description: >
+            Walk releases alone. The 60-version cap is counted after the filters, so this is how a
+            wide range is covered.
+        - $ref: "#/components/parameters/IncludeVariants"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ValidateRequest"
+      responses:
+        "200":
+          description: One entry per target, in the order given.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: "`from` or `to` names a version that is not indexed."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /openapi.json:
     get:
       tags: [Docs]
@@ -1008,10 +1245,17 @@ components:
             - type: "null"
         intermediaryDescriptor:
           type: [string, "null"]
+          description: The descriptor as intermediary names it. Absent where the tiny files omit it.
+        yarnDescriptor:
+          type: [string, "null"]
           description: >
-            Always the intermediary descriptor, whatever `namespace` asked for: named descriptors
-            are not indexed. Do not paste it into `/exists`, which matches the descriptor of its own
-            namespace. Pass the key through `POST /api/v1/translate/{version}` first.
+            The same descriptor as yarn spells it, derived from the official one through the
+            classes of that version. This is what `/exists` matches on, so `{yarn}:{yarnDescriptor}`
+            with `#` replaced by `:` is a key that needs no translation. Null when the row carries
+            no yarn name.
+        mojmapDescriptor:
+          type: [string, "null"]
+          description: The same, in mojmap. Null when the row carries no mojmap name.
         score:
           type: number
     SearchResponse:
@@ -1403,6 +1647,40 @@ components:
         kind:
           type: string
           enum: [class, method, field]
+        count:
+          type: integer
+          description: >
+            Instructions in this site that hit the target. `@At(ordinal = N)` numbers them
+            `0 .. count-1`, so a site with `count: 2` has two injection points, not one.
+        synthetic:
+          type: [string, "null"]
+          description: >
+            The javac lambda body the reference sits in (`lambda$tick$3`), when `member` names the
+            method that lambda is written in. The lambda index moves between versions, so a mixin
+            can only be written against the enclosing name.
+    ReferenceRequest:
+      type: object
+      required: [targets]
+      properties:
+        namespace:
+          type: string
+          enum: [yarn, mojmap]
+          default: mojmap
+        targets:
+          type: array
+          maxItems: 2000
+          items:
+            type: string
+          description: "Class internal names (`owner`) or member keys `owner:name:descriptor`."
+        to:
+          type: [string, "null"]
+          description: The far end of a version range whose near end is the path's `{version}`.
+        releasesOnly:
+          type: boolean
+          default: false
+        includeVariants:
+          type: boolean
+          default: false
     ExistsRequest:
       type: object
       required: [members]
@@ -1495,6 +1773,17 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/HistoryMember"
+        reason:
+          type: [string, "null"]
+          enum: [inherited, null]
+          description: >
+            Why the owner does not declare it, spelled as `/exists` spells it. `inherited` means a
+            supertype declares it and the call still resolves, `declaredIn` names that supertype and
+            `members` describes its declaration. A `present: false` span with no reason is a member
+            that is really gone.
+        declaredIn:
+          type: [string, "null"]
+          description: The supertype that declares it, in the requested namespace.
     HistoryEntry:
       type: object
       required: [query, type, spans]
@@ -1520,6 +1809,148 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/HistoryEntry"
+    BodyHashSpan:
+      type: object
+      description: A run of consecutive versions whose method body hashes alike.
+      required: [from, to, versions]
+      properties:
+        from:
+          type: string
+          description: Oldest version of the run.
+        to:
+          type: string
+          description: Newest version of the run.
+        versions:
+          type: integer
+        hash:
+          type: [string, "null"]
+          description: >
+            16 hex characters of a SHA-256 over the normalized body. Null where the version has no
+            such method, so a gap reads as a gap rather than as another body.
+    BodyHashEntry:
+      type: object
+      required: [query, spans]
+      properties:
+        query:
+          type: string
+          description: The requested key, echoed verbatim.
+        spans:
+          type: array
+          items:
+            $ref: "#/components/schemas/BodyHashSpan"
+    BodyHashResponse:
+      type: object
+      required: [namespace, normalize, results]
+      properties:
+        namespace:
+          type: string
+          enum: [yarn, mojmap]
+        normalize:
+          type: string
+          enum: [named, intermediary]
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/BodyHashEntry"
+    ValidateAt:
+      type: object
+      description: Where the mixin injects, as `@At` spells it.
+      required: [target]
+      properties:
+        value:
+          type: string
+          enum: [INVOKE, FIELD]
+          default: INVOKE
+          description: Both name one instruction, which is what makes them checkable here.
+        target:
+          type: string
+          description: "The instruction's own target: `owner:name:descriptor`, in the requested namespace."
+    ValidateTarget:
+      type: object
+      required: [id, owner, method]
+      properties:
+        id:
+          type: string
+          description: The caller's own label for this target, echoed back on the result.
+        owner:
+          type: string
+        method:
+          type: string
+        descriptor:
+          type: [string, "null"]
+          description: Omit to follow every overload of the name.
+        at:
+          $ref: "#/components/schemas/ValidateAt"
+    ValidateRequest:
+      type: object
+      required: [targets]
+      properties:
+        namespace:
+          type: string
+          enum: [yarn, mojmap]
+          default: mojmap
+          description: A target is checked against a named jar, and only these two have one.
+        targets:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            $ref: "#/components/schemas/ValidateTarget"
+    ValidateSpan:
+      type: object
+      description: A run of consecutive versions that answer the same way about one target.
+      required: [from, to, versions, status]
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+        versions:
+          type: integer
+        status:
+          type: string
+          enum: [ok, renamed, inherited, call_moved, missing]
+          description: >
+            `ok` the method is there, and when `at` was given so is the instruction it names.
+            `renamed` the name is there under another descriptor.
+            `inherited` a supertype declares it, so the call resolves but the mixin does not apply.
+            `call_moved` the method is there and the `at` instruction is not.
+            `missing` neither the method nor a near declaration.
+        atCount:
+          type: [integer, "null"]
+          description: >
+            How many instructions of the body hit `at`, which is what `@At(ordinal = N)` numbers
+            `0 .. atCount-1`. Only on `ok`, and only when `at` was given.
+        closest:
+          type: [string, "null"]
+          description: The declaration to hook instead, in key form. On `renamed` and `inherited`.
+        movedTo:
+          type: [string, "null"]
+          description: >
+            `owner#method` that holds the call now, when it could be found. On `call_moved`, and on
+            `missing` where the class still holds the call in exactly one other method, which is
+            what a renamed method looks like from here.
+    ValidateEntry:
+      type: object
+      required: [id, spans]
+      properties:
+        id:
+          type: string
+        spans:
+          type: array
+          items:
+            $ref: "#/components/schemas/ValidateSpan"
+    ValidateResponse:
+      type: object
+      required: [namespace, results]
+      properties:
+        namespace:
+          type: string
+          enum: [yarn, mojmap]
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/ValidateEntry"
     BatchTranslateRequest:
       type: object
       required: [keys]
@@ -1577,6 +2008,71 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ReferenceItem"
+        paths:
+          type: array
+          description: >
+            Caller chains reaching the target, outermost frame first. Empty unless `depth` was above
+            1. Cycles are broken per chain, so a helper reached through several chains reports each.
+          items:
+            type: array
+            items:
+              $ref: "#/components/schemas/ReferenceItem"
+    ReferenceSite:
+      type: object
+      required: [owner, ownerSimple, member, targets]
+      properties:
+        owner:
+          type: string
+        ownerSimple:
+          type: string
+        member:
+          type: string
+        targets:
+          type: array
+          items:
+            type: string
+          description: "The members of the query this site reaches, as `name:descriptor`."
+    ReferenceMove:
+      type: object
+      required: [from, to]
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+    ReferenceDiffResponse:
+      type: object
+      required: [from, to, namespace, query, changes]
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+        namespace:
+          type: string
+          enum: [yarn, mojmap]
+        query:
+          type: string
+        changes:
+          type: object
+          required: [added, removed, moved]
+          properties:
+            added:
+              type: array
+              items:
+                $ref: "#/components/schemas/ReferenceSite"
+            removed:
+              type: array
+              items:
+                $ref: "#/components/schemas/ReferenceSite"
+            moved:
+              type: array
+              description: >
+                Pairs from `removed` and `added` that reach exactly the same members, matched one to
+                one by the same method name, then the same class, then a lone pair. An ambiguous
+                group pairs nothing. A paired site also stays in the two lists above.
+              items:
+                $ref: "#/components/schemas/ReferenceMove"
     ReferenceResponse:
       type: object
       required: [namespace, results]

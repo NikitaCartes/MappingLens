@@ -1,7 +1,11 @@
 package xyz.nikitacartes.mappinglens.service
 
 import xyz.nikitacartes.mappinglens.Fixtures
+import xyz.nikitacartes.mappinglens.config.AppConfig
+import xyz.nikitacartes.mappinglens.config.SearchConfig
+import xyz.nikitacartes.mappinglens.config.SourcesConfig
 import xyz.nikitacartes.mappinglens.db.tables.ClassTable
+import xyz.nikitacartes.mappinglens.db.tables.MethodTable
 import xyz.nikitacartes.mappinglens.db.tables.VersionTable
 import xyz.nikitacartes.mappinglens.model.HistoryResponse
 import xyz.nikitacartes.mappinglens.routes.historyRoutes
@@ -24,8 +28,14 @@ import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.objectweb.asm.ClassWriter
+import org.objectweb.asm.Opcodes.ACC_PUBLIC
+import org.objectweb.asm.Opcodes.V1_8
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
+import java.util.jar.JarOutputStream
+import java.util.zip.ZipEntry
 import kotlin.test.assertEquals
 
 class HistoryServiceTest {
@@ -92,6 +102,80 @@ class HistoryServiceTest {
             addClass(last, renamedTo, null)
         }
         return db
+    }
+
+    private val levelName = "net/minecraft/world/level/Level"
+    private val serverLevelName = "net/minecraft/server/level/ServerLevel"
+
+    /** Two versions where `Level` declares `getRespawnData` and `ServerLevel` only inherits it. */
+    private fun seedInheritance(tmp: Path): Pair<Database, AppConfig> {
+        val db = Fixtures.newDb(tmp)
+        transaction(db) {
+            for (v in listOf("1.21", "1.21.1")) {
+                val versionRowId = addVersion(v, yarn = false)
+                val level = addClass(versionRowId, levelName, null).value
+                addClass(versionRowId, serverLevelName, null)
+                MethodTable.insert {
+                    it[versionId] = EntityID(versionRowId, VersionTable)
+                    it[classId] = EntityID(level, ClassTable)
+                    it[mojmapName] = "getRespawnData"
+                    it[obfDesc] = "()V"
+                }
+            }
+        }
+        return db to jarWith(tmp, "1.21.1", header(levelName, "java/lang/Object"), header(serverLevelName, levelName))
+    }
+
+    private fun header(name: String, superName: String): ByteArray {
+        val cw = ClassWriter(0)
+        cw.visit(V1_8, ACC_PUBLIC, name, null, superName, null)
+        cw.visitEnd()
+        return cw.toByteArray()
+    }
+
+    private fun jarWith(tmp: Path, version: String, vararg classes: ByteArray): AppConfig {
+        val store = Files.createDirectories(tmp.resolve("artifact-store/remapped-mc/$version"))
+        JarOutputStream(Files.newOutputStream(store.resolve("merged-remapped-map_mojmap-test.jar"))).use { jar ->
+            for (bytes in classes) {
+                jar.putNextEntry(ZipEntry(org.objectweb.asm.ClassReader(bytes).className + ".class"))
+                jar.write(bytes)
+                jar.closeEntry()
+            }
+        }
+        return AppConfig(
+            databasePath = tmp.resolve("db.sqlite").toString(),
+            sources = SourcesConfig(
+                yarnRepo = tmp.toString(),
+                mojmapRepo = tmp.toString(),
+                intermediaryMappings = tmp.toString(),
+                artifactStore = tmp.resolve("artifact-store").toString(),
+            ),
+            initialVersions = emptyList(),
+            search = SearchConfig(maxResults = 100, defaultResults = 20),
+        )
+    }
+
+    @Test
+    fun `an inherited member names the supertype that declares it`(@TempDir tmp: Path) {
+        val (db, config) = seedInheritance(tmp)
+        val entry = HistoryService(db, config)
+            .history(listOf("$serverLevelName:getRespawnData"), "mojmap", null, null)!!.results.single()
+
+        assertEquals("method", entry.type)
+        val span = entry.spans.single()
+        assertEquals(listOf(false, "inherited", levelName, serverLevelName, 2),
+            listOf(span.present, span.reason, span.declaredIn, span.owner, span.versions))
+    }
+
+    @Test
+    fun `a member nothing declares is absent over the range, not an empty history`(@TempDir tmp: Path) {
+        val (db, config) = seedInheritance(tmp)
+        val entry = HistoryService(db, config)
+            .history(listOf("$serverLevelName:noSuchThing"), "mojmap", null, null)!!.results.single()
+
+        assertEquals("unknown", entry.type)
+        val span = entry.spans.single()
+        assertEquals(listOf(false, serverLevelName, null, 2), listOf(span.present, span.owner, span.reason, span.versions))
     }
 
     @Test

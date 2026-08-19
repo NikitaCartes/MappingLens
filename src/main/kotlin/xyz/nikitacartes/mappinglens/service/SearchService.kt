@@ -6,9 +6,11 @@ import xyz.nikitacartes.mappinglens.model.ClassRef
 import xyz.nikitacartes.mappinglens.model.SearchResponse
 import xyz.nikitacartes.mappinglens.model.SearchResultEntry
 import org.jetbrains.exposed.dao.id.IntIdTable
+import org.jetbrains.exposed.sql.Column
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 import java.sql.Connection
@@ -46,11 +48,12 @@ class SearchService(
         val ownerPart = ownerMember?.first
         val memberPart = ownerMember?.second
 
+        val versionRowId = versionRow[VersionTable.id].value
         val results = SearchIndex.openReadOnly(databasePath).use { search ->
             if (ownerPart != null && memberPart != null) {
-                searchOwnerMember(search, table, ownerPart, memberPart, type, namespace, limit, offset, exact)
+                searchOwnerMember(search, table, versionRowId, ownerPart, memberPart, type, namespace, limit, offset, exact)
             } else {
-                searchSingle(search, table, query.trim(), type, namespace, limit, offset, exact)
+                searchSingle(search, table, versionRowId, query.trim(), type, namespace, limit, offset, exact)
             }
         }
         SearchResponse(query, effectiveVersion, results.size, results)
@@ -72,7 +75,7 @@ class SearchService(
     }
 
     private fun searchSingle(
-        search: Connection, table: String, q: String, type: String, namespace: String,
+        search: Connection, table: String, versionRowId: Int, q: String, type: String, namespace: String,
         limit: Int, offset: Int, exact: Boolean,
     ): List<SearchResultEntry> {
         val kind = SearchIndex.kindCode(type)
@@ -92,11 +95,11 @@ class SearchService(
             if (kind != null) add(kind)
             add(limit); add(offset)
         }
-        return resolve(search, hits(search, sql, params)).map { it.entry }
+        return resolve(versionRowId, hits(search, sql, params)).map { it.entry }
     }
 
     private fun searchOwnerMember(
-        search: Connection, table: String, ownerPart: String, memberPart: String,
+        search: Connection, table: String, versionRowId: Int, ownerPart: String, memberPart: String,
         type: String, namespace: String, limit: Int, offset: Int, exact: Boolean,
     ): List<SearchResultEntry> {
         // First, find candidate class ids matching ownerPart.
@@ -132,7 +135,7 @@ class SearchService(
             if (kind != null) add(kind)
             add(limit * 4); add(offset)
         }
-        return resolve(search, hits(search, sql, memberParams))
+        return resolve(versionRowId, hits(search, sql, memberParams))
             .filter { it.ownerClassId in classIdSet }
             .take(limit)
             .map { it.entry }
@@ -157,8 +160,15 @@ class SearchService(
     /** One match: the packed row identity the FTS index returns, and its score. */
     private class Hit(val rowid: Long, val score: Double)
 
-    /** A hydrated hit plus the class it belongs to, which owner#member search filters on. */
-    private class Resolved(val entry: SearchResultEntry, val ownerClassId: Int?)
+    /**
+     * A hydrated hit, the class it belongs to (which owner#member search filters on) and the
+     * official descriptor the named ones are derived from.
+     */
+    private class Resolved(
+        val entry: SearchResultEntry,
+        val ownerClassId: Int?,
+        val obfDescriptor: String? = null,
+    )
 
     private fun hits(search: Connection, sql: String, params: List<Any>): List<Hit> {
         val rows = mutableListOf<Hit>()
@@ -174,7 +184,7 @@ class SearchService(
      * Row by row this cost two statements for each result and about 250ms of the 1214ms that
      * `/search?q=get` took, for lookups SQLite itself answers in a millisecond.
      */
-    private fun resolve(search: Connection, hits: List<Hit>): List<Resolved> {
+    private fun resolve(versionRowId: Int, hits: List<Hit>): List<Resolved> {
         if (hits.isEmpty()) return emptyList()
         val idsByKind = hits.groupBy({ SearchIndex.elementType(it.rowid) }, { SearchIndex.elementId(it.rowid) })
         val methods = rowsById(MethodTable, idsByKind["method"].orEmpty())
@@ -185,7 +195,7 @@ class SearchService(
                 fields.values.map { it[FieldTable.classId].value } +
                 idsByKind["class"].orEmpty(),
         )
-        return hits.mapNotNull { hit ->
+        return withNamedDescriptors(versionRowId, hits.mapNotNull { hit ->
             val elementId = SearchIndex.elementId(hit.rowid)
             when (SearchIndex.elementType(hit.rowid)) {
                 "class" -> classes[elementId]?.let { Resolved(classEntry(it, hit.score), elementId) }
@@ -193,8 +203,44 @@ class SearchService(
                 "field" -> fields[elementId]?.let { memberEntry(FieldTable, it, classes, hit.score) }
                 else -> null
             }
+        })
+    }
+
+    /**
+     * Fills in the descriptors of the named namespaces, which the index does not store: the
+     * official descriptor is rewritten through the classes of this version, in one query for the
+     * whole page of results. Without them a key from `/search` cannot be pasted into `/exists`,
+     * which wants the descriptor of the namespace it was asked about.
+     *
+     * A type the version does not name stays as it came, the way [Descriptors.mapTypes] leaves a
+     * JDK class alone. A namespace the entry itself has no name in gets no descriptor either.
+     */
+    private fun withNamedDescriptors(versionRowId: Int, resolved: List<Resolved>): List<Resolved> {
+        val types = resolved.mapNotNull { it.obfDescriptor }.flatMapTo(HashSet()) { classTypesOf(it) }
+        // An all-primitive descriptor needs no renaming, but it still needs to be reported.
+        val named = types.chunked(500)
+            .flatMap { chunk ->
+                ClassTable.selectAll()
+                    .where { (ClassTable.versionId eq versionRowId) and (ClassTable.obfName inList chunk) }
+                    .toList()
+            }
+            .associateBy { it[ClassTable.obfName].orEmpty() }
+        return resolved.map { r ->
+            val desc = r.obfDescriptor ?: return@map r
+            fun spell(column: Column<String?>) = Descriptors.mapTypes(desc) { named[it]?.get(column) }
+            Resolved(
+                r.entry.copy(
+                    yarnDescriptor = if (r.entry.yarn != null) spell(ClassTable.yarnName) else null,
+                    mojmapDescriptor = if (r.entry.mojmap != null) spell(ClassTable.mojmapName) else null,
+                ),
+                r.ownerClassId,
+            )
         }
     }
+
+    /** Every class type of a descriptor, collected by walking it with a rename that renames nothing. */
+    private fun classTypesOf(descriptor: String): List<String> =
+        ArrayList<String>().also { out -> Descriptors.mapTypes(descriptor) { out.add(it); null } }
 
     /** Reads rows by id, in batches, because SQLite binds a limited number of parameters. */
     private fun rowsById(table: IntIdTable, ids: Collection<Int>): Map<Int, ResultRow> =
@@ -235,6 +281,7 @@ class SearchService(
                 score = score,
             ),
             ownerId,
+            r[cols.obfDesc],
         )
     }
 

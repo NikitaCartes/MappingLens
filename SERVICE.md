@@ -24,12 +24,14 @@ from a read-only GitCraft store. The server opens the index with `PRAGMA query_o
 | Symbol diff           | Added, removed, and renamed classes, methods, and fields between two versions, plus a summary.                                                                                                          |
 | Source diff           | List of changed files, and a unified or git patch of the source between two versions (filterable by path or function).                                                                                  |
 | Version history       | One class or member across every indexed version at once: version ranges that share an answer, rename tracking through intermediary names, several keys per request.                                    |
+| Method body hash      | One method's body hashed for each version of a range, equal neighbours collapsed into spans. Answers "is there anything to re-check" where a source diff reports the decompiler's cosmetics. |
 | Compare Yarn/Mojmap   | Member-correspondence table for one class, between Yarn and Mojmap.                                                                                                                                     |
 | Bytecode              | Disassembled bytecode of a class (ASM Textifier) in any namespace, as text or JSON.                                                                                                                     |
 | Source                | Decompiled `.java` for a class, from the artifact store (Yarn or Mojmap namespace).                                                                                                                     |
 | Inheritance hierarchy | Supertypes and subtypes of a class (ASM scan of the named jar), for the "View Inheritance" right-click action in the UI.                                                                                |
 | Find all references   | Reverse index of where a class, method, or field is used (on-demand ASM scan of the named jar, cached per version and namespace).                                                                       |
 | Existence check       | Batch check that classes or members still exist in a version (`POST /exists`, ASM scan of the named jar). Validates mixin targets before a mod update.                                                  |
+| Mixin target matrix   | A set of mixin targets checked against every version of a range (`POST /validate`), collapsed into spans. Reports a call that left the hooked method, which a signature check cannot see. |
 | Source tokens         | Resolves each identifier in a `.java` file to owner, name, and descriptor (JavaParser symbol solver), as `{source, tokens}`. Backs the member-level right-click actions (copy AW, AT, or Mixin target). |
 | Versions              | List of indexed versions, with namespace-availability flags, counts, and semver order (newest first).                                                                                                   |
 | OpenAPI / Swagger     | Machine-readable spec (`/openapi.json`, `/openapi.yaml`) plus Swagger UI (`/docs`).                                                                                                                     |
@@ -247,11 +249,12 @@ Parameters: `q` (required), `version` (default: the latest release), `type`
 (1 to 200, default 50), `offset` (0 or more), `exact` (`true`/`false`). `q` also accepts the
 form `Owner#member`, `Owner.member`, or `Owner/member`.
 
-A member row carries `intermediaryDescriptor`, never a named descriptor, whatever `namespace`
-asked for: named descriptors are not indexed. The field is named after what it holds, because
-read as a plain `descriptor` it invites being pasted into `/exists`, which matches the descriptor
-of its own namespace and rejects an intermediary one. `POST /api/v1/translate/{version}` converts
-a whole key, descriptor included. `/diff` reports the same field for the same reason.
+A member row carries the descriptor three times: `intermediaryDescriptor` as the index stores it,
+plus `yarnDescriptor` and `mojmapDescriptor`, which are the official descriptor rewritten through
+the classes of that version. The named two are what `/exists` matches on, so a key built out of a
+search row goes there unchanged. Both are filled in one query for the whole page of results. A
+namespace the row has no name in gets no descriptor either, and a type the version does not name
+stays as it came, the way a JDK class does. `/diff` still reports the intermediary one alone.
 
 ### Translate
 
@@ -335,14 +338,100 @@ and `members[]` (one entry per overload).
   gets no history before 1.21.11.
 - Named descriptors are not indexed, so a signature change is visible only as a changed
   `members[].intermediaryDescriptor`, and only on versions that carry intermediary.
-- `present: false` with a non-null `owner` means the class is still there and **the index holds
-  no member of that name under it**. `owner: null` means the class itself is gone. Read it as
-  "not declared here", not as "removed from the game": `/history` reads the mapping index, and
-  `/exists` reads the jar the mod runs against. When the two disagree, the jar is right.
+- `present: false` with a non-null `owner` means the class is still there and **the owner
+  declares no member of that name**. `owner: null` means the class itself is gone.
+- `present: false` with `reason: "inherited"` means a supertype declares it, so the call still
+  resolves; `declaredIn` names that supertype in the requested namespace and `members[]`
+  describes its declaration. With no `reason`, the member really is absent, on the owner and
+  above it. The supertype is read from the named jar of the newest version of the range that has
+  both the class and a jar, one class header at a time, and is then followed through the index
+  like any other class, so a supertype renamed later in the range still answers. 13 of the
+  2018-2019 snapshots carry no `sort_index`, which sorts them after everything else, so the
+  anchor is picked out of the requested range rather than out of the index-wide order.
+- `type: "unknown"` carries spans as well: nothing in the index names this member, and the spans
+  say over which versions. It used to return an empty list, which read like a malformed query.
+- `/history` reads the mapping index, and `/exists` reads the jar the mod runs against. When the
+  two disagree, the jar is right.
 - Twin versions (`1.21.11` and `1.21.11_unobfuscated`) sit next to each other in the version
   order, and the twin's yarn and intermediary names are empty, so such a pair used to yield two
   adjacent spans. The walk now skips variants; `includeVariants=true` brings the old behavior
   back. `releasesOnly=true` drops the snapshots as well.
+
+### Method body hash
+
+| Endpoint                       | Description                                                                     |
+|--------------------------------|---------------------------------------------------------------------------------|
+| `GET /api/v1/bodyhash?q=<key>` | One method's body hashed for each version of a range, equal neighbours collapsed |
+
+Parameters: `q` (required, repeatable, up to 50: `owner:name` or `owner:name:descriptor`),
+`namespace` (`yarn`/`mojmap`, default `mojmap`), `from` and `to` (both required),
+`releasesOnly`, `includeVariants`, `normalize` (`named` by default, or `intermediary`).
+The range is capped at 60 versions, counted after the filters, because each version costs a jar
+open and one entry read.
+
+The answer to "did the behavior change between A and B", which `/diff/patch` cannot give: that
+one works on decompiled source and reports the decompiler's own cosmetics as a change even with
+`ignoreWhitespace=true`. The response is `{namespace, normalize, results[]}`, each entry
+`{query, spans[]}`, each span `{from, to, versions, hash}`. `hash` is null where the version has
+no such method, so a gap reads as a gap. Without a descriptor every overload of the name hashes
+together, sorted, so the answer does not depend on declaration order.
+
+The hash covers the instructions, the labels they jump to, the try/catch table and the frame
+sizes. ASM resolves the constant pool as it reads and `SKIP_DEBUG` drops line numbers and local
+variable names, so a recompile on its own does not move it. `normalize=intermediary` renames the
+class types through intermediary first, which is what makes a hash survive a class rename or a
+package move; member names stay as the namespace spells them either way, so a renamed callee
+still shows. On `LivingEntity.baseTick` over the 16 releases from 1.21 to 26.2 the span breaks at
+1.21.9, where `WorldBorder.getDamageSafeZone` became `getSafeZone`, and `WorldBorder.getCenterX`
+holds one hash across all 16.
+
+Two ceilings. A lambda body is a method of its own and is not followed, so a change confined to a
+lambda does not move the enclosing method's hash; the `$12` of `lambda$baseTick$12` is normalized
+away, so an unrelated lambda added above does not move it either. And an unobfuscated version has
+no intermediary names, so under `normalize=intermediary` its classes keep the names they have —
+the obfuscation boundary breaks the span under either mode.
+
+### Mixin target matrix
+
+| Endpoint                | Description                                                            |
+|-------------------------|------------------------------------------------------------------------|
+| `POST /api/v1/validate` | A set of mixin targets checked against every version of a range        |
+
+Query parameters: `from` and `to` (both required), `releasesOnly`, `includeVariants`. The range is
+capped at 60 versions, counted after the filters. The body is
+`{namespace, targets: [{id, owner, method, descriptor?, at?}]}`, at most 50 targets, where `at` is
+`{value, target}` with `value` either `INVOKE` or `FIELD` and `target` a full
+`owner:name:descriptor`. Omitting `descriptor` follows every overload of the name; omitting `at`
+checks the signature alone.
+
+The answer is `{namespace, results[]}`, each entry `{id, spans[]}`, each span
+`{from, to, versions, status, atCount, closest, movedTo}`. Five statuses:
+
+- `ok`: the method is there, and when `at` was given so is the instruction it names. `atCount` says
+  how many times, which is what `@At(ordinal = N)` numbers `0 .. atCount-1`.
+- `renamed`: the name is there under another descriptor, and `closest` carries the one the version
+  has.
+- `inherited`: a supertype declares it. The call resolves at runtime, but a mixin applies to the
+  class that declares the method, so the target has to name the supertype, which `closest` does.
+- `call_moved`: the method is there and the `at` instruction is not. `movedTo` names the method
+  that holds the call now.
+- `missing`: neither the method nor a near declaration. `movedTo` is still filled when the class
+  holds the call in exactly one other method, which is what a renamed method looks like from here.
+
+`call_moved` is the reason the endpoint exists. A call that moves out of the hooked method leaves
+every signature intact, so `/exists` reports nothing while the injection point breaks in silence.
+`ServerPlayer#adjustSpawnLocation` runs from 1.21 to 26.2 unchanged, and from 1.21.9 its border
+call sits in `PlayerSpawnFinder#findSpawn`. A move inside the class is read straight out of the
+same class parse; a move out of it is paired through `/diff/references` against the newest earlier
+version that still had the call.
+
+A pair costs one read of one jar entry, so the spec's own two targets over the 16 releases from
+1.21 to 26.2 answer in 72ms. Supertypes are read one class header at a time, and only on a miss.
+
+Two ceilings. A call that moved into a lambda of the hooked method reads as `call_moved` with
+`movedTo` naming `lambda$stopSleeping$9` literally, because that is what a mixin has to target, and
+the index moves between versions. And an `@At` value that does not name one instruction (`HEAD`,
+`RETURN`, `CONSTANT`) is rejected rather than guessed at.
 
 ### Compare
 
@@ -396,13 +485,40 @@ the class. Each line is attributed to the version the variant was built from.
 | Endpoint                                         | Description                                                                                                                                                             |
 |--------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `GET /api/v1/hierarchy/{version}/{className...}` | Supertypes and subtypes of a class (nodes/edges, ASM scan of the named jar); `namespace=yarn/mojmap`                                                                    |
-| `GET /api/v1/references/{version}?q=<key>`       | Uses of classes or members (`q` is `owner` or `owner:name:descriptor`, repeatable); `namespace=yarn/mojmap`                                                            |
+| `GET /api/v1/references/{version}?q=<key>`       | Uses of classes or members (`q` is `owner` or `owner:name:descriptor`, repeatable); `namespace=yarn/mojmap`, `releasesOnly=<bool>`                                     |
+| `POST /api/v1/references/{version}`              | The same call with the targets in a body `{namespace, targets[], to, releasesOnly, includeVariants, depth}`, up to 2000 targets; `QUERY` is accepted here too          |
+| `GET /api/v1/diff/references?from=&to=&q=`      | How the sites using a class or member changed between two versions; `{changes: {added, removed, moved}}`                                                               |
 | `POST /api/v1/exists/{version}`                  | Batch existence check for classes/members; body `{namespace, members[]}` (keys are `owner` or `owner:name:descriptor`); response `{results:[{key, exists, closest, reason}]}` |
+| `POST /api/v1/validate?from=&to=`                | The same check over a range, plus the injection point: body `{namespace, targets[]}`, response one span list per target with `ok`/`renamed`/`inherited`/`call_moved`/`missing` |
 
 `references` takes up to 25 `q` values, and `to` extends the walk from `{version}` to a second
-version, up to 25 versions per call. The response is `{namespace, results[]}`, one entry per
-(version, target) as `{version, query, references[]}`. The per-version index is built once and
-served to every target of that version, so asking many targets of one version costs one scan.
+version. The range itself is not capped. What is capped is how many of its versions the prebuilt
+reference index does not cover, at 25, because each of those costs a jar scan of 0.4 to 0.8s and
+~140 MB. The index covers releases, so `releasesOnly=true` walks the whole release line in one
+call: 1.14 to 26.2 is 47 releases and answers in 48ms. Only 43 of them come back, because Mojang's
+official mappings start at 1.14.4 and a version without a named jar has nothing to answer with.
+Without the filter that same range is 469 versions, 426 of them uncovered, and is refused with a
+message that says so.
+A request line above 4096 bytes is rejected by the HTTP parser before the route sees it, which is
+where the limit of 25 comes from; the `POST` form carries up to 2000 targets in a body instead, and
+`QUERY` (RFC 10008) is accepted on the same path with the same body. Neither body form is cached,
+because a URL-keyed cache cannot see the body. The response is `{namespace, results[]}`, one entry
+per (version, target) as `{version, query, references[]}`. The per-version index is built once and
+served to every target of that version, so asking many targets of one version costs one scan. Eight
+indexes stay in memory at a time, the least recently used one first out.
+
+Each site carries `count`, the number of instructions in it that hit the target, which is what
+`@At(ordinal = N)` numbers `0 .. count-1`. A call written inside a lambda reports `member` as the
+method the lambda is written in and `synthetic` as the javac body it compiled to (`lambda$tick$3`),
+because that index moves between versions. Calls inside the calling class itself are indexed, and
+method references are followed through their `invokedynamic`. `depth` above 1 walks the callers of
+the callers and adds `paths`, the chains reaching the target, outermost frame first, at most 200.
+
+`diff/references` groups those sites by the method they sit in and reports the difference between
+two versions. `moved` pairs a removed site with an added one when both reach exactly the same
+members, matching by the same method name, then the same class, then a lone pair. A call that moves
+between methods keeps every signature intact, so `/exists` reports nothing while `@At` breaks in
+silence, which is the case this endpoint exists for.
 Use the batch form for the `@At(target = ...)` half of a mixin: `/exists` covers the method
 injected into, and a signature can survive a version while a call inside its body moves
 elsewhere. `404` when no requested version has a named jar in that namespace.
@@ -410,7 +526,7 @@ elsewhere. `404` when no requested version has a named jar in that namespace.
 `exists` scans the version's named jar with ASM (cached per version and namespace), so
 descriptors match exactly, without remapping. It accepts up to 2000 keys per request, and
 returns `404` when the named jar for the version is missing. This is the only `POST`
-endpoint under `/exists`, and one of two endpoints never cached: the result depends on the
+endpoint under `/exists`, and like every `POST` it is never cached: the result depends on the
 request body. Intended for validating mixin or shadow targets before a mod update, in one call.
 
 A key that missed carries the nearest declaration in `closest`, in the same key form, with
@@ -466,6 +582,21 @@ The SQLite index (built by `index`, opened read-only by `serve`) holds: `version
 (metadata, semver order, counts), and unified obf-keyed rows in `classes`/`methods`/`fields`
 (with `presence` in `{both, yarn_only, mojmap_only}`). It does not store decompiled source,
 bytecode, or git blobs; those are read on demand from the read-only store.
+
+References are answered from a third file, `mappinglens-refs.db`, holding one row for each class
+of each (version, namespace): who references each of its members, deflated. Without it the server
+scans a version's whole named jar the first time it is asked about that version, which costs 0.4 to
+0.8s and holds ~140 MB for as long as the index is cached. A row costs 0.7ms with a fresh connection
+and 0.1ms on a warm one, and holds nothing: over the checks above the live heap stayed at 12 MB
+where the scanning path reached 584 MB. One row for each class rather than for each member, because
+the class is the unit every reader asks for and because it deflates 6.8 times where member-sized
+blobs of the same data reach 2.7.
+
+`index` builds it for the releases, which is 90 (version, namespace) pairs, 1.0 GB and 57s. Pass
+`-refs=all` for every version (10.3 GB, 11 minutes) or `-refs=none` to skip the step. A pair is
+built once and then skipped, since the jar behind it never changes. The file is optional: a version
+it does not cover is answered by the scan, so a partial file is a valid file, and a server without
+the file behaves as it did before.
 
 Names are searched through a second file, `mappinglens-search.db`, which holds one contentless
 FTS5 table for each version, named `search_v<version row id>`. FTS5 answers a prefix term by

@@ -62,7 +62,15 @@ private fun runIndex(args: Array<String>, log: Logger) {
     // refreshed is already indexed, so a rebuild of it needs -force as well.
     val only = args.firstOrNull { it.startsWith("-versions=") || it.startsWith("--versions=") }
         ?.substringAfter('=')?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
-    IngestPipeline(startup.appConfig).run(force, only)
+    // -refs=releases (default), all, or none: how much of the prebuilt reverse-reference index to
+    // build. Releases cost 0.96 GB and a minute; all 515 versions cost 10.3 GB and 11 minutes.
+    val references = args.firstOrNull { it.startsWith("-refs=") || it.startsWith("--refs=") }
+        ?.substringAfter('=') ?: "releases"
+    if (references !in setOf("releases", "all", "none")) {
+        System.err.println("Unknown -refs=$references. Use releases, all or none.")
+        exitProcess(2)
+    }
+    IngestPipeline(startup.appConfig).run(force, only, references)
     log.info("Index build complete.")
 }
 
@@ -96,6 +104,7 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
         anyHost()
         allowMethod(HttpMethod.Get)
         allowMethod(HttpMethod.Post)
+        allowMethod(HttpMethod("QUERY"))
         allowHeader(HttpHeaders.ContentType)
     }
 
@@ -151,7 +160,9 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
     val referenceService = ReferenceService(appConfig)
     val existsService = ExistsService(appConfig)
     val tokenService = TokenService(appConfig, bytecodeService)
-    val historyService = HistoryService(database)
+    val historyService = HistoryService(database, appConfig)
+    val bodyHashService = BodyHashService(appConfig, database)
+    val validateService = ValidateService(appConfig, referenceService)
 
     routing {
         rateLimit {
@@ -166,6 +177,8 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
             existsRoutes(existsService)
             tokenRoutes(tokenService)
             historyRoutes(historyService)
+            bodyHashRoutes(bodyHashService, versionService)
+            validateRoutes(validateService, versionService)
         }
 
         get("/") {

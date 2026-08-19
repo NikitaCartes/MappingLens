@@ -2,7 +2,9 @@ package xyz.nikitacartes.mappinglens.ingestion
 
 import xyz.nikitacartes.mappinglens.config.AppConfig
 import xyz.nikitacartes.mappinglens.data.GitCraftStore
+import xyz.nikitacartes.mappinglens.db.ReferenceIndexStore
 import xyz.nikitacartes.mappinglens.db.SearchIndex
+import xyz.nikitacartes.mappinglens.service.ReferenceService
 import xyz.nikitacartes.mappinglens.db.tables.*
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
@@ -29,8 +31,11 @@ class IngestPipeline(private val config: AppConfig) {
             .takeIf { it.isNotBlank() }?.let { Paths.get(it) },
     )
 
-    /** [only] restricts the run to the given version ids, overriding `indexing.initial-versions`. */
-    fun run(force: Boolean = false, only: List<String> = emptyList()) {
+    /**
+     * [only] restricts the run to the given version ids, overriding `indexing.initial-versions`.
+     * [references] is the scope of the prebuilt reverse-reference index: `releases`, `all` or `none`.
+     */
+    fun run(force: Boolean = false, only: List<String> = emptyList(), references: String = "releases") {
         val allSorted = store.versionIds()
         val rankOf = allSorted.withIndex().associate { (i, v) -> v to i }
         val filterList = (only.takeIf { it.isNotEmpty() } ?: config.initialVersions)
@@ -67,6 +72,41 @@ class IngestPipeline(private val config: AppConfig) {
         }
 
         syncSortIndex(rankOf)
+        buildReferenceIndex(references)
+    }
+
+    /**
+     * Builds the prebuilt reverse-reference index of every version in scope that has none, so the
+     * server answers "who calls this" from a row instead of scanning the whole named jar.
+     *
+     * Releases by default. All 515 versions would cost 10.3 GB and 11 minutes where the 47 releases
+     * cost 0.96 GB and a minute, and a version outside the file still answers, by the scan. A
+     * (version, namespace) pair is skipped once built, since the jar behind it never changes.
+     */
+    private fun buildReferenceIndex(scope: String) {
+        if (scope == "none") return
+        val versions = transaction {
+            VersionTable.selectAll()
+                .where { VersionTable.variantOf.isNull() }
+                .map { it[VersionTable.versionId] to it[VersionTable.releaseType] }
+        }
+        ReferenceIndexStore.openWritable(config.databasePath).use { conn ->
+            val built = ReferenceIndexStore.built(conn)
+            val todo = versions
+                .filter { scope == "all" || it.second == "release" }
+                .flatMap { (version, _) -> listOf("mojmap", "yarn").map { version to it } }
+                .filter { it !in built && config.sources.remappedJar(it.first, it.second) != null }
+            if (todo.isEmpty()) return
+            log.info("Building the reference index of {} version/namespace pairs", todo.size)
+            val started = System.currentTimeMillis()
+            todo.forEach { (version, namespace) ->
+                val jar = config.sources.remappedJar(version, namespace)!!.toFile()
+                ReferenceIndexStore.write(conn, version, namespace, ReferenceService.scanJar(jar))
+                conn.commit()
+                log.debug("  references of {} ({}) built", version, namespace)
+            }
+            log.info("Built {} pairs in {}s", todo.size, (System.currentTimeMillis() - started) / 1000)
+        }
     }
 
     /**

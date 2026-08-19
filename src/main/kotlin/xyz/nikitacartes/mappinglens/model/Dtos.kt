@@ -61,13 +61,15 @@ data class SearchResultEntry(
     val mojmap: String? = null,
     val obfuscated: String? = null,
     val owner: ClassRef? = null,
-    /**
-     * Named descriptors are not indexed, so this is the intermediary one whatever `namespace` asked
-     * for. Named after what it holds: read as a plain `descriptor` it invites being pasted into
-     * `/exists`, which wants the descriptor of the requested namespace and rejects this one.
-     * `POST /translate/{version}` converts a key from one namespace to another, descriptor included.
-     */
+    /** The descriptor as intermediary names it. Absent on a version whose tiny files omit it. */
     val intermediaryDescriptor: String? = null,
+    /**
+     * The same descriptor as the named namespaces spell it, which is what `/exists` wants, so a key
+     * built out of this entry needs no translation. Each is present when the entry carries a name
+     * in that namespace, so a version without yarn returns [mojmapDescriptor] alone.
+     */
+    val yarnDescriptor: String? = null,
+    val mojmapDescriptor: String? = null,
     val score: Double = 0.0,
 )
 
@@ -289,6 +291,10 @@ data class ReferenceItem(
     val member: String? = null,
     val descriptor: String? = null,
     val kind: String, // class | method | field (of the referring site)
+    /** Instructions in this site that hit the target; `@At(ordinal = N)` numbers them 0..count-1. */
+    val count: Int = 1,
+    /** The javac lambda body the reference sits in, when [member] is the method that lambda is written in. */
+    val synthetic: String? = null,
 )
 
 /** The sites referencing one target in one version. */
@@ -297,6 +303,8 @@ data class ReferenceGroup(
     val version: String,
     val query: String,
     val references: List<ReferenceItem>,
+    /** Caller chains reaching the target, outermost frame first. Empty unless `depth` was above 1. */
+    val paths: List<List<ReferenceItem>> = emptyList(),
 )
 
 @Serializable
@@ -304,6 +312,56 @@ data class ReferenceResponse(
     val namespace: String,
     /** One group per (version, target), versions oldest first and targets in request order. */
     val results: List<ReferenceGroup>,
+)
+
+/** One calling method and the members of the queried target it touches, in one version. */
+@Serializable
+data class ReferenceSite(
+    val owner: String,
+    val ownerSimple: String,
+    val member: String,
+    /** The members of the query this site reaches, as `name:descriptor`. */
+    val targets: List<String>,
+)
+
+/** A call that left one method for another between the two versions. */
+@Serializable
+data class ReferenceMove(
+    val from: String,
+    val to: String,
+)
+
+@Serializable
+data class ReferenceChanges(
+    val added: List<ReferenceSite>,
+    val removed: List<ReferenceSite>,
+    /**
+     * Pairs from [removed] and [added] that reach exactly the same members, matched one to one.
+     * A rename of the calling method reads as a move; the pair also stays in the two lists above.
+     */
+    val moved: List<ReferenceMove>,
+)
+
+@Serializable
+data class ReferenceDiffResponse(
+    val from: String,
+    val to: String,
+    val namespace: String,
+    val query: String,
+    val changes: ReferenceChanges,
+)
+
+/** The body form of a `/references` request, for batches too large for a query string. */
+@Serializable
+data class ReferenceRequest(
+    val namespace: String = "mojmap",
+    val targets: List<String> = emptyList(),
+    /** The far end of a version range; the route's `{version}` is the near end. */
+    val to: String? = null,
+    val releasesOnly: Boolean = false,
+    val includeVariants: Boolean = false,
+    /** Frames of the caller chain to walk; 1 answers "who calls this" and reports no paths. */
+    val depth: Int = 1,
 )
 
 @Serializable
@@ -363,6 +421,14 @@ data class HistorySpan(
     // a removed member and a removed class are distinguishable), and one entry per overload.
     val owner: String? = null,
     val members: List<HistoryMember> = emptyList(),
+    /**
+     * Why the owner does not declare it, spelled as `/exists` spells it. `inherited` means a
+     * supertype declares it and the call still resolves, and [declaredIn] names that supertype;
+     * [members] then describes the inherited declaration. A `present: false` span with no reason
+     * is a member that is really gone.
+     */
+    val reason: String? = null,
+    val declaredIn: String? = null,
 )
 
 @Serializable
@@ -376,6 +442,32 @@ data class HistoryEntry(
 data class HistoryResponse(
     val namespace: String,
     val results: List<HistoryEntry>,
+)
+
+/**
+ * A run of consecutive versions whose method body hashes alike. [hash] is null where the version
+ * has no such method, so a gap reads as a gap rather than as another body.
+ */
+@Serializable
+data class BodyHashSpan(
+    val from: String,
+    val to: String,
+    val versions: Int,
+    val hash: String? = null,
+)
+
+@Serializable
+data class BodyHashEntry(
+    val query: String,
+    val spans: List<BodyHashSpan>,
+)
+
+@Serializable
+data class BodyHashResponse(
+    val namespace: String,
+    /** `named` or `intermediary`: which names the hash was taken over. */
+    val normalize: String,
+    val results: List<BodyHashEntry>,
 )
 
 @Serializable
@@ -400,4 +492,59 @@ data class CompareResponse(
     val mojmapClass: String? = null,
     val presence: String? = null, // both | yarn_only | mojmap_only
     val members: List<CompareMember>,
+)
+
+/** Where a mixin injects, as `@At` spells it. */
+@Serializable
+data class ValidateAt(
+    /** `INVOKE` or `FIELD`; both match one instruction by its target key. */
+    val value: String = "INVOKE",
+    /** The instruction's own target, `owner:name:descriptor`. */
+    val target: String,
+)
+
+/** One mixin target to follow across a range: the method it hooks, and where inside it. */
+@Serializable
+data class ValidateTarget(
+    /** The caller's own label for this target, echoed back on the result. */
+    val id: String,
+    val owner: String,
+    val method: String,
+    /** Null follows every overload of the name. */
+    val descriptor: String? = null,
+    val at: ValidateAt? = null,
+)
+
+@Serializable
+data class ValidateRequest(
+    val namespace: String = "mojmap",
+    val targets: List<ValidateTarget> = emptyList(),
+)
+
+/** A run of consecutive versions that answer the same way about one target. */
+@Serializable
+data class ValidateSpan(
+    val from: String,
+    val to: String,
+    val versions: Int,
+    /** `ok` | `renamed` | `inherited` | `call_moved` | `missing`. */
+    val status: String,
+    /** How many instructions in the body hit `at`. Only on `ok`, and only when `at` was given. */
+    val atCount: Int? = null,
+    /** The declaration to hook instead, in key form. On `renamed` and `inherited`. */
+    val closest: String? = null,
+    /** `owner#method` the call went to, when it could be paired. On `call_moved`. */
+    val movedTo: String? = null,
+)
+
+@Serializable
+data class ValidateEntry(
+    val id: String,
+    val spans: List<ValidateSpan>,
+)
+
+@Serializable
+data class ValidateResponse(
+    val namespace: String,
+    val results: List<ValidateEntry>,
 )
