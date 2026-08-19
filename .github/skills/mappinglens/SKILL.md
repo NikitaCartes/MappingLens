@@ -202,9 +202,10 @@ Unless a subsection says otherwise, `namespace` accepts `yarn` or `mojmap` and d
 - `GET 127.0.0.1:8080/api/v1/references/{version}?q={key}&namespace={namespace}&to={version}&releasesOnly={bool}&includeVariants={bool}`
 - `POST 127.0.0.1:8080/api/v1/references/{version}` with `{"namespace", "targets": [...], "to", "releasesOnly", "includeVariants"}` for larger batches. `QUERY` works on the same path with the same body.
 - `q` (required, repeatable): the target, either a class internal name (`net/minecraft/world/level/block/Block`) or a member key `owner:name:descriptor`. Up to 25 per call on `GET`, up to 2000 in a body. A request line above 4096 bytes never reaches the route, so post anything longer.
+- `q` matches the owner written in the call instruction, not the class that declares the member. A call to an inherited method carries the subclass the caller holds, so `net/minecraft/world/level/Level:getRespawnData` returns no sites while `net/minecraft/server/level/ServerLevel:getRespawnData` returns 12. An empty `references` for a member is not proof that nothing calls the member. No parameter walks the hierarchy: ask `/hierarchy` for the subtypes, then repeat the query for the subclass that callers hold. `/exists` reports the same asymmetry from the other side, as `reason: "inherited"`.
 - `to`: the far end of a version range whose near end is `{version}`. Either bound may be the older one. Omit it to ask one version. The range is not capped; what is capped, at 25, is how many of its versions the prebuilt reference index does not cover, because each of those costs a jar scan.
 - `releasesOnly`: walk releases alone. The prebuilt index covers releases, so this walks the whole release line in one call — `1.14` to `26.2` is 47 releases. Without it, that range is 469 versions and is refused.
-- `depth` (1 to 5, default 1): frames of the caller chain to walk. Above 1 the response also carries `paths`, the chains that reach the target, outermost frame first, at most 200 of them. Use it for "which entry points reach this" instead of asking one level per round.
+- `depth` (1 to 5, default 1): frames of the caller chain to walk. Above 1 the response also carries `paths`, the chains that reach the target, outermost frame first, at most 200 of them. Use it for "which entry points reach this" instead of asking one level per round. Each frame of a chain is a `references[]` object, not a string.
 - Returns `{namespace, results[]}`: one entry per (version, target) as `{version, query, references[]}`, versions oldest first and targets in request order. A version that has a named jar but knows nothing of a target gives an empty `references`.
 - Each referencing site is `{owner, ownerSimple, member, descriptor, kind, count, synthetic}` (the enclosing method, or the class header). Only references to Minecraft classes in the same jar are indexed. JDK and library targets are dropped.
 - `count` is how many instructions in that site hit the target. `@At(ordinal = N)` numbers them `0 .. count-1`, so `count: 2` means two injection points in one method.
@@ -258,6 +259,7 @@ Unless a subsection says otherwise, `namespace` accepts `yarn` or `mojmap` and d
   - `call_moved` — the method is there and the `at` instruction is not. `movedTo` names the method that holds the call now. **This is the check `/exists` cannot make**: every signature is intact and the injection point breaks in silence.
   - `missing` — neither the method nor a near declaration. `movedTo` is still set when the class holds the `at` call in exactly one other method, which is what a renamed method looks like from here.
 - A call that moved into a lambda of the same method reads as `call_moved`, and `movedTo` names `lambda$stopSleeping$9` literally, because that is what a mixin has to target. The lambda index moves between versions, so such a span breaks wherever the index does.
+- **`/validate` proves the targets that were sent, and says nothing about the targets that were not.** An all-`ok` report is not a coverage report. To check coverage, list every injection point the mod declares, then subtract the targets already sent. Match the two lists by `@At(target = ...)`, not by method or by `id`, because one method holds several injection points under one `id`.
 
 ### Meta / Health
 
@@ -481,10 +483,24 @@ change is sometimes invisible in `members[].intermediaryDescriptor`.
 {"namespace": "mojmap", "results": [
   {"version": "26.1", "query": "net/minecraft/server/level/ServerLevel", "references": [
     {"owner": "net/minecraft/advancements/AdvancementRewards", "ownerSimple": "AdvancementRewards",
-     "member": "grant", "descriptor": "(Lnet/minecraft/server/level/ServerPlayer;)V", "kind": "method"}
+     "member": "grant", "descriptor": "(Lnet/minecraft/server/level/ServerPlayer;)V", "kind": "method",
+     "count": 2, "synthetic": null}
+  ],
+   "paths": [
+    [{"owner": "net/minecraft/server/PlayerAdvancements", "ownerSimple": "PlayerAdvancements",
+      "member": "award", "descriptor": "(Lnet/minecraft/advancements/AdvancementHolder;Ljava/lang/String;)Z",
+      "kind": "method", "count": 1, "synthetic": null},
+     {"owner": "net/minecraft/advancements/AdvancementRewards", "ownerSimple": "AdvancementRewards",
+      "member": "grant", "descriptor": "(Lnet/minecraft/server/level/ServerPlayer;)V",
+      "kind": "method", "count": 2, "synthetic": null}]
   ]}
 ]}
 ```
+
+`paths` is a list of chains, and each chain is a list of the same objects that `references[]` holds,
+outermost frame first. The last frame of a chain is the site that touches the target itself, so a
+chain holds one frame when that site has no caller within `depth`. `paths` is `[]` unless `depth`
+was above 1.
 
 ### `POST /exists/{version}`
 

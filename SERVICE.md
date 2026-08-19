@@ -522,6 +522,12 @@ per (version, target) as `{version, query, references[]}`. The per-version index
 served to every target of that version, so asking many targets of one version costs one scan. Eight
 indexes stay in memory at a time, the least recently used one first out.
 
+The index records the owner written in the call instruction, not the class that declares the
+member. A call to an inherited method carries the subclass the caller holds, so
+`Level:getRespawnData` answers with nothing while `ServerLevel:getRespawnData` answers with 12
+sites. No parameter walks the hierarchy. Read an empty result for a member as "no caller names this
+owner", then ask `/hierarchy` for the subtypes and repeat the query for each subtype.
+
 Each site carries `count`, the number of instructions in it that hit the target, which is what
 `@At(ordinal = N)` numbers `0 .. count-1`. A call written inside a lambda reports `member` as the
 method the lambda is written in and `synthetic` as the javac body it compiled to (`lambda$tick$3`),
