@@ -118,6 +118,15 @@ data class SearchConfig(
     val defaultResults: Int,
 )
 
+/**
+ * The resource explorer, which reads a clone of `misode/mcmeta`.
+ *
+ * [repo] empty disables the feature: the endpoints answer 404 and nothing else changes. The set of
+ * branches the clone holds is the granularity. An operator who does not want the textures and the
+ * sounds clones `diff` alone, and the `assets` paths then carry no data.
+ */
+data class ResourcesConfig(val repo: String = "")
+
 data class AppConfig(
     val databasePath: String,
     val sources: SourcesConfig,
@@ -138,6 +147,7 @@ data class AppConfig(
      * The GitCraft counterpart is `--only-stable`.
      */
     val onlyReleases: Boolean = false,
+    val resources: ResourcesConfig = ResourcesConfig(),
 ) {
     init {
         require(mappings.isNotEmpty() && mappings.all { it in ALL_MAPPINGS }) {
@@ -168,6 +178,9 @@ data class AppConfig(
                 search = SearchConfig(
                     maxResults = ml.property("search.max-results").getString().toInt(),
                     defaultResults = ml.property("search.default-results").getString().toInt(),
+                ),
+                resources = ResourcesConfig(
+                    repo = ml.propertyOrNull("resources.repo")?.getString().orEmpty(),
                 ),
             )
         }

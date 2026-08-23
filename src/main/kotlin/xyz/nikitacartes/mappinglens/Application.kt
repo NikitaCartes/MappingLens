@@ -5,6 +5,7 @@ import xyz.nikitacartes.mappinglens.config.RuntimeBootstrap
 import xyz.nikitacartes.mappinglens.db.DatabaseFactory
 import xyz.nikitacartes.mappinglens.db.SearchIndex
 import xyz.nikitacartes.mappinglens.ingestion.IngestPipeline
+import xyz.nikitacartes.mappinglens.ingestion.ResourceIndexer
 import xyz.nikitacartes.mappinglens.model.ApiError
 import xyz.nikitacartes.mappinglens.routes.*
 import xyz.nikitacartes.mappinglens.service.*
@@ -44,9 +45,10 @@ fun main(args: Array<String>) {
     }
     when (command) {
         "index" -> runIndex(rest, log)
+        "index-resources" -> runIndexResources(rest, log)
         "serve" -> runServe(rest, log)
         else -> {
-            System.err.println("Unknown command '$command'. Usage: mappinglens [serve|index] [options]")
+            System.err.println("Unknown command '$command'. Usage: mappinglens [serve|index|index-resources] [options]")
             exitProcess(2)
         }
     }
@@ -72,6 +74,29 @@ private fun runIndex(args: Array<String>, log: Logger) {
     }
     IngestPipeline(startup.appConfig).run(force, only, references)
     log.info("Index build complete.")
+}
+
+/**
+ * Offline: build the resource index from the configured mcmeta clone.
+ *
+ * A command of its own because the resource explorer is optional and its index is a file of its own.
+ * `-fts=none` skips both full-text tables, `-fts=content` skips the translations alone.
+ */
+private fun runIndexResources(args: Array<String>, log: Logger) {
+    val startup = RuntimeBootstrap.load(args)
+    val repo = startup.appConfig.resources.repo
+    if (repo.isBlank()) {
+        System.err.println("mappinglens.resources.repo is empty. Point it at a clone of misode/mcmeta.")
+        exitProcess(2)
+    }
+    val fts = args.firstOrNull { it.startsWith("-fts=") || it.startsWith("--fts=") }
+        ?.substringAfter('=') ?: "all"
+    if (fts !in setOf("none", "content", "all")) {
+        System.err.println("Unknown -fts=$fts. Use none, content or all.")
+        exitProcess(2)
+    }
+    log.info("Building resource index from {} (config {})", repo, startup.configPath)
+    ResourceIndexer(repo, startup.appConfig.databasePath, fts).run()
 }
 
 /** Online: start the stateless HTTP server over the prebuilt read-only index. */
@@ -163,6 +188,8 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
     val historyService = HistoryService(database, appConfig)
     val bodyHashService = BodyHashService(appConfig, database)
     val validateService = ValidateService(appConfig, referenceService)
+    val resourceService = ResourceService(appConfig)
+    if (resourceService.available) log.info("Resource explorer enabled from {}", appConfig.resources.repo)
 
     routing {
         rateLimit {
@@ -179,6 +206,7 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
             historyRoutes(historyService)
             bodyHashRoutes(bodyHashService, versionService)
             validateRoutes(validateService, versionService)
+            resourceRoutes(resourceService)
         }
 
         get("/") {

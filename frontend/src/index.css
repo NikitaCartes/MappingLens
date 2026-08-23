@@ -564,3 +564,146 @@ b.renamed {
   color: var(--field);
   font-size: 0.7rem;
 }
+
+/* ---- Resources: the mcmeta explorer ---- */
+
+.resourcesview {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  flex: 1;
+}
+.resource-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.resources-empty {
+  padding: 1.25rem;
+}
+.resource-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+}
+.resource-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+.resource-crumbs span {
+  cursor: pointer;
+}
+.resource-crumbs span:not(:last-child)::after {
+  content: " /";
+  color: var(--border);
+}
+.resource-crumbs span:hover {
+  color: var(--accent);
+}
+.resource-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.3rem;
+}
+.resource-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+}
+.resource-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.18rem 0.4rem;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.resource-list li:hover {
+  background: var(--bg-elev-2);
+}
+.resource-list li.selected {
+  background: var(--bg-elev-2);
+  color: var(--accent);
+}
+.resource-dir {
+  color: var(--class);
+}
+.resource-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.resource-size,
+.resource-range {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  padding-left: 0.5rem;
+}
+.resource-hit {
+  flex-wrap: wrap;
+}
+.resource-key {
+  color: var(--field);
+}
+.resource-value {
+  color: var(--text);
+}
+.resource-hit .resource-path {
+  color: var(--text-dim);
+  font-size: 0.7rem;
+}
+.badge-added {
+  background: var(--field);
+}
+.badge-removed {
+  background: #ff7b72;
+}
+.badge-modified {
+  background: var(--method);
+}
+.resource-viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.resource-title {
+  padding: 0.4rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+.resource-content {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+.resource-media {
+  display: flex;
+  gap: 1.25rem;
+  align-items: flex-start;
+  padding: 1rem;
+  overflow: auto;
+  height: 100%;
+}
+.resource-media img {
+  /* Block and item textures are 16x16. Shown at their own size they are unreadable, so scale them
+     up and keep the pixels square. */
+  image-rendering: pixelated;
+  width: min(45%, 320px);
+  height: auto;
+  background: repeating-conic-gradient(var(--bg-elev-2) 0% 25%, var(--bg-elev) 0% 50%) 0 0 / 16px 16px;
+}

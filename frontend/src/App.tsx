@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { App as AntApp, ConfigProvider, Splitter, Tabs, theme } from "antd";
+import { App as AntApp, ConfigProvider, Segmented, Splitter, Tabs, theme } from "antd";
 import { fetchVersions, search } from "./api";
 import { messageOf } from "./util";
 import type {
@@ -15,6 +15,7 @@ import { CodeView, tabLabel } from "./components/CodeView";
 import { CompareView } from "./components/CompareView";
 import { InheritanceView, hierarchyTabLabel } from "./components/InheritanceView";
 import { ReferencesView, referencesTabLabel } from "./components/ReferencesView";
+import { ResourcesView } from "./components/ResourcesView";
 import {
   OpenClassProvider,
   type OpenClassRequest,
@@ -47,6 +48,9 @@ export default function App() {
   // ponytail: mojmap default — new versions are mojmap-only (no recent yarn). Derive per-version if yarn-only versions matter.
   const [sourceNamespace, setSourceNamespace] = useState<SourceNamespace>("mojmap");
   const [mode, setMode] = useState<Mode>("search");
+  // The two explorers: the mappings of the game, and the resources of the game. They share nothing
+  // but the header, so the switch replaces the whole layout instead of a pane inside it.
+  const [explorer, setExplorer] = useState<"mappings" | "resources">("mappings");
 
   const [searchNamespace, setSearchNamespace] = useState<SearchNamespace>("all");
   const [type, setType] = useState<SearchType>("all");
@@ -217,8 +221,24 @@ export default function App() {
           <div className="app">
           <header className="topbar">
             <h1>MappingLens</h1>
-            <span className="tagline">Minecraft mappings explorer</span>
+            <Segmented
+              size="small"
+              value={explorer}
+              options={[
+                { value: "mappings", label: "Mappings" },
+                { value: "resources", label: "Resources" },
+              ]}
+              onChange={(value) => setExplorer(value as typeof explorer)}
+            />
+            <span className="tagline">
+              {explorer === "mappings" ? "Minecraft mappings explorer" : "Minecraft resources explorer"}
+            </span>
           </header>
+          {explorer === "resources" ? (
+            <div className="layout">
+              <ResourcesView />
+            </div>
+          ) : (
           <div className="layout">
             <Splitter>
               <Splitter.Panel defaultSize="340" min="220" max="65%">
@@ -254,6 +274,7 @@ export default function App() {
               </Splitter.Panel>
             </Splitter>
           </div>
+          )}
           </div>
         </OpenClassProvider>
       </AntApp>

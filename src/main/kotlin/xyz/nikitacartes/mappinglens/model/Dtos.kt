@@ -573,3 +573,97 @@ data class ValidateResponse(
     val namespace: String,
     val results: List<ValidateEntry>,
 )
+
+// ---- Resources: the mcmeta explorer -------------------------------------------------------------
+
+@Serializable
+data class ResourceVersion(
+    /** Rank of this version in the resource index, oldest first. */
+    val ord: Int,
+    /** The id mcmeta writes, such as `1.21.4` or `26.3-snapshot-9`. */
+    val mcmetaId: String,
+    /** The display name mcmeta writes, such as `26.3 Snapshot 9`. */
+    val name: String,
+    /** The MappingLens canonical version id, or null when this version is not indexed. */
+    val versionId: String? = null,
+    val releaseType: String? = null,
+    val releaseTime: String? = null,
+    /** The mcmeta branches that carry this version. */
+    val branches: List<String> = emptyList(),
+)
+
+@Serializable
+data class ResourceVersionListResponse(val versions: List<ResourceVersion>)
+
+@Serializable
+data class ResourceEntry(
+    val name: String,
+    val path: String,
+    val directory: Boolean,
+    val size: Long = 0,
+    /** The git blob id of the content, so a client can tell two versions apart without reading them. */
+    val sha: String? = null,
+)
+
+@Serializable
+data class ResourceTreeResponse(
+    val version: String,
+    val branch: String,
+    val path: String,
+    val entries: List<ResourceEntry>,
+)
+
+@Serializable
+data class ResourceChange(
+    val path: String,
+    /** `added` | `removed` | `modified`. */
+    val changeType: String,
+    val fromSha: String? = null,
+    val toSha: String? = null,
+)
+
+@Serializable
+data class ResourceDiffResponse(
+    val from: String,
+    val to: String,
+    val branch: String,
+    val changes: List<ResourceChange>,
+)
+
+@Serializable
+data class ResourceHistoryEntry(
+    val fromVersion: String,
+    val toVersion: String,
+    val sha: String,
+    val size: Long,
+)
+
+@Serializable
+data class ResourceHistoryResponse(
+    val branch: String,
+    val path: String,
+    val entries: List<ResourceHistoryEntry>,
+)
+
+@Serializable
+data class ResourceHit(
+    val branch: String,
+    val path: String,
+    val fromVersion: String,
+    val toVersion: String,
+    /** The translation key, on a translation hit. */
+    val key: String? = null,
+    /** The translated text, on a translation hit. */
+    val value: String? = null,
+    /** The git blob id that matched, on a content hit. */
+    val sha: String? = null,
+)
+
+@Serializable
+data class ResourceSearchResponse(
+    val query: String,
+    /** `content` | `translation`. */
+    val type: String,
+    val total: Int,
+    val results: List<ResourceHit>,
+)

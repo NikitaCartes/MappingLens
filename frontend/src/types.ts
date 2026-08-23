@@ -212,3 +212,78 @@ export interface TokensResponse {
   source: string;
   tokens: SourceToken[];
 }
+
+// ---- Resources: the mcmeta explorer ----
+
+export interface ResourceVersion {
+  ord: number;
+  mcmetaId: string;
+  name: string;
+  versionId?: string | null;
+  releaseType?: string | null;
+  releaseTime?: string | null;
+  branches: string[];
+}
+
+export interface ResourceVersionListResponse {
+  versions: ResourceVersion[];
+}
+
+export interface ResourceEntry {
+  name: string;
+  path: string;
+  directory: boolean;
+  size: number;
+  sha?: string | null;
+}
+
+export interface ResourceTreeResponse {
+  version: string;
+  branch: string;
+  path: string;
+  entries: ResourceEntry[];
+}
+
+export interface ResourceChange {
+  path: string;
+  changeType: "added" | "removed" | "modified";
+  fromSha?: string | null;
+  toSha?: string | null;
+}
+
+export interface ResourceDiffResponse {
+  from: string;
+  to: string;
+  branch: string;
+  changes: ResourceChange[];
+}
+
+export interface ResourceHistoryEntry {
+  fromVersion: string;
+  toVersion: string;
+  sha: string;
+  size: number;
+}
+
+export interface ResourceHistoryResponse {
+  branch: string;
+  path: string;
+  entries: ResourceHistoryEntry[];
+}
+
+export interface ResourceHit {
+  branch: string;
+  path: string;
+  fromVersion: string;
+  toVersion: string;
+  key?: string | null;
+  value?: string | null;
+  sha?: string | null;
+}
+
+export interface ResourceSearchResponse {
+  query: string;
+  type: string;
+  total: number;
+  results: ResourceHit[];
+}

@@ -56,6 +56,20 @@ case "$REFS" in
 	*) log "REFS must be all, releases or none, but is '$REFS'"; exit 1 ;;
 esac
 
+# MCMETA_BRANCHES names the mcmeta branches the resource explorer indexes, separated by a space or
+# a comma. All four are the default, and an empty value turns the feature off. The default is
+# expanded with "-" and not with ":-", so that an empty value keeps its meaning and is not read as
+# a request for the default. MCMETA_FTS is the scope of the full-text tables: "all" indexes the file
+# contents and the translations, "content" the contents alone, "none" neither.
+MCMETA_BRANCHES=$(printf '%s' "${MCMETA_BRANCHES-assets diff registries atlas}" | tr ',' ' ')
+MCMETA_FTS=${MCMETA_FTS:-all}
+MCMETA_URL=${MCMETA_URL:-https://github.com/misode/mcmeta}
+MAPPINGLENS_MCMETA_REPO=${MAPPINGLENS_MCMETA_REPO:-/data/mcmeta}
+case "$MCMETA_FTS" in
+	all | content | none) ;;
+	*) log "MCMETA_FTS must be all, content or none, but is '$MCMETA_FTS'"; exit 1 ;;
+esac
+
 if [ "$ONLY_RELEASES" = "true" ]; then
 	GITCRAFT_VERSION_FILTER=--only-stable
 	# A new snapshot must not write the marker of a build that produces nothing.
@@ -184,6 +198,33 @@ sync_index() {
 	cp /tmp/store.now "$STATE/store.files"
 }
 
+# The resource explorer, which reads a clone of misode/mcmeta. MCMETA_BRANCHES names the branches
+# to clone, and an empty value turns the feature off: no clone is made and no index is built.
+# The clone carries no working tree, because every read goes through git plumbing.
+# The index is rebuilt whole whenever a branch tip moves, which takes under two minutes.
+sync_resources() {
+	[ -n "$MCMETA_BRANCHES" ] || return 1
+
+	if [ ! -d "$MAPPINGLENS_MCMETA_REPO/.git" ]; then
+		first=${MCMETA_BRANCHES%% *}
+		rest=${MCMETA_BRANCHES#"$first"}
+		log "cloning mcmeta branches: $MCMETA_BRANCHES"
+		run git clone --no-checkout --no-tags --single-branch --branch "$first" \
+			"$MCMETA_URL" "$MAPPINGLENS_MCMETA_REPO" || return 1
+		# The clone sets a fetch refspec for the one branch it took; the rest are added to it.
+		[ -n "$rest" ] && git -C "$MAPPINGLENS_MCMETA_REPO" remote set-branches --add origin $rest
+	fi
+	run git -C "$MAPPINGLENS_MCMETA_REPO" fetch --no-tags --quiet origin || log "mcmeta fetch failed"
+
+	tips=$(git -C "$MAPPINGLENS_MCMETA_REPO" for-each-ref \
+		--format='%(objectname) %(refname)' refs/remotes/origin refs/heads | sha1sum | cut -d' ' -f1)
+	[ "$tips" = "$(cat "$STATE/mcmeta.tips" 2>/dev/null)" ] && return 1
+
+	log "mcmeta changed, rebuilding the resource index"
+	run java $INDEX_JAVA_OPTS -jar "$JAR" index-resources -config="$CONF" -fts="$MCMETA_FTS" || return 1
+	printf '%s\n' "$tips" > "$STATE/mcmeta.tips"
+}
+
 # Latest release/snapshot ids, the same manifest GitCraft reads. See LATEST_FILTER.
 mc_latest() { curl -fsSL "$MC_MANIFEST" | jq -c "$LATEST_FILTER"; }
 
@@ -288,7 +329,12 @@ cycle() {
 	check_minecraft
 	check_yarn
 
-	if sync_index; then
+	# Both indexes are synced before any restart, so a cycle that changes both restarts once.
+	restart_needed=false
+	sync_index && restart_needed=true
+	sync_resources && restart_needed=true
+
+	if [ "$restart_needed" = true ]; then
 		serve_restart
 	elif [ -z "$serve_pid" ] || ! kill -0 "$serve_pid" 2>/dev/null; then
 		serve_pid=
@@ -303,7 +349,7 @@ mkdir -p "$STATE" /data/config /data/index /data/repos "$MAPPINGLENS_ARTIFACT_ST
 # every id that the cache alone carries one for (18w43b, 25w46a, 3D Shareware v1.34), and those ids
 # sort as if they were the newest version. GitCraft itself would rebuild the file over the network.
 cp -n /opt/gitcraft/semver-cache-mojang-launcher.json "$MAPPINGLENS_ARTIFACT_STORE/" 2>/dev/null
-log "starting, mappings '$MAPPINGS', only-releases $ONLY_RELEASES, refs $REFS, update interval ${UPDATE_INTERVAL_SECONDS}s"
+log "starting, mappings '$MAPPINGS', only-releases $ONLY_RELEASES, refs $REFS, mcmeta '$MCMETA_BRANCHES', update interval ${UPDATE_INTERVAL_SECONDS}s"
 serve_start
 while true; do
 	cycle

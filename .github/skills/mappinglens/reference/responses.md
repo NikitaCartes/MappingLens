@@ -297,6 +297,70 @@ A `call_moved` span looks like this, and is the reason to send `at` at all:
 `ServerPlayer#adjustSpawnLocation` still exists in all seven of those versions, so `/exists` reports
 nothing, while the border call it used to make lives in another class.
 
+## `/resources/versions`
+
+```json
+{"versions": [
+  {"ord": 449, "mcmetaId": "26.3-snapshot-9", "name": "26.3 Snapshot 9", "versionId": null,
+   "releaseType": "snapshot", "releaseTime": "2026-08-17T11:46:16+00:00",
+   "branches": ["assets", "atlas", "diff", "registries"]}
+]}
+```
+
+## `/resources/tree`
+
+```json
+{"version": "1.21.4", "branch": "assets", "path": "assets/minecraft/lang", "entries": [
+  {"name": "af_za.json", "path": "assets/minecraft/lang/af_za.json", "directory": false,
+   "size": 468227, "sha": "32eb2553e58cdd2210044d0631aa3ca8c8bc03f3"}
+]}
+```
+
+## `/resources/diff`
+
+```json
+{"from": "1.21.3", "to": "1.21.4", "branch": "registries", "changes": [
+  {"path": "block/data.json", "changeType": "modified",
+   "fromSha": "ecf9b4e042a23f5cadc12bb7b3d028b87b153d15",
+   "toSha": "fb48dd53b7e16ef1a0a2460f23c70234f0fcc1b3"}
+]}
+```
+
+## `/resources/history`
+
+```json
+{"branch": "assets", "path": "assets/minecraft/textures/block/stone.png", "entries": [
+  {"fromVersion": "1.14", "toVersion": "1.20.1",
+   "sha": "2665baef2a32e0e8ae787419f3e5c87c6acc2e72", "size": 215},
+  {"fromVersion": "23w31a", "toVersion": "1.21.5",
+   "sha": "de078145f71d63196633e6061e7d007b5b7a79e4", "size": 157}
+]}
+```
+
+The texture kept one content over 88 versions, so the whole history is three rows.
+
+## `/resources/search`
+
+`type=content`:
+
+```json
+{"query": "minecraft:copper_golem", "type": "content", "total": 3, "results": [
+  {"branch": "assets", "path": "assets/minecraft/items/copper_golem_statue.json",
+   "fromVersion": "25w36a", "toVersion": "26.1 Snapshot 10", "key": null, "value": null,
+   "sha": "72eebf6fd2805f649ba7cff7d89f06b48169887b"}
+]}
+```
+
+`type=translation`:
+
+```json
+{"query": "Crafting Table", "type": "translation", "total": 3, "results": [
+  {"branch": "assets", "path": "assets/minecraft/lang/en_us.json",
+   "fromVersion": "1.14", "toVersion": "26.3 Snapshot 9",
+   "key": "block.minecraft.crafting_table", "value": "Crafting Table", "sha": null}
+]}
+```
+
 ## Errors
 
 ```json

@@ -18,6 +18,7 @@ tags:
   - name: References
   - name: Exists
   - name: Validate
+  - name: Resources
   - name: Docs
 paths:
   /api/v1/versions:
@@ -1065,6 +1066,171 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ApiError"
+  /api/v1/resources/versions:
+    get:
+      tags: [Resources]
+      summary: The versions the resource index carries
+      description: >
+        The 450 versions of the mcmeta repository, newest first, each with the branches that carry
+        it and with the MappingLens version id it was matched to. `versionId` is null for a version
+        MappingLens does not index.
+
+        Every resource endpoint answers 404 with the code `resources_disabled` when no mcmeta clone
+        is configured or its index was never built.
+      responses:
+        "200":
+          description: Every version of the resource index.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResourceVersionListResponse"
+        "404":
+          $ref: "#/components/responses/ResourcesDisabled"
+  /api/v1/resources/tree:
+    get:
+      tags: [Resources]
+      summary: One directory level of one version
+      parameters:
+        - $ref: "#/components/parameters/ResourceVersion"
+        - $ref: "#/components/parameters/ResourceBranch"
+        - $ref: "#/components/parameters/ResourcePathPrefix"
+      responses:
+        "200":
+          description: The directories and the files directly under the path given.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResourceTreeResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/ResourcesDisabled"
+  /api/v1/resources/file:
+    get:
+      tags: [Resources]
+      summary: The bytes of one resource file
+      description: >
+        The raw bytes, with a Content-Type taken from the extension, so a client puts a PNG in an
+        img element and an OGG file in an audio element. The ETag is the git blob id, so two
+        versions that share content share an ETag. The server computes no textual diff: a client
+        that wants one reads the file at both versions.
+      parameters:
+        - $ref: "#/components/parameters/ResourceVersion"
+        - $ref: "#/components/parameters/ResourceBranch"
+        - in: query
+          name: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The file content.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/resources/diff:
+    get:
+      tags: [Resources]
+      summary: Every resource path that differs between two versions
+      parameters:
+        - in: query
+          name: from
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: to
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/ResourceBranch"
+        - $ref: "#/components/parameters/ResourcePathPrefix"
+      responses:
+        "200":
+          description: One entry per changed path, with the blob id on each side.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResourceDiffResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/ResourcesDisabled"
+  /api/v1/resources/history:
+    get:
+      tags: [Resources]
+      summary: The version ranges over which one path held each of its contents
+      parameters:
+        - $ref: "#/components/parameters/ResourceBranch"
+        - in: query
+          name: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: One entry per content, oldest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResourceHistoryResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/resources/search:
+    get:
+      tags: [Resources]
+      summary: Full-text search over the file contents or the translations
+      description: >
+        `type=content` searches the text files and reports the paths and version ranges that held
+        the matching content. `type=translation` searches the language files and reports the
+        translation key, the language file and the version range, because a hit that named only a
+        544 KB language file would tell the reader nothing.
+
+        Each term of `q` is matched as a phrase, so `minecraft:copper_golem` is a query and not a
+        syntax error. Several terms mean every one of them.
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: type
+          schema:
+            type: string
+            enum: [content, translation]
+            default: content
+        - in: query
+          name: version
+          description: Report only the hits present in this version.
+          schema:
+            type: string
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 500
+      responses:
+        "200":
+          description: The matching hits.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResourceSearchResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/ResourcesDisabled"
   /openapi.json:
     get:
       tags: [Docs]
@@ -1110,6 +1276,28 @@ components:
       schema:
         type: boolean
         default: false
+    ResourceVersion:
+      in: query
+      name: version
+      required: true
+      description: An mcmeta id (`26.3-snapshot-9`), an mcmeta name, or a MappingLens version id.
+      schema:
+        type: string
+    ResourceBranch:
+      in: query
+      name: branch
+      description: The mcmeta branch to read.
+      schema:
+        type: string
+        enum: [assets, diff, registries, atlas]
+        default: assets
+    ResourcePathPrefix:
+      in: query
+      name: path
+      description: Narrow the answer to this directory. Empty means the root of the branch.
+      schema:
+        type: string
+        default: ""
   responses:
     BadRequest:
       description: Invalid request parameters.
@@ -1125,6 +1313,15 @@ components:
             $ref: "#/components/schemas/ApiError"
     Unprocessable:
       description: The requested namespace is unavailable for this version.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    ResourcesDisabled:
+      description: >
+        No mcmeta clone is configured, its index was never built, or the version asked for carries
+        no resource data. The error code tells the two apart: `resources_disabled` against
+        `version_not_found`.
       content:
         application/json:
           schema:
@@ -2123,3 +2320,153 @@ components:
           description: One group per (version, target), versions oldest first and targets in request order.
           items:
             $ref: "#/components/schemas/ReferenceGroup"
+    ResourceVersion:
+      type: object
+      required: [ord, mcmetaId, name, branches]
+      properties:
+        ord:
+          type: integer
+          description: Rank of this version in the resource index, oldest first.
+        mcmetaId:
+          type: string
+          description: The id mcmeta writes, such as `1.21.4` or `26.3-snapshot-9`.
+        name:
+          type: string
+          description: The display name mcmeta writes, such as `26.3 Snapshot 9`.
+        versionId:
+          type: [string, "null"]
+          description: The MappingLens canonical version id, or null when this version is not indexed.
+        releaseType:
+          type: [string, "null"]
+        releaseTime:
+          type: [string, "null"]
+        branches:
+          type: array
+          items:
+            type: string
+    ResourceVersionListResponse:
+      type: object
+      required: [versions]
+      properties:
+        versions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResourceVersion"
+    ResourceEntry:
+      type: object
+      required: [name, path, directory, size]
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+        directory:
+          type: boolean
+        size:
+          type: integer
+          format: int64
+        sha:
+          type: [string, "null"]
+          description: The git blob id of the content.
+    ResourceTreeResponse:
+      type: object
+      required: [version, branch, path, entries]
+      properties:
+        version:
+          type: string
+        branch:
+          type: string
+        path:
+          type: string
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResourceEntry"
+    ResourceChange:
+      type: object
+      required: [path, changeType]
+      properties:
+        path:
+          type: string
+        changeType:
+          type: string
+          enum: [added, removed, modified]
+        fromSha:
+          type: [string, "null"]
+        toSha:
+          type: [string, "null"]
+    ResourceDiffResponse:
+      type: object
+      required: [from, to, branch, changes]
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+        branch:
+          type: string
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResourceChange"
+    ResourceHistoryEntry:
+      type: object
+      required: [fromVersion, toVersion, sha, size]
+      properties:
+        fromVersion:
+          type: string
+        toVersion:
+          type: string
+        sha:
+          type: string
+        size:
+          type: integer
+          format: int64
+    ResourceHistoryResponse:
+      type: object
+      required: [branch, path, entries]
+      properties:
+        branch:
+          type: string
+        path:
+          type: string
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResourceHistoryEntry"
+    ResourceHit:
+      type: object
+      required: [branch, path, fromVersion, toVersion]
+      properties:
+        branch:
+          type: string
+        path:
+          type: string
+        fromVersion:
+          type: string
+        toVersion:
+          type: string
+        key:
+          type: [string, "null"]
+          description: The translation key, on a translation hit.
+        value:
+          type: [string, "null"]
+          description: The translated text, on a translation hit.
+        sha:
+          type: [string, "null"]
+          description: The git blob id that matched, on a content hit.
+    ResourceSearchResponse:
+      type: object
+      required: [query, type, total, results]
+      properties:
+        query:
+          type: string
+        type:
+          type: string
+          enum: [content, translation]
+        total:
+          type: integer
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResourceHit"

@@ -8,6 +8,12 @@ import type {
   HierarchyResponse,
   ReferenceGroup,
   ReferenceResponse,
+  ResourceDiffResponse,
+  ResourceHistoryResponse,
+  ResourceSearchResponse,
+  ResourceTreeResponse,
+  ResourceVersion,
+  ResourceVersionListResponse,
   TokensResponse,
   SearchNamespace,
   SearchResponse,
@@ -194,4 +200,69 @@ export function fetchPatch(
 export function patchDownloadUrl(from: string, to: string, namespace: SourceNamespace): string {
   const params = new URLSearchParams({ from, to, namespace, format: "git", context: "3", limit: "50000" });
   return `${BASE}/diff/patch?${params.toString()}`;
+}
+
+// ---- Resources: the mcmeta explorer ----
+
+export function fetchResourceVersions(signal?: AbortSignal): Promise<ResourceVersion[]> {
+  return getJson<ResourceVersionListResponse>(`${BASE}/resources/versions`, signal).then((r) => r.versions);
+}
+
+export function fetchResourceTree(
+  version: string,
+  branch: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<ResourceTreeResponse> {
+  const params = new URLSearchParams({ version, branch, path });
+  return getJson<ResourceTreeResponse>(`${BASE}/resources/tree?${params.toString()}`, signal);
+}
+
+export function fetchResourceDiff(
+  from: string,
+  to: string,
+  branch: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<ResourceDiffResponse> {
+  const params = new URLSearchParams({ from, to, branch, path });
+  return getJson<ResourceDiffResponse>(`${BASE}/resources/diff?${params.toString()}`, signal);
+}
+
+export function fetchResourceHistory(
+  branch: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<ResourceHistoryResponse> {
+  const params = new URLSearchParams({ branch, path });
+  return getJson<ResourceHistoryResponse>(`${BASE}/resources/history?${params.toString()}`, signal);
+}
+
+export function searchResources(
+  q: string,
+  type: "content" | "translation",
+  version: string | undefined,
+  signal?: AbortSignal,
+): Promise<ResourceSearchResponse> {
+  const params = new URLSearchParams({ q, type, limit: "200" });
+  if (version) params.set("version", version);
+  return getJson<ResourceSearchResponse>(`${BASE}/resources/search?${params.toString()}`, signal);
+}
+
+/** Same-origin URL of the raw bytes — used directly as an img or audio src. */
+export function resourceFileUrl(version: string, branch: string, path: string): string {
+  return `${BASE}/resources/file?${new URLSearchParams({ version, branch, path }).toString()}`;
+}
+
+/** The file as text. Returns null when the path is absent at that version. */
+export function fetchResourceText(
+  version: string,
+  branch: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  return getText(resourceFileUrl(version, branch, path), signal).catch((err: unknown) => {
+    if (err instanceof ApiRequestError && err.status === 404) return null;
+    throw err;
+  });
 }
