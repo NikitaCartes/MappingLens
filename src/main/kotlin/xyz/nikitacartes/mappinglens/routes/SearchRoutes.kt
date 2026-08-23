@@ -23,8 +23,9 @@ fun Route.searchRoutes(searchService: SearchService, config: AppConfig) {
         val limit = call.intQuery("limit", config.search.defaultResults, 1, config.search.maxResults) ?: return@get
         val offset = call.intQuery("offset", 0, 0, Int.MAX_VALUE) ?: return@get
         val exact = call.booleanQuery("exact", false) ?: return@get
+        val includeSynthetic = call.booleanQuery("includeSynthetic", false) ?: return@get
 
-        val response = searchService.search(q, version, type, namespace, limit, offset, exact)
+        val response = searchService.search(q, version, type, namespace, limit, offset, exact, includeSynthetic)
         call.respond(response)
     }
 }

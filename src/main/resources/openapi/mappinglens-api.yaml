@@ -95,6 +95,15 @@ paths:
           schema:
             type: boolean
             default: false
+        - in: query
+          name: includeSynthetic
+          description: >
+            Include javac lambda bodies (`lambda$addRecipes$0`), which the mappings name like any
+            other method. Left out by default: a search for `addRecipes` means the method, and the
+            index in a lambda's name moves between versions. Rows that are kept carry `synthetic`.
+          schema:
+            type: boolean
+            default: false
       responses:
         "200":
           description: Search results ordered by FTS rank.
@@ -1078,18 +1087,6 @@ paths:
             application/yaml:
               schema:
                 type: string
-  /skill.md:
-    get:
-      tags: [Docs]
-      summary: Agent skill document
-      description: The MappingLens skill in Markdown, the same file as .github/skills/mappinglens/SKILL.md.
-      responses:
-        "200":
-          description: SKILL.md document.
-          content:
-            text/markdown:
-              schema:
-                type: string
   /docs:
     get:
       tags: [Docs]
@@ -1258,6 +1255,16 @@ components:
           description: The same, in mojmap. Null when the row carries no mojmap name.
         score:
           type: number
+          description: >
+            Match quality in `[0, 1)`, **higher is better**, which is the order `results` already
+            comes back in. Derived from the FTS5 bm25 rank, so it compares results of one query and
+            carries no meaning across queries.
+        synthetic:
+          type: boolean
+          default: false
+          description: >
+            A javac lambda body (`lambda$addRecipes$0`), which the mappings name like any other
+            method. Only present when `includeSynthetic=true` was asked for.
     SearchResponse:
       type: object
       required: [query, version, totalResults, results]
@@ -1710,11 +1717,24 @@ components:
             declares nothing of that name, and when `exists` is true.
         reason:
           type: [string, "null"]
-          enum: [inherited, descriptor, null]
+          enum: [inherited, descriptor, kind, null]
           description: >
             Why `closest` is not the key asked for. `inherited`: a supertype declares this exact
             signature, so the call still resolves. `descriptor`: the owner declares this name under
-            another descriptor, so the signature changed.
+            another descriptor of the same kind, so the signature changed. `kind`: the owner
+            declares this name as a field where a method was asked for, or the other way round, so
+            `closest` is not a drop-in replacement for the key. A method descriptor opens with `(`
+            and a field descriptor does not.
+        candidates:
+          type: array
+          description: >
+            Every declaration under `owner:name`, in key form, for a key given without a descriptor.
+            Such a key can never match, and a bare `exists: false` for it reads the same as a member
+            that is really gone. One entry is the canonical resolution of `owner#name`, several are
+            its overloads. Empty for a key that carries a descriptor, and for a class key. `closest`
+            and `reason` are null whenever this is filled.
+          items:
+            type: string
     ExistsResponse:
       type: object
       required: [version, namespace, results]
@@ -2008,6 +2028,24 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ReferenceItem"
+        resolved:
+          type: boolean
+          default: true
+          description: >
+            Whether `query` could match this version's index at all. `false` means `references` is
+            not an answer about the target: the key carries no descriptor and so can never match a
+            `name:descriptor` index key, or its descriptor names no member the index knows, or the
+            index holds no row for the owner. All three used to return an empty `references`, which
+            is also what "nothing calls this" looks like. A key can resolve in one version of a range
+            and not in the next, so this is per group, not per request.
+        candidates:
+          type: array
+          description: >
+            The keys `query` would match instead, when it did not resolve. One entry is the canonical
+            resolution of `owner:name`, several are its overloads. Empty when `resolved` is true, and
+            empty when the index holds no row for the owner.
+          items:
+            type: string
         paths:
           type: array
           description: >

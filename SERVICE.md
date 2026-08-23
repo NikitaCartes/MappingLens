@@ -48,7 +48,6 @@ from a read-only GitCraft store. The server opens the index with `PRAGMA query_o
   - For `index`: the sources `artifact-store` (with subfolders `mappings/`, `mc-versions/`, `decompiled/<version>/`, `remapped-mc/<version>/`), `yarn`, `mojmap`, `intermediary`.
   - For `serve`: a **built index** at `database.path`, plus the search index beside it (`mappinglens.db` gives `mappinglens-search.db`). The server exits at startup when either is missing, with a hint to run `index`. Source repositories are not needed at startup, but `diff`, `bytecode`, and `source` read jars from `artifact-store` on demand, during the request.
   - For `/openapi.*` and `/docs`: the classpath resource `openapi/mappinglens-api.yaml` (bundled in the jar).
-  - For `/skill.md`: the classpath resource `SKILL.md`. Gradle places `.github/skills/mappinglens/SKILL.md` into the jar under that name.
 
 > **Schema compatibility.** An index built before the rewrite has no `versions.sort_index` or
 > `classes.presence` column, and `serve` fails on it with `500 no such column: versions.sort_index`.
@@ -231,11 +230,10 @@ class internal name.
 
 | Endpoint            | Description                                                                                   |
 |---------------------|-----------------------------------------------------------------------------------------------|
-| `GET /`             | Text pointer to `/docs`, `/openapi.json`, and `/skill.md`                                     |
+| `GET /`             | Text pointer to `/docs` and `/openapi.json`                                                   |
 | `GET /health`       | Liveness check. Returns `ok`                                                                  |
 | `GET /openapi.json` | OpenAPI 3.1 as real JSON (the YAML is parsed by SnakeYAML and re-exported)                    |
 | `GET /openapi.yaml` | OpenAPI 3.1 as YAML                                                                           |
-| `GET /skill.md`     | The agent skill document in Markdown (the same file as `.github/skills/mappinglens/SKILL.md`) |
 | `GET /docs`         | Swagger UI (on by default, `includeDocs=true`)                                                |
 
 ### Versions
@@ -261,8 +259,9 @@ answers `/versions/{id}` and every other endpoint by name either way.
 
 Parameters: `q` (required), `version` (default: the latest release), `type`
 (`class`/`method`/`field`/`all`), `namespace` (`yarn`/`mojmap`/`intermediary`/`all`), `limit`
-(1 to 200, default 50), `offset` (0 or more), `exact` (`true`/`false`). `q` also accepts the
-form `Owner#member`, `Owner.member`, or `Owner/member`.
+(1 to 200, default 50), `offset` (0 or more), `exact` (`true`/`false`), `includeSynthetic`
+(`true`/`false`, default `false`). `q` also accepts the form `Owner#member`, `Owner.member`, or
+`Owner/member`.
 
 A member row carries the descriptor three times: `intermediaryDescriptor` as the index stores it,
 plus `yarnDescriptor` and `mojmapDescriptor`, which are the official descriptor rewritten through
@@ -270,6 +269,16 @@ the classes of that version. The named two are what `/exists` matches on, so a k
 search row goes there unchanged. Both are filled in one query for the whole page of results. A
 namespace the row has no name in gets no descriptor either, and a type the version does not name
 stays as it came, the way a JDK class does. `/diff` still reports the intermediary one alone.
+
+`score` runs `0` to just under `1`, and higher is better. Rows come back best first, so the order
+and the field agree. The value is derived from the FTS5 bm25 rank of that one query, and compares
+the results of a single call only.
+
+`includeSynthetic` (default `false`) decides whether javac lambda bodies are returned. The mappings
+name `lambda$addRecipes$0` like any other method, so a search for `addRecipes` used to return the
+lambda next to the method it is written in. A row that is kept carries `synthetic: true`. The FTS
+table is contentless and has no column to filter on, so the drop happens after the match, and the
+query over-fetches four times the page to keep a full one.
 
 ### Translate
 
@@ -340,6 +349,10 @@ and `members[]` (one entry per overload).
 - A class is tracked by the intermediary name of its newest match, not by the name queried,
   so a rename or a package move stays one history: the name from any version gives the same
   answer.
+- Because of that tracking, two spellings of one member return the same spans under two
+  different `query` values. The name each version uses is in that span's `members[]`, never in
+  `query`. `ResourceKey:location` and `ResourceKey:identifier` both answer with the whole
+  history, one span reading `"mojmap": "location"` and the next `"mojmap": "identifier"`.
 - Unobfuscated releases (everything after 1.21.11) ship no mappings of their own. When the
   indexer has `sources.unobfuscated-intermediary-mappings` set, they carry intermediary like
   any other version, and history works the same way. Check `hasIntermediary` on
@@ -503,8 +516,21 @@ the class. Each line is attributed to the version the variant was built from.
 | `GET /api/v1/references/{version}?q=<key>`       | Uses of classes or members (`q` is `owner` or `owner:name:descriptor`, repeatable); `namespace=yarn/mojmap`, `releasesOnly=<bool>`                                     |
 | `POST /api/v1/references/{version}`              | The same call with the targets in a body `{namespace, targets[], to, releasesOnly, includeVariants, depth}`, up to 2000 targets; `QUERY` is accepted here too          |
 | `GET /api/v1/diff/references?from=&to=&q=`      | How the sites using a class or member changed between two versions; `{changes: {added, removed, moved}}`                                                               |
-| `POST /api/v1/exists/{version}`                  | Batch existence check for classes/members; body `{namespace, members[]}` (keys are `owner` or `owner:name:descriptor`); response `{results:[{key, exists, closest, reason}]}` |
+| `POST /api/v1/exists/{version}`                  | Batch existence check for classes/members; body `{namespace, members[]}` (keys are `owner`, `owner:name` or `owner:name:descriptor`); response `{results:[{key, exists, closest, reason, candidates}]}` |
 | `POST /api/v1/validate?from=&to=`                | The same check over a range, plus the injection point: body `{namespace, targets[]}`, response one span list per target with `ok`/`renamed`/`inherited`/`call_moved`/`missing` |
+
+Each `references` group carries `resolved`. False means the group is not an answer about the target:
+the key carries no descriptor and so can never match the `name:descriptor` the index is keyed by, or
+its descriptor names no member the index knows, or the index holds no row for the owner. `candidates`
+then lists the keys the query would have matched. All three used to answer with an empty
+`references`, which is also what "nothing calls this" looks like, so a malformed key read as a fact
+about the version. A key may resolve in one version of a range and not in the next, which is why the
+flag sits on the group rather than on the request.
+
+The owner's row is read once per group and answers both halves, so the flag costs nothing. The row
+is what the reverse index stores, and it holds only what is referenced: a missing row is an absent
+class or a class nothing mentions, and this endpoint cannot tell the two apart. It reports
+`resolved: false` rather than claiming a zero.
 
 `references` takes up to 25 `q` values, and `to` extends the walk from `{version}` to a second
 version. The range itself is not capped. What is capped is how many of its versions the prebuilt
@@ -555,12 +581,27 @@ A key that missed carries the nearest declaration in `closest`, in the same key 
 
 - `inherited`: a supertype declares this exact signature, so the call still resolves at runtime.
   A mixin `@At` target is valid; a `@Shadow` has to name the supertype.
-- `descriptor`: the owner declares this name under another descriptor, so the signature changed.
-  `closest` carries the descriptor the version has.
+- `descriptor`: the owner declares this name under another descriptor **of the same kind**, so the
+  signature changed. `closest` carries the descriptor the version has.
+- `kind`: the owner declares this name as a field where a method was asked for, or the other way
+  round. `closest` names that declaration, and it is not a drop-in replacement for the key. The two
+  read apart by the descriptor alone, because a method descriptor opens with `(` and a field
+  descriptor does not. On 26.2, `Level:getBlockState` asked for as a field answers this way.
+
+A same-kind candidate wins over one of the other kind, which is what makes `descriptor` mean what it
+says. `CommandSourceStack` on 26.2 declares both a field `permissions` and a method `permissions()`,
+and the method is the answer to a method key.
 
 Both are null when the version declares nothing of that name under that owner, and when `exists`
 is true. Without them a bare `false` reads the same whether the descriptor moved, the member moved
 to a supertype, or the name is gone, and answering that took a `/source` read per key.
+
+A key given without a descriptor is a resolve rather than an existence check. It can never match
+`owner:name:descriptor`, so instead of a bare `false` it answers with `candidates`: every
+declaration under that name, in key form, read from the same jar with no ranking and no fuzzy
+matching. One entry is the canonical key for `owner#name`, several are its overloads, and `closest`
+and `reason` stay null. This is the resolve that taking `results[0]` from `/search` used to stand
+in for.
 
 ---
 
@@ -660,7 +701,7 @@ An index built before this fix carries the gap until the affected versions are r
    table). Optionally integrate `translate`, `diff`, and `bytecode`. Consider serving the
    `dist/` static bundle from Ktor itself, instead of a separate reverse proxy.
 2. **Search quality.** Improve ranking (mapped over intermediary over obf, with a
-   class/owner bonus). `score` currently uses only `1/(1+|rank|)`.
+   class/owner bonus). `score` currently uses only `|rank|/(1+|rank|)`.
 3. **Commit-accurate diff and history** through JGit (optional), on top of the current
    jar-based hot path.
 4. **Phase 5 (low priority).** In-browser deobfuscation and decompilation, for versions

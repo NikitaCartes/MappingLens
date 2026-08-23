@@ -8,8 +8,6 @@ WORKDIR /src
 COPY gradle ./gradle
 COPY gradlew settings.gradle.kts build.gradle.kts gradle.properties ./
 COPY src ./src
-# Bundled into the jar as a classpath resource and served at /skill.md.
-COPY .github/skills ./.github/skills
 # The checkout carries CRLF line endings, which /bin/sh refuses to run.
 RUN sed -i 's/\r$//' gradlew && chmod +x gradlew && ./gradlew --no-daemon buildFatJar
 

@@ -2,6 +2,7 @@ package xyz.nikitacartes.mappinglens.service
 
 import xyz.nikitacartes.mappinglens.db.SearchIndex
 import xyz.nikitacartes.mappinglens.db.tables.*
+import xyz.nikitacartes.mappinglens.ingestion.Names
 import xyz.nikitacartes.mappinglens.model.ClassRef
 import xyz.nikitacartes.mappinglens.model.SearchResponse
 import xyz.nikitacartes.mappinglens.model.SearchResultEntry
@@ -36,6 +37,7 @@ class SearchService(
         limit: Int,
         offset: Int,
         exact: Boolean,
+        includeSynthetic: Boolean = false,
     ): SearchResponse = transaction(db) {
         val effectiveVersion = version ?: versionService.latestRelease()
             ?: return@transaction SearchResponse(query, "", 0, emptyList())
@@ -51,9 +53,9 @@ class SearchService(
         val versionRowId = versionRow[VersionTable.id].value
         val results = SearchIndex.openReadOnly(databasePath).use { search ->
             if (ownerPart != null && memberPart != null) {
-                searchOwnerMember(search, table, versionRowId, ownerPart, memberPart, type, namespace, limit, offset, exact)
+                searchOwnerMember(search, table, versionRowId, ownerPart, memberPart, type, namespace, limit, offset, exact, includeSynthetic)
             } else {
-                searchSingle(search, table, versionRowId, query.trim(), type, namespace, limit, offset, exact)
+                searchSingle(search, table, versionRowId, query.trim(), type, namespace, limit, offset, exact, includeSynthetic)
             }
         }
         SearchResponse(query, effectiveVersion, results.size, results)
@@ -76,7 +78,7 @@ class SearchService(
 
     private fun searchSingle(
         search: Connection, table: String, versionRowId: Int, q: String, type: String, namespace: String,
-        limit: Int, offset: Int, exact: Boolean,
+        limit: Int, offset: Int, exact: Boolean, includeSynthetic: Boolean,
     ): List<SearchResultEntry> {
         val kind = SearchIndex.kindCode(type)
         val matchExpr = buildFtsMatch(q, namespace, exact)
@@ -90,17 +92,23 @@ class SearchService(
             ORDER BY rowid & 3 ASC, rank ASC
             LIMIT ? OFFSET ?
         """.trimIndent()
+        // Lambdas are dropped after the match, because the FTS table is contentless and has no
+        // column to filter them on. Over-fetching keeps a full page for the common query, the same
+        // way [searchOwnerMember] pays for its own post-filter.
         val params = buildList<Any> {
             add(matchExpr)
             if (kind != null) add(kind)
-            add(limit); add(offset)
+            add(if (includeSynthetic) limit else limit * 4); add(offset)
         }
-        return resolve(versionRowId, hits(search, sql, params)).map { it.entry }
+        return resolve(versionRowId, hits(search, sql, params))
+            .map { it.entry }
+            .filter { includeSynthetic || !it.synthetic }
+            .take(limit)
     }
 
     private fun searchOwnerMember(
         search: Connection, table: String, versionRowId: Int, ownerPart: String, memberPart: String,
-        type: String, namespace: String, limit: Int, offset: Int, exact: Boolean,
+        type: String, namespace: String, limit: Int, offset: Int, exact: Boolean, includeSynthetic: Boolean,
     ): List<SearchResultEntry> {
         // First, find candidate class ids matching ownerPart.
         val ownerMatch = buildFtsMatch(ownerPart, namespace, exact)
@@ -137,8 +145,9 @@ class SearchService(
         }
         return resolve(versionRowId, hits(search, sql, memberParams))
             .filter { it.ownerClassId in classIdSet }
-            .take(limit)
             .map { it.entry }
+            .filter { includeSynthetic || !it.synthetic }
+            .take(limit)
     }
 
     private fun buildFtsMatch(q: String, namespace: String, exact: Boolean): String {
@@ -154,8 +163,13 @@ class SearchService(
         return if (column != null) "$column:$token" else token
     }
 
-    /** bm25 returns lower=better (negative-ish). Convert to a [0..1+] score. */
-    private fun scoreFromBm25(rank: Double): Double = 1.0 / (1.0 + Math.abs(rank))
+    /**
+     * bm25 returns lower=better (negative-ish). Convert to a [0..1) score where higher is better,
+     * which is the order the rows already come back in. Dividing 1 by the same magnitude inverted
+     * the field against that order, so sorting the results by `score` descending picked the worst
+     * match of the page.
+     */
+    private fun scoreFromBm25(rank: Double): Double = Math.abs(rank) / (1.0 + Math.abs(rank))
 
     /** One match: the packed row identity the FTS index returns, and its score. */
     private class Hit(val rowid: Long, val score: Double)
@@ -279,6 +293,7 @@ class SearchService(
                 },
                 intermediaryDescriptor = r[cols.intermediaryDesc] ?: r[cols.obfDesc],
                 score = score,
+                synthetic = Names.isLambda(r[cols.yarnName]) || Names.isLambda(r[cols.mojmapName]),
             ),
             ownerId,
             r[cols.obfDesc],

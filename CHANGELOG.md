@@ -3,6 +3,51 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [12.2]
+
+### Added
+- Every `/api/v1/references` group carries `resolved` and `candidates`. `resolved: false` means the
+  group is not an answer about the target: the key carries no descriptor, or its descriptor names no
+  member the index knows, or the index holds no row for the owner. All three used to give an empty
+  `references`, which is also what "nothing calls this" looks like, so
+  `CraftingMenu:slotChangedCraftingGrid` read as "nobody calls this" while the same key resolved
+  fine on `/history`. `candidates` lists the keys the query would have matched. The owner's row is
+  read once per group and answers both halves, so the flag costs no extra read.
+- `/api/v1/exists` answers a key without a descriptor with `candidates`: every declaration under
+  `owner:name`, in key form, read from the jar with no ranking and no fuzzy matching. One entry is
+  the canonical key for `owner#name`, several are its overloads. Such a key used to come back
+  `exists: false` with `closest` and `reason` both null, the same answer as a member that is gone.
+  This replaces taking `results[0]` from a ranked `/search` page to recover a descriptor.
+- `/api/v1/search` results carry `synthetic`, and the endpoint takes `includeSynthetic`.
+- `/api/v1/exists` reports `reason: "kind"` when the owner declares the queried name as a field
+  where a method was asked for, or the other way round. That case used to come back as
+  `reason: "descriptor"`, so `CommandSourceStack:permissions` looked like a changed signature while
+  `closest` was a field, and a client pasting it into a mixin wrote an `@Inject` into a field.
+
+### Changed
+- `/api/v1/search` leaves javac lambda bodies out unless `includeSynthetic=true`. The mappings name
+  `lambda$addRecipes$0` like any other method, so a search for `ServerRecipeBook#addRecipes` returned
+  the lambda second, and sorting that page by `score` used to put it first. The drop happens after
+  the FTS match, because the index is contentless and has no column to filter on, so the query
+  over-fetches four times the page to keep a full one. Same rule as `/compare`'s `synthetic` status.
+- `/api/v1/exists` prefers a candidate of the same kind for `closest`, so `reason: "descriptor"`
+  means what it says. `CommandSourceStack` on 26.2 declares both a field `permissions` and a method
+  `permissions()`, and the field used to be the answer to a method key.
+- `score` on `/api/v1/search` results is now higher-is-better, in `[0, 1)`. It was
+  `1/(1+|bm25|)`, which inverted the field against the order the rows already come back in, so
+  sorting a page by `score` descending returned the worst match. The values themselves therefore
+  change: a row that read `0.089` now reads `0.911`.
+- The agent skill is three files instead of one: `SKILL.md` holds the workflow and an endpoint
+  index, and `reference/endpoints.md` and `reference/responses.md` hold the per-endpoint detail.
+  The `Suggested MCP Tool Contract` table is dropped, because the OpenAPI document is that contract.
+- Documented that `/api/v1/history` echoes `query` verbatim and names each span's member in
+  `members[]`, so two spellings of one member return the same spans under two different `query`
+  values.
+
+### Removed
+- `GET /skill.md`. The skill is read from `.github/skills/mappinglens/`, and the jar no longer
+  carries it.
+
 ## [12.1]
 
 ### Added

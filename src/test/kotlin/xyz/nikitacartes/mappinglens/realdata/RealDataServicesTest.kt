@@ -110,6 +110,10 @@ class RealDataServicesTest {
             assertEquals("class", hit.type)
             assertEquals(case.intermediary, hit.intermediary)
             assertEquals(case.obf, hit.obfuscated)
+            // Higher score is better, and the rows already arrive best first. The two disagreed
+            // while the score inverted bm25, so sorting a page by score picked its worst match.
+            val scores = byYarn.results.map { it.score }
+            assertEquals(scores.sortedDescending(), scores, "Scores are not in descending order: $scores")
         }
 
         for (member in RealDataTestConfig.defaultStateMethods) {

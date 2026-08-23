@@ -101,10 +101,16 @@ class ReferenceService(private val config: AppConfig) {
             if (available.isEmpty()) return null
             val groups = available.flatMap { version ->
                 targets.map { target ->
+                    // One read of the owner's row answers both the references and whether the key
+                    // could match at all; asking twice would inflate the same blob twice.
+                    val members = lookup.members(version, target.substringBefore(':'))
+                    val (resolved, candidates) = resolve(target, members)
                     ReferenceGroup(
                         version = version,
                         query = target,
-                        references = items(lookup.at(version, target)),
+                        references = items(members[target.substringAfter(':', "")].orEmpty()),
+                        resolved = resolved,
+                        candidates = candidates,
                         paths = if (depth > 1) walk(lookup, version, target, depth, maxPaths) else emptyList(),
                     )
                 }
@@ -153,6 +159,32 @@ class ReferenceService(private val config: AppConfig) {
             val prebuilt = ReferenceIndexStore.built(open)
             versions.filter { (it to namespace) !in prebuilt }
         }
+    }
+
+    /**
+     * Whether [target] can match this owner's row, and the keys it would match instead.
+     *
+     * The index is keyed by `name:descriptor`, so a member key without a descriptor never matches,
+     * however real the member is. A descriptor that names no known member does not match either.
+     * Both used to answer with an empty `references`, which is also what "nothing calls this" looks
+     * like, so a malformed key read as a fact about the version.
+     *
+     * A row the index does not hold is reported unresolved rather than as a zero: the reverse index
+     * stores only what is referenced, so a missing row is either an absent class or a class nothing
+     * mentions, and this side cannot tell the two apart.
+     *
+     * A descriptor that matches no member, under a name the owner has no other descriptor for, stays
+     * resolved: that is the one case where "the member exists and nothing calls it" is as likely as
+     * a wrong key, and claiming otherwise would trade one silent lie for another.
+     */
+    private fun resolve(target: String, members: Map<String, Referrers>): Pair<Boolean, List<String>> {
+        val memberKey = target.substringAfter(':', "")
+        if (members.isEmpty()) return false to emptyList()
+        if (memberKey.isEmpty() || memberKey in members) return true to emptyList()
+        val name = memberKey.substringBefore(':')
+        val candidates = members.keys.filter { it.startsWith("$name:") }
+            .sorted().map { "${target.substringBefore(':')}:$it" }
+        return (':' in memberKey && candidates.isEmpty()) to candidates
     }
 
     /** Calling site (`owner#member`) -> the members of [query] it reaches, as `name:descriptor`. */

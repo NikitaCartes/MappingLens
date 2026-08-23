@@ -42,4 +42,14 @@ object Names {
         val idx = fqn.lastIndexOf('/')
         return if (idx >= 0) fqn.substring(0, idx) else ""
     }
+
+    /**
+     * Whether a member name is a javac lambda body (`lambda$tick$3`). The mappings name these like
+     * any other method, so a search for `tick` also returns the lambdas written inside it, and the
+     * index in the name moves between versions.
+     *
+     * Accepts a bare member name or an `owner#member`, so a name from either side reads the same.
+     */
+    fun isLambda(name: String?): Boolean =
+        name != null && name.substringAfterLast('#').startsWith("lambda\$")
 }

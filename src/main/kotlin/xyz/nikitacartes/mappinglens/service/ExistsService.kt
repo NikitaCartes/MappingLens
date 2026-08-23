@@ -45,6 +45,10 @@ class ExistsService(private val config: AppConfig) {
         val results = keys.map { key ->
             val exists = if (key.contains(':')) key in decls.members else key in decls.classes
             if (exists) return@map ExistsResult(key = key, exists = true)
+            // A key without a descriptor cannot match `owner:name:descriptor` however real the member
+            // is, so it is answered with the declarations it names rather than with a bare `false`.
+            val candidates = decls.overloads[key].orEmpty().sorted().map { "$key:$it" }
+            if (candidates.isNotEmpty()) return@map ExistsResult(key = key, exists = false, candidates = candidates)
             val (closest, reason) = nearest(key, decls) ?: (null to null)
             ExistsResult(key = key, exists = false, closest = closest, reason = reason)
         }
@@ -52,10 +56,11 @@ class ExistsService(private val config: AppConfig) {
     }
 
     /**
-     * The nearest declaration to a member key that missed, with the reason it differs. Two probes,
+     * The nearest declaration to a member key that missed, with the reason it differs. Three probes,
      * in the order a mod author cares about: an inherited declaration still resolves at runtime, so
-     * the mixin is fine and the key only names the wrong owner; a changed descriptor does not, and
-     * is the edit to make. A class key, an unknown owner, or an unknown name gives null.
+     * the mixin is fine and the key only names the wrong owner. A changed descriptor does not, and
+     * is the edit to make. A declaration of the other kind under the same name is neither, and says
+     * so. A class key, an unknown owner, or an unknown name gives null.
      */
     private fun nearest(key: String, decls: Declarations): Pair<String, String>? {
         val owner = key.substringBefore(':')
@@ -65,9 +70,15 @@ class ExistsService(private val config: AppConfig) {
 
         supertypesOf(owner, decls).firstOrNull { "$it:$name:$descriptor" in decls.members }
             ?.let { return "$it:$name:$descriptor" to "inherited" }
-        decls.overloads["$owner:$name"]?.firstOrNull()
+        // A method descriptor opens with '(' and a field descriptor does not, so the kind needs no
+        // column of its own. A candidate of the other kind is reported under a reason of its own:
+        // `overloads` holds fields and methods alike, and a client that pastes `closest` into a
+        // mixin on a bare `descriptor` would otherwise write an @Inject into a field.
+        val candidates = decls.overloads["$owner:$name"].orEmpty()
+        val method = descriptor.startsWith("(")
+        candidates.firstOrNull { it.startsWith("(") == method }
             ?.let { return "$owner:$name:$it" to "descriptor" }
-        return null
+        return candidates.firstOrNull()?.let { "$owner:$name:$it" to "kind" }
     }
 
     /** Every supertype of [owner], nearest first. Breadth-first, so a direct parent beats a distant one. */

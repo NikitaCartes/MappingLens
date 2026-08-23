@@ -71,6 +71,12 @@ data class SearchResultEntry(
     val yarnDescriptor: String? = null,
     val mojmapDescriptor: String? = null,
     val score: Double = 0.0,
+    /**
+     * A javac lambda body (`lambda$addRecipes$0`), which the mappings name like any other method.
+     * Such a row is left out unless `includeSynthetic=true`, because a search for `addRecipes` means
+     * the method, and the index in the lambda's name moves between versions.
+     */
+    val synthetic: Boolean = false,
 )
 
 @Serializable
@@ -303,6 +309,16 @@ data class ReferenceGroup(
     val version: String,
     val query: String,
     val references: List<ReferenceItem>,
+    /**
+     * Whether [query] could match this version's index at all. False means [references] is not an
+     * answer about the target: the key carries no descriptor and so can never match a `name:descriptor`
+     * index key, or the descriptor names no member the index knows, or the index has no row for the
+     * owner. All three used to give an empty [references], which is also what "nothing calls this"
+     * looks like.
+     */
+    val resolved: Boolean = true,
+    /** The keys [query] would match instead, when it did not resolve. Empty when [resolved] is true. */
+    val candidates: List<String> = emptyList(),
     /** Caller chains reaching the target, outermost frame first. Empty unless `depth` was above 1. */
     val paths: List<List<ReferenceItem>> = emptyList(),
 )
@@ -385,8 +401,17 @@ data class ExistsResult(
      * Why [closest] is not the key asked for:
      *  - `inherited`: a supertype declares this exact signature, so the call still resolves.
      *  - `descriptor`: the owner declares this name under another descriptor, so the signature moved.
+     *  - `kind`: the owner declares this name, but as a field where a method was asked for, or the
+     *    other way round. [closest] is therefore not a drop-in replacement for the key.
      */
     val reason: String? = null,
+    /**
+     * Every declaration under `owner:name`, in key form, for a key given without a descriptor. Such
+     * a key can never match on its own, and a bare `exists: false` for it reads the same as a member
+     * that is really gone. One entry is the canonical resolution of `owner#name`, several are its
+     * overloads. Empty for a key that carries a descriptor, and for a class key.
+     */
+    val candidates: List<String> = emptyList(),
 )
 
 @Serializable

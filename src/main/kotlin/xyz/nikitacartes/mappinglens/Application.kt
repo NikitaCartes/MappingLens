@@ -182,7 +182,7 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
         }
 
         get("/") {
-            call.respondText("MappingLens API. See /docs for Swagger UI, /openapi.json for spec, /skill.md for the agent skill.")
+            call.respondText("MappingLens API. See /docs for Swagger UI, /openapi.json for spec.")
         }
         get("/health") { call.respondText("ok") }
         get("/openapi.json") {
@@ -191,10 +191,6 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
         get("/openapi.yaml") {
             call.respondText(openApiSpec(), ContentType.parse("application/yaml"))
         }
-        get("/skill.md") {
-            call.respondText(resourceText("SKILL.md"), ContentType.parse("text/markdown"))
-        }
-
         if (includeDocs) {
             // Swagger UI backed by the static bundled spec.
             swaggerUI(path = "docs", swaggerFile = "openapi/mappinglens-api.yaml")

@@ -4,6 +4,7 @@ import xyz.nikitacartes.mappinglens.db.tables.ClassTable
 import xyz.nikitacartes.mappinglens.db.tables.FieldTable
 import xyz.nikitacartes.mappinglens.db.tables.MethodTable
 import xyz.nikitacartes.mappinglens.db.tables.VersionTable
+import xyz.nikitacartes.mappinglens.ingestion.Names
 import xyz.nikitacartes.mappinglens.model.CompareMember
 import xyz.nikitacartes.mappinglens.model.CompareResponse
 import org.jetbrains.exposed.sql.Column
@@ -100,7 +101,7 @@ class CompareService(private val db: Database, private val versionService: Versi
     private fun status(yarn: String?, mojmap: String?): String {
         val name = yarn ?: mojmap
         if (name == "<init>" || name == "<clinit>") return "initializer"
-        if (yarn != null && yarn.startsWith("lambda\$")) return "synthetic"
+        if (Names.isLambda(yarn)) return "synthetic"
         if (yarn != null && unmappedYarn.matches(yarn)) return "unmappedYarn"
         return when {
             yarn != null && mojmap != null -> "matched"
