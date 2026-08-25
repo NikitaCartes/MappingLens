@@ -3,6 +3,11 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [13.1]
+
+### Added
+- Fixed wrongly detected updates for Yarn 19w04b, 19w08a and 19w12b
+
 ## [13.0]
 
 ### Added

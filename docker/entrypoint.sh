@@ -21,6 +21,11 @@ CHECKOUTS="/opt/mappings/intermediary /opt/mappings/relativity-intermediary /opt
 MC_MANIFEST=https://piston-meta.mojang.com/mc/game/version_manifest_v2.json
 YARN_META=https://meta.fabricmc.net/v2/versions/yarn
 MODERN_YARN_META=https://repo.codemc.io/repository/relativitymc/org/relativitymc/modern-yarn/maven-metadata.xml
+# Builds GitCraft fetches on purpose although newer ones are published: every build after the pinned
+# one is broken, so GitCraft takes the pinned one (yarnBrokenBuildOverride in GitCraftQuirks.java).
+# "<version> <build>" pairs. Keep in step with that map: a version whose store copy already holds the
+# pinned build is current here too.
+YARN_BROKEN_BUILD_PINS="19w04b 8 19w08a 5 19w12b 6"
 
 serve_pid=
 child=
@@ -282,10 +287,17 @@ check_yarn() {
 
 	# Versions whose store copy is older than the published build. GitCraft rebuilds a version it
 	# already has only when the version is named explicitly.
+	# A version whose store copy holds the build GitCraft pins is current, although a higher build is
+	# published, so such a version never counts as stale.
 	# The two-file joins below test FILENAME, not NR == FNR: an empty first file is never read, so
 	# NR == FNR would stay true over the second file and swallow every record.
-	stale=$(awk -F'\t' 'FILENAME == ARGV[1] { local[$1] = $2; next } ($1 in local) && local[$1] + 0 < $2 + 0 { print $1 }' \
-		/tmp/yarn.local /tmp/yarn.upstream)
+	stale=$(awk -F'\t' -v pins="$YARN_BROKEN_BUILD_PINS" '
+		# split needs the explicit " " here: -F'\t' above would make it split on tabs.
+	BEGIN { n = split(pins, p, " "); for (i = 1; i < n; i += 2) pin[p[i]] = p[i + 1] }
+		FILENAME == ARGV[1] { local[$1] = $2; next }
+		($1 in local) && local[$1] + 0 < $2 + 0 &&
+			(!(($1) in pin) || local[$1] + 0 != pin[$1] + 0) { print $1 }
+	' /tmp/yarn.local /tmp/yarn.upstream)
 	# Versions with published yarn and nothing in the store: yarn released after the Minecraft
 	# version lands here. A version the store does not know is skipped, because GitCraft rejects a
 	# version name that its manifest does not contain.
