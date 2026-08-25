@@ -1,6 +1,7 @@
 package xyz.nikitacartes.mappinglens.service
 
 import xyz.nikitacartes.mappinglens.config.AppConfig
+import xyz.nikitacartes.mappinglens.config.lruCache
 import xyz.nikitacartes.mappinglens.db.tables.ClassTable
 import xyz.nikitacartes.mappinglens.db.tables.FieldTable
 import xyz.nikitacartes.mappinglens.db.tables.MethodTable
@@ -31,7 +32,10 @@ class BytecodeService(private val config: AppConfig, private val db: Database) {
 
     // The index is immutable for the server's lifetime, so name maps (3 full-table reads) are cached
     // per (version, namespace) instead of being rebuilt on every intermediary bytecode request.
-    private val nameMapCache = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, BytecodeNameMaps>()
+    // Measured over 1.21.4 and 1.21.8: the three reads cost 83 to 115ms warm and 712 to 720ms cold,
+    // against 32ms for the same class's 7400 names read one at a time out of a purpose-built index,
+    // so the bulk read stays. The limit comes from `cache.name-maps`.
+    private val nameMapCache = lruCache<Pair<String, String>, BytecodeNameMaps>(config.cache.nameMaps)
 
     /**
      * Loads a JAR for the version and produces a textual disassembly via ASM Textifier.
@@ -199,7 +203,8 @@ class BytecodeService(private val config: AppConfig, private val db: Database) {
 
     private fun bytecodeRemapper(versionId: String, namespace: String): Remapper? {
         if (namespace == "obfuscated" || namespace == "obf") return null
-        val maps = nameMapCache.computeIfAbsent(versionId to namespace) { (v, ns) -> loadBytecodeNameMaps(v, ns) }
+        val key = versionId to namespace
+        val maps = nameMapCache[key] ?: loadBytecodeNameMaps(versionId, namespace).also { nameMapCache[key] = it }
         if (maps.classes.isEmpty() && maps.methods.isEmpty() && maps.fields.isEmpty()) return null
         return object : Remapper() {
             override fun map(internalName: String): String = maps.classes[internalName] ?: internalName

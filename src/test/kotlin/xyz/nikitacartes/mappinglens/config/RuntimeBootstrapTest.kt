@@ -5,6 +5,7 @@ import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -28,6 +29,45 @@ class RuntimeBootstrapTest {
         assertEquals(emptyList(), startup.appConfig.initialVersions)
         assertEquals(setOf("yarn", "mojmap"), startup.appConfig.mappings)
         assertFalse(startup.appConfig.onlyReleases)
+        assertEquals(CacheConfig(), startup.appConfig.cache, "the template carries the defaults")
+    }
+
+    @Test
+    fun `the cache block is read, key by key`(@TempDir tmp: Path) {
+        // A misspelled key falls back to its default silently, so every key is asserted by value.
+        val configPath = tmp.resolve("application.conf")
+        Files.writeString(
+            configPath,
+            """
+            mappinglens {
+                cache {
+                    reference-indexes = 1
+                    declarations = 2
+                    name-maps = 3
+                    symbol-solvers = 5
+                    tokens = 7
+                    paths = 11
+                }
+            }
+            """.trimIndent(),
+        )
+
+        val cache = RuntimeBootstrap.load(arrayOf("-config", configPath.toString())).appConfig.cache
+
+        assertEquals(CacheConfig(1, 2, 3, 5, 7, 11), cache)
+        // The limit reaches the caches themselves, not only the config object.
+        assertEquals(11, RuntimeBootstrap.load(arrayOf("-config", configPath.toString()))
+            .appConfig.sources.pathCacheSize)
+    }
+
+    @Test
+    fun `a cache limit below one is rejected`(@TempDir tmp: Path) {
+        val configPath = tmp.resolve("application.conf")
+        Files.writeString(configPath, "mappinglens { cache { tokens = 0 } }")
+
+        assertFailsWith<IllegalArgumentException> {
+            RuntimeBootstrap.load(arrayOf("-config", configPath.toString()))
+        }
     }
 
     @Test

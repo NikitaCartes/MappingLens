@@ -1,6 +1,7 @@
 package xyz.nikitacartes.mappinglens.service
 
 import xyz.nikitacartes.mappinglens.config.AppConfig
+import xyz.nikitacartes.mappinglens.config.lruCache
 import xyz.nikitacartes.mappinglens.db.ReferenceIndexStore
 import xyz.nikitacartes.mappinglens.model.ReferenceChanges
 import xyz.nikitacartes.mappinglens.model.ReferenceDiffResponse
@@ -15,7 +16,6 @@ import org.objectweb.asm.Handle
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
 import java.io.File
-import java.util.Collections
 import java.util.zip.ZipFile
 
 /** Referring site -> how many instructions in that site hit one target. */
@@ -66,15 +66,12 @@ class ReferenceService(private val config: AppConfig) {
         val synthetic: String? = null,
     )
 
-    /** Indexes held in memory, keyed by (version, namespace). */
-    private val cache = Collections.synchronizedMap(
-        object : LinkedHashMap<Pair<String, String>, Index>(16, 0.75f, true) {
-            // ponytail: plain access-ordered LRU. One version's index is ~140 MB, and an unbounded
-            // map reached 1557 MB of RSS over 16 versions, against -Xmx4g in the compose file.
-            override fun removeEldestEntry(eldest: Map.Entry<Pair<String, String>, Index>) =
-                size > MAX_CACHED_INDEXES
-        }
-    )
+    /**
+     * Indexes held in memory, keyed by (version, namespace). One version's index retains 34 to 61 MB
+     * of heap, and an unbounded map reached 1557 MB of RSS over 16 versions, against the 4 GB the
+     * compose file gives the server; the limit comes from `cache.reference-indexes`.
+     */
+    private val cache = lruCache<Pair<String, String>, Index>(config.cache.referenceIndexes)
 
     /**
      * One group per (version, target). Returns null when the namespace is unsupported or no
@@ -341,9 +338,6 @@ class ReferenceService(private val config: AppConfig) {
     }
 
     companion object {
-        /** How many (version, namespace) indexes stay in memory. */
-        private const val MAX_CACHED_INDEXES = 8
-
         /** Chains one walk reports before it gives up; a hot helper is reached through thousands. */
         const val MAX_PATHS = 200
 

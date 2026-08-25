@@ -807,8 +807,9 @@ paths:
       tags: [Hierarchy]
       summary: Inheritance hierarchy (supertypes and subtypes) of a class
       description: >
-        Supertypes (walked up via super + interfaces) and subtypes (walked down) of a class, read from
-        the version's named jar via ASM. `java/lang/Object` is omitted. Cached per (version, namespace).
+        Supertypes (walked up via super + interfaces) and subtypes (walked down) of a class, read a
+        class at a time from the prebuilt declaration index and scanned from the version's named jar
+        via ASM for a version that index does not cover. `java/lang/Object` is omitted.
       parameters:
         - $ref: "#/components/parameters/VersionPath"
         - in: path

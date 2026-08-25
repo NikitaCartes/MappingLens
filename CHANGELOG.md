@@ -3,6 +3,18 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [13.2]
+
+### Added
+- `index` builds `mappinglens-decl.db`, a prebuilt declaration index. `/exists` and `/hierarchy`
+  read it instead of scanning the jar. `-decl=all` (default), `releases` or `none`.
+- A `mappinglens.cache` config block (`CACHE_*` in the environment) bounds everything held between
+  requests. `symbol-solvers` bounds the entry count only; JavaParser never releases one.
+
+### Changed
+- `/exists` and `/hierarchy` answer identically but no longer keep a whole version's declarations in
+  memory once the declaration index covers that version.
+
 ## [13.1]
 
 ### Added

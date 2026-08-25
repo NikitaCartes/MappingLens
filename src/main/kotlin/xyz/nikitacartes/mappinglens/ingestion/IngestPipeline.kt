@@ -2,6 +2,7 @@ package xyz.nikitacartes.mappinglens.ingestion
 
 import xyz.nikitacartes.mappinglens.config.AppConfig
 import xyz.nikitacartes.mappinglens.data.GitCraftStore
+import xyz.nikitacartes.mappinglens.db.DeclarationIndexStore
 import xyz.nikitacartes.mappinglens.db.ReferenceIndexStore
 import xyz.nikitacartes.mappinglens.db.SearchIndex
 import xyz.nikitacartes.mappinglens.service.ReferenceService
@@ -35,8 +36,14 @@ class IngestPipeline(private val config: AppConfig) {
     /**
      * [only] restricts the run to the given version ids, overriding `indexing.initial-versions`.
      * [references] is the scope of the prebuilt reverse-reference index: `releases`, `all` or `none`.
+     * [declarations] is the same choice for the prebuilt declaration index.
      */
-    fun run(force: Boolean = false, only: List<String> = emptyList(), references: String = "releases") {
+    fun run(
+        force: Boolean = false,
+        only: List<String> = emptyList(),
+        references: String = "releases",
+        declarations: String = "all",
+    ) {
         val allSorted = store.versionIds()
         val rankOf = allSorted.withIndex().associate { (i, v) -> v to i }
         val filterList = (only.takeIf { it.isNotEmpty() } ?: config.initialVersions)
@@ -79,7 +86,43 @@ class IngestPipeline(private val config: AppConfig) {
         }
 
         syncSortIndex(rankOf)
+        buildDeclarationIndex(declarations)
         buildReferenceIndex(references)
+    }
+
+    /**
+     * Builds the prebuilt declaration index of every version in scope that has none, so the server
+     * answers "does this member still exist" and "what extends this class" from a row instead of
+     * scanning the whole named jar.
+     *
+     * All versions by default, where the reference index takes releases only: a (version, namespace)
+     * costs 4.2 MB here against the ~200 MB it costs there, so all 526 versions in both namespaces
+     * cost 4.3 GB and 7 minutes. Variants are included — a direct lookup by id answers for them, so
+     * they are asked about like any other version. A pair is skipped once built, since the jar behind
+     * it never changes.
+     */
+    private fun buildDeclarationIndex(scope: String) {
+        if (scope == "none") return
+        val versions = transaction {
+            VersionTable.selectAll().map { it[VersionTable.versionId] to it[VersionTable.releaseType] }
+        }
+        DeclarationIndexStore.openWritable(config.databasePath).use { conn ->
+            val built = DeclarationIndexStore.built(conn)
+            val todo = versions
+                .filter { scope == "all" || it.second == "release" }
+                .flatMap { (version, _) -> config.mappings.map { version to it } }
+                .filter { it !in built && config.sources.remappedJar(it.first, it.second) != null }
+            if (todo.isEmpty()) return
+            log.info("Building the declaration index of {} version/namespace pairs", todo.size)
+            val started = System.currentTimeMillis()
+            todo.forEach { (version, namespace) ->
+                val jar = config.sources.remappedJar(version, namespace)!!.toFile()
+                DeclarationIndexStore.write(conn, version, namespace, DeclarationIndexStore.scan(jar))
+                conn.commit()
+                log.debug("  declarations of {} ({}) built", version, namespace)
+            }
+            log.info("Built {} pairs in {}s", todo.size, (System.currentTimeMillis() - started) / 1000)
+        }
     }
 
     /**

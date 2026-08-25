@@ -11,7 +11,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.Optional
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.io.path.exists
 import kotlin.io.path.getLastModifiedTime
 import kotlin.io.path.isDirectory
@@ -31,21 +30,23 @@ data class SourcesConfig(
      * is exactly what these versions are not. Empty disables the source.
      */
     val unobfuscatedIntermediaryMappings: String = "",
+    /** Entry limit of the resolved-path caches below. See [CacheConfig.paths]. */
+    val pathCacheSize: Int = CacheConfig().paths,
 ) {
     // Resolving the decompiled / remapped jar requires a Files.list on every call.
     // Diff/source endpoints invoke it per file; cache the result per (version, key).
-    private val decompiledJarCache = ConcurrentHashMap<Pair<String, String>, Optional<Path>>()
-    private val remappedJarCache = ConcurrentHashMap<Pair<String, String>, Optional<Path>>()
-    private val libraryJarsCache = ConcurrentHashMap<String, List<Path>>()
+    private val decompiledJarCache = lruCache<Pair<String, String>, Optional<Path>>(pathCacheSize)
+    private val remappedJarCache = lruCache<Pair<String, String>, Optional<Path>>(pathCacheSize)
+    private val libraryJarsCache = lruCache<String, List<Path>>(pathCacheSize)
 
     fun artifactStorePath(): Path = Paths.get(artifactStore)
 
     fun minecraftJarsPath(): Path = artifactStorePath().resolve("mc-versions")
 
     fun decompiledSourceJar(versionId: String, mappingType: String): Path? =
-        decompiledJarCache.computeIfAbsent(versionId to mappingType) {
-            Optional.ofNullable(findFirstJar(artifactStorePath().resolve("decompiled").resolve(versionId), "merged-map_${mappingType}"))
-        }.orElse(null)
+        cachedJar(decompiledJarCache, versionId to mappingType) {
+            findFirstJar(artifactStorePath().resolve("decompiled").resolve(versionId), "merged-map_${mappingType}")
+        }
 
     fun remappedJar(versionId: String, namespace: String): Path? {
         val mappingType = when (namespace) {
@@ -53,9 +54,17 @@ data class SourcesConfig(
             "mojmap" -> "mojmap"
             else -> return null
         }
-        return remappedJarCache.computeIfAbsent(versionId to mappingType) {
-            Optional.ofNullable(findFirstJar(artifactStorePath().resolve("remapped-mc").resolve(versionId), "merged-remapped-map_${mappingType}"))
-        }.orElse(null)
+        return cachedJar(remappedJarCache, versionId to mappingType) {
+            findFirstJar(artifactStorePath().resolve("remapped-mc").resolve(versionId), "merged-remapped-map_${mappingType}")
+        }
+    }
+
+    /** [resolve] on a miss, remembered either way. Optional, because the cache cannot hold a null. */
+    private fun <K> cachedJar(cache: MutableMap<K, Optional<Path>>, key: K, resolve: () -> Path?): Path? {
+        cache[key]?.let { return it.orElse(null) }
+        val found = Optional.ofNullable(resolve())
+        cache[key] = found
+        return found.orElse(null)
     }
 
     /**
@@ -64,8 +73,12 @@ data class SourcesConfig(
      * complete compile classpath so library-typed identifiers (Guava, Brigadier, fastutil, …) resolve
      * instead of being dropped. Empty when the version has no mc-meta or none of its libraries are stored.
      */
-    fun libraryJars(versionId: String): List<Path> =
-        libraryJarsCache.computeIfAbsent(versionId) { resolveLibraryJars(it) }
+    fun libraryJars(versionId: String): List<Path> {
+        libraryJarsCache[versionId]?.let { return it }
+        val resolved = resolveLibraryJars(versionId)
+        libraryJarsCache[versionId] = resolved
+        return resolved
+    }
 
     private fun resolveLibraryJars(versionId: String): List<Path> {
         val meta = newestMcMeta(versionId) ?: return emptyList()
@@ -148,6 +161,8 @@ data class AppConfig(
      */
     val onlyReleases: Boolean = false,
     val resources: ResourcesConfig = ResourcesConfig(),
+    /** How much the server is allowed to hold in memory between requests. */
+    val cache: CacheConfig = CacheConfig(),
 ) {
     init {
         require(mappings.isNotEmpty() && mappings.all { it in ALL_MAPPINGS }) {
@@ -160,6 +175,7 @@ data class AppConfig(
 
         fun load(config: ApplicationConfig): AppConfig {
             val ml = config.config("mappinglens")
+            val cache = loadCache(ml)
             return AppConfig(
                 databasePath = ml.property("database.path").getString(),
                 sources = SourcesConfig(
@@ -169,7 +185,9 @@ data class AppConfig(
                     artifactStore = ml.property("sources.artifact-store").getString(),
                     unobfuscatedIntermediaryMappings =
                         ml.propertyOrNull("sources.unobfuscated-intermediary-mappings")?.getString().orEmpty(),
+                    pathCacheSize = cache.paths,
                 ),
+                cache = cache,
                 initialVersions = ml.propertyOrNull("indexing.initial-versions")?.getList() ?: emptyList(),
                 mappings = ml.propertyOrNull("indexing.mappings")?.getString()
                     ?.split(',', ' ')?.map { it.trim().lowercase() }?.filter { it.isNotEmpty() }?.toSet()
@@ -182,6 +200,21 @@ data class AppConfig(
                 resources = ResourcesConfig(
                     repo = ml.propertyOrNull("resources.repo")?.getString().orEmpty(),
                 ),
+            )
+        }
+
+        /** The `cache` block, every entry of which falls back to the [CacheConfig] default. */
+        private fun loadCache(ml: ApplicationConfig): CacheConfig {
+            val default = CacheConfig()
+            fun limit(key: String, fallback: Int) =
+                ml.propertyOrNull("cache.$key")?.getString()?.trim()?.toIntOrNull() ?: fallback
+            return CacheConfig(
+                referenceIndexes = limit("reference-indexes", default.referenceIndexes),
+                declarations = limit("declarations", default.declarations),
+                nameMaps = limit("name-maps", default.nameMaps),
+                symbolSolvers = limit("symbol-solvers", default.symbolSolvers),
+                tokens = limit("tokens", default.tokens),
+                paths = limit("paths", default.paths),
             )
         }
     }

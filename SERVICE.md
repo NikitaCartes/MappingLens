@@ -87,6 +87,23 @@ overridable through an environment variable.
 | `mappinglens.indexing.mappings`                          | `"yarn,mojmap"`       | `MAPPINGS`                              | Named mappings the `index` command reads: `yarn`, `mojmap` or both                   |
 | `mappinglens.indexing.only-releases`                     | `false`               | `ONLY_RELEASES`                         | Index the stable releases alone                                                      |
 | `mappinglens.resources.repo`                             | `""` (off)            | `MAPPINGLENS_MCMETA_REPO`               | Clone of `misode/mcmeta`; empty disables the resource explorer                       |
+| `mappinglens.cache.reference-indexes`                    | `8`                   | `CACHE_REFERENCE_INDEXES`               | Reverse-reference indexes held in memory, 34 to 61 MB each                           |
+| `mappinglens.cache.declarations`                         | `4`                   | `CACHE_DECLARATIONS`                    | Declaration graphs held in memory, 10 to 19 MB each, only for versions the declaration index misses |
+| `mappinglens.cache.name-maps`                            | `4`                   | `CACHE_NAME_MAPS`                       | Obfuscated-to-named maps held in memory, 17 to 32 MB per (version, namespace)        |
+| `mappinglens.cache.symbol-solvers`                       | `4`                   | `CACHE_SYMBOL_SOLVERS`                  | JavaParser symbol solvers. Bounds the entry count only, **not** the heap (see below) |
+| `mappinglens.cache.tokens`                               | `500`                 | `CACHE_TOKENS`                          | Resolved token lists, one per (version, class, namespace), 40 KB to 970 KB each      |
+| `mappinglens.cache.paths`                                | `2000`                | `CACHE_PATHS`                           | Resolved jar paths and library jar lists, 19 KB per version                          |
+
+The sizes above are the retained heap of one entry, measured over 1.16.5, 1.21.4 and 1.21.11.
+`reference-indexes` and `declarations` stay empty for every version `mappinglens-refs.db` and
+`mappinglens-decl.db` cover, so a complete index leaves both at zero.
+
+`symbol-solvers` is the exception, and no count can fix it. A solver starts at 12 MB and grows as it
+resolves classes, reaching 57 MB after 240 of them with no plateau in that range, so browsing a whole
+version through `/tokens` costs on the order of 0.5 to 1 GB. Evicting a solver returns none of that:
+JavaParser holds every solver in `JavaParserFacade.instances`, a static `WeakHashMap` whose value
+holds its own key, so no entry of that map is ever collected. Give `serve` a heap that fits the
+versions it serves through `/tokens`, and restart it to reclaim.
 
 `resources.repo` is the whole switch for the resource explorer, and the branches the clone holds
 are the granularity: the indexer reads `assets`, `diff`, `registries` and `atlas` and skips
@@ -96,7 +113,14 @@ whichever the clone does not carry. All four cost 2.1 GiB, of which `assets` is 
 `indexing.only-releases` keeps the versions Mojang types as a release. Pre-releases, release
 candidates, April Fools versions, combat snapshots and the `_unobfuscated` variants go with the
 snapshots. `indexing.mappings` leaves a named mapping out of the mapping scan, the source-file scan
-and the reference index, and `/versions` then reports that namespace as absent.
+and the reference and declaration indexes, and `/versions` then reports that namespace as absent.
+
+The `cache` block is every limit on what the server keeps in memory between requests. Each of these
+caches is keyed on a version, so it grows with the number of versions a client walks over rather
+than with the request rate; left unbounded, sixteen reference indexes alone reached 1557 MB against
+the 4 GB heap the compose file sets. The counts differ because the entries do, from a resolved jar
+path to a 61 MB reference index, so raising one trades heap for the work of rebuilding an entry.
+Nothing else is held: the index connections are opened and closed per request.
 
 **Ktor plugins:** ContentNegotiation (kotlinx JSON), CallLogging, CORS (`anyHost`, GET and POST,
 `Content-Type`), RateLimit (200 requests per 60 seconds on `/api/v1`), StatusPages
@@ -188,6 +212,7 @@ of unbuildable versions has not changed, the GitCraft run is skipped.
 | `MAPPINGS`                | `mojmap yarn`                      | Mappings to build and to index                                   |
 | `ONLY_RELEASES`           | `false`                            | Stable releases alone (GitCraft `--only-stable`)                 |
 | `REFS`                    | `all`                              | Reverse-reference index: `all`, `releases` or `none`             |
+| `DECL`                    | `all`                              | Declaration index: `all`, `releases` or `none`                   |
 | `MCMETA_BRANCHES`         | `assets diff registries atlas`     | mcmeta branches; empty turns the resource explorer off           |
 | `MCMETA_FTS`              | `all`                              | Resource full-text tables: `all`, `content` or `none`            |
 | `MCMETA_URL`              | `https://github.com/misode/mcmeta` | Where the clone comes from                                       |
@@ -451,13 +476,13 @@ the flag sits on the group.
 
 `references` takes up to 25 `q` values, and `to` extends the walk to a second version. The range is
 not capped; what is capped, at 25, is how many of its versions the prebuilt reference index does not
-cover, because each of those costs a jar scan of 0.4 to 0.8s and ~140 MB. The index covers releases,
+cover, because each of those costs a jar scan of 0.4 to 0.8s and 34 to 61 MB. The index covers releases,
 so `releasesOnly=true` walks 1.14 to 26.2 in one call, 47 releases in 48ms; 43 answer, because
 Mojang's official mappings start at 1.14.4. A request line above 4096 bytes is rejected by the HTTP
 parser, which is where the limit of 25 comes from; the `POST` and `QUERY` forms carry up to 2000
 targets in a body and are never cached. The response is `{namespace, results[]}`, one entry per
-(version, target) as `{version, query, references[]}`. Eight per-version indexes stay in memory,
-least recently used first out.
+(version, target) as `{version, query, references[]}`. `cache.reference-indexes` per-version indexes
+stay in memory, eight by default, least recently used first out.
 
 The index records the owner written in the call instruction, not the class that declares the member,
 so `Level:getRespawnData` answers with nothing while `ServerLevel:getRespawnData` answers with 12
@@ -475,9 +500,10 @@ two versions. `moved` pairs a removed site with an added one when both reach exa
 members, matching by method name, then class, then a lone pair. `404` when no requested version has
 a named jar in that namespace.
 
-`exists` scans the version's named jar with ASM (cached per version and namespace), so descriptors
-match exactly, without remapping. It accepts up to 2000 keys, returns `404` when the named jar is
-missing, and is never cached.
+`exists` reads the version's declarations a class at a time out of `mappinglens-decl.db`, and scans
+the named jar with ASM for a version that file does not cover. The names come from the named jar
+either way, so descriptors match exactly, without remapping. It accepts up to 2000 keys, returns
+`404` when neither source can answer, and is never cached.
 
 A key that missed carries the nearest declaration in `closest`, in key form, with `reason`:
 
@@ -559,7 +585,7 @@ The SQLite index holds `versions` (metadata, semver order, counts) and unified o
 `classes`/`methods`/`fields` (with `presence` in `{both, yarn_only, mojmap_only}`). It stores no
 decompiled source, bytecode or git blobs; those are read on demand from the read-only store.
 
-Three files sit beside it:
+Four files sit beside it:
 
 - **`mappinglens-search.db`** holds one contentless FTS5 table for each version, named
   `search_v<version row id>`. FTS5 answers a prefix term by merging the doclists of every term with
@@ -572,12 +598,22 @@ Three files sit beside it:
   and the server opens a fresh connection per request.
 - **`mappinglens-refs.db`** holds one row for each class of each (version, namespace): who
   references each of its members, deflated. Without it the server scans a version's whole named jar
-  on the first question about that version, at 0.4 to 0.8s and ~140 MB. A row costs 0.7ms cold and
+  on the first question about that version, at 0.4 to 0.8s and 34 to 61 MB. A row costs 0.7ms cold and
   0.1ms warm. One row per class rather than per member, because the class is the unit readers ask
   for and because it deflates 6.8 times where member-sized blobs reach 2.7. `index` builds it for
   the releases (90 pairs, 1.0 GB, 57s); `-refs=all` covers every version (10.3 GB, 11 minutes) and
   `-refs=none` skips the step. The file is optional and may be partial: an uncovered version is
   answered by the scan.
+- **`mappinglens-decl.db`** holds one row for each class of each (version, namespace): its access
+  flags, its direct supertypes, its direct subtypes and every member as `name:descriptor`, deflated.
+  It is what `exists` and `hierarchy` read. Without it each of them scans the version's whole named
+  jar on the first question about that version, at 227 to 318ms, and holds the graph in memory. A
+  row costs 10us and holds nothing. The main index cannot stand in for it: `exists` is keyed on
+  `owner:name:descriptor` in the target namespace and the member tables carry no yarn or mojmap
+  descriptor, and the subtype edges and the access flags exist nowhere but the jar. `index` builds
+  every version by default (4.2 MB a pair, 4.3 GB and 7 minutes for all 526 in both namespaces);
+  `-decl=releases` narrows it and `-decl=none` skips the step. Optional and possibly partial, like
+  the reference index.
 - **`mappinglens-resources.db`**, built by `index-resources`, holds no file content either. Its core
   table is `runs`: one row covers `(path, blob, from_ord, to_ord)`, and the same 199k rows answer
   the tree, the diff, the history and the versions of a search hit. Beside it sit a contentless FTS5

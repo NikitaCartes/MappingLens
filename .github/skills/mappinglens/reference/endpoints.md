@@ -350,8 +350,8 @@ accepts `yarn` or `mojmap` and defaults to `mojmap`.
   for `owner#name`, several are its overloads. `closest` and `reason` are null whenever `candidates`
   is filled. **Use it instead of taking `results[0]` from `/search`** when the descriptor is the only
   thing missing.
-- Up to 2000 keys per call. Checks the version's pre-remapped named jar via ASM (cached per
-  version+namespace), so descriptors match exactly with no remapping. `404` when that jar is absent.
+- Up to 2000 keys per call. Reads the declarations of the version's pre-remapped named jar, so
+  descriptors match exactly with no remapping. `404` when the version has no such jar.
 - **Use it to validate mixin/shadow targets when updating a mod**: every injected method and shadowed
   field in one request instead of many `search`/`source` calls. It checks one version; use
   `/validate` for a range. Like every `POST` endpoint it is not cached.

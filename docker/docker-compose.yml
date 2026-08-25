@@ -21,6 +21,10 @@ services:
       # costs 10.3 GB and 11 minutes on a full store, the releases alone 1.0 GB and 57 seconds. An
       # uncovered version still answers /references, by scanning its named jar: 770ms against 27ms.
       REFS: all
+      # Scope of the prebuilt declaration index, which /exists and /hierarchy read: "all",
+      # "releases" or "none". Every version costs 4.3 GB and 7 minutes on a full store. An uncovered
+      # version still answers, by scanning its named jar: 227 to 318ms against 10us for a row.
+      DECL: all
       # The mcmeta branches the resource explorer indexes. All four cost 2.1 GiB in one clone plus
       # 313 MiB of index; "diff registries" alone costs 1.2 GiB and drops the textures, the sounds
       # and the language files. An empty value leaves the feature off and clones nothing, and
@@ -34,8 +38,17 @@ services:
       # The index command processes one version per run no matter how many versions are targeted.
       # Heap needs do not grow with the version count.
       INDEX_JAVA_OPTS: -Xmx4g
-      # Serve keeps a cache per class and version for the life of the process
+      # Serve holds a bounded cache per version; the mappinglens.cache.* settings size them, and
+      # their defaults are chosen for this heap.
       SERVE_JAVA_OPTS: -Xmx4g
+      # Entry limits for everything serve keeps in memory between requests. Raising one trades heap
+      # for the work of rebuilding an entry. Uncomment to override the defaults.
+      # CACHE_REFERENCE_INDEXES: "8"     # 34 to 61 MB each
+      # CACHE_DECLARATIONS: "4"          # 10 to 19 MB each
+      # CACHE_NAME_MAPS: "4"             # 17 to 32 MB each
+      # CACHE_SYMBOL_SOLVERS: "4"        # bounds the entry count only, not the heap
+      # CACHE_TOKENS: "500"              # 40 KB average, 970 KB for one of the largest classes
+      # CACHE_PATHS: "2000"              # 19 KB per version
     volumes:
       - /path/to/data:/data
       # An existing GitCraft store can be mounted over the matching subdirectory, which skips the
@@ -43,8 +56,8 @@ services:
       #   /data/artifact-store  GitCraft artifact store (mappings, mc-versions, decompiled, ...)
       #   /data/repos/yarn      decompiled sources, yarn
       #   /data/repos/mojmap    decompiled sources, mojmap
-      #   /data/index           mappinglens.db, mappinglens-search.db, mappinglens-refs.db and
-      #                         mappinglens-resources.db
+      #   /data/index           mappinglens.db, mappinglens-search.db, mappinglens-refs.db,
+      #                         mappinglens-decl.db and mappinglens-resources.db
       #   /data/mcmeta          clone of misode/mcmeta, when MCMETA_BRANCHES is set
       #   /data/state           update markers
       #   /data/gradle          gradle home for the GitCraft runs

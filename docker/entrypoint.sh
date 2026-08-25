@@ -61,6 +61,15 @@ case "$REFS" in
 	*) log "REFS must be all, releases or none, but is '$REFS'"; exit 1 ;;
 esac
 
+# DECL is the same choice for the prebuilt declaration index, which exists and hierarchy read. A
+# pair costs 4.2 MB, against ~200 MB for the reference index, so every version is built by default.
+# A version the file does not cover is answered by a scan of its named jar, which costs 227 to 318ms.
+DECL=${DECL:-all}
+case "$DECL" in
+	all | releases | none) ;;
+	*) log "DECL must be all, releases or none, but is '$DECL'"; exit 1 ;;
+esac
+
 # MCMETA_BRANCHES names the mcmeta branches the resource explorer indexes, separated by a space or
 # a comma. All four are the default, and an empty value turns the feature off. The default is
 # expanded with "-" and not with ":-", so that an empty value keeps its meaning and is not read as
@@ -147,12 +156,12 @@ run_gitcraft() {
 
 # The indexer skips versions that are already in the database, so a plain run picks up exactly the
 # versions the database does not hold yet, and an empty database means every version in the store.
-reindex() { run java $INDEX_JAVA_OPTS -jar "$JAR" index -config="$CONF" -refs="$REFS"; }
+reindex() { run java $INDEX_JAVA_OPTS -jar "$JAR" index -config="$CONF" -refs="$REFS" -decl="$DECL"; }
 
 # A version already in the database is not re-read by a plain run, so a rebuilt version needs
 # -force, and -versions restricts the rebuild to the versions given.
 reindex_versions() {
-	run java $INDEX_JAVA_OPTS -jar "$JAR" index -config="$CONF" -refs="$REFS" -force "-versions=$(printf '%s' "$1" | paste -sd, -)"
+	run java $INDEX_JAVA_OPTS -jar "$JAR" index -config="$CONF" -refs="$REFS" -decl="$DECL" -force "-versions=$(printf '%s' "$1" | paste -sd, -)"
 }
 
 # The mapping file names of the artifact store, which is what the indexer reads for a version. A

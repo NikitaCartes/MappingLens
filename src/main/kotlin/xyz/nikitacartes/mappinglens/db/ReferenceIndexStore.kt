@@ -19,7 +19,7 @@ import java.util.zip.InflaterInputStream
  * file of its own beside the main index.
  *
  * Without it the server scans a version's whole named jar on the first question about that version:
- * 0.4 to 0.8s, and ~140 MB held in memory for as long as the index is cached. Reading a class out of
+ * 0.4 to 0.8s, and 34 to 61 MB held in memory for as long as the index is cached. Reading a class out of
  * this file instead costs 0.7ms with a fresh connection and 0.1ms on a warm one, and holds nothing.
  *
  * One row for each class rather than for each member, because the class is the unit every reader

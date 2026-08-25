@@ -22,10 +22,10 @@ import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSol
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JarTypeSolver
 import com.github.javaparser.symbolsolver.resolution.typesolvers.ReflectionTypeSolver
 import xyz.nikitacartes.mappinglens.config.AppConfig
+import xyz.nikitacartes.mappinglens.config.lruCache
 import xyz.nikitacartes.mappinglens.model.SourceToken
 import xyz.nikitacartes.mappinglens.model.TokensResponse
 import java.util.Optional
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Resolves every class/method/field identifier in a decompiled `.java` to its owner/name/descriptor
@@ -38,8 +38,13 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class TokenService(private val config: AppConfig, private val bytecodeService: BytecodeService) {
 
-    private val solverCache = ConcurrentHashMap<Pair<String, String>, Optional<JavaSymbolSolver>>()
-    private val tokenCache = ConcurrentHashMap<Triple<String, String, String>, TokensResponse>()
+    // Resolving one class costs 3.6 to 4.1s measured over 1.21.4, almost all of it JavaParser symbol
+    // resolution, so a resolved class is worth holding. An entry is the whole class source plus a
+    // token for each identifier: 40 KB for an average class, 970 KB for one of the largest.
+    // `cache.tokens` bounds this map. `cache.symbol-solvers` bounds the count of the other one and
+    // not its heap, see CacheConfig.symbolSolvers.
+    private val solverCache = lruCache<Pair<String, String>, Optional<JavaSymbolSolver>>(config.cache.symbolSolvers)
+    private val tokenCache = lruCache<Triple<String, String, String>, TokensResponse>(config.cache.tokens)
 
     fun tokens(versionId: String, className: String, namespace: String): TokensResponse? {
         if (namespace != "yarn" && namespace != "mojmap") return null
@@ -51,25 +56,35 @@ class TokenService(private val config: AppConfig, private val bytecodeService: B
         return resp
     }
 
-    private fun solverFor(versionId: String, namespace: String): JavaSymbolSolver? =
-        solverCache.computeIfAbsent(versionId to namespace) { (v, ns) ->
-            val jar = config.sources.remappedJar(v, ns) ?: return@computeIfAbsent Optional.empty()
-            val combined = CombinedTypeSolver()
-            combined.add(ReflectionTypeSolver()) // JDK types
-            combined.add(JarTypeSolver(jar))      // Minecraft named classes
-            // Minecraft's own dependencies (Guava, Brigadier, DataFixerUpper, fastutil, …) so that
-            // library-typed identifiers resolve instead of being silently dropped by emit()'s catch.
-            // ponytail: keeps ~one JarFile handle open per lib per (version,ns) for the server's life;
-            // fine for interactive use, revisit if token requests fan out over very many versions.
-            for (lib in config.sources.libraryJars(v)) {
-                try {
-                    combined.add(JarTypeSolver(lib))
-                } catch (_: Exception) {
-                    // Unreadable/native jar: skip; a missing lib only costs a few unresolved tokens.
-                }
+    private fun solverFor(versionId: String, namespace: String): JavaSymbolSolver? {
+        val key = versionId to namespace
+        solverCache[key]?.let { return it.orElse(null) }
+        val built = buildSolver(versionId, namespace)
+        solverCache[key] = built
+        return built.orElse(null)
+    }
+
+    private fun buildSolver(versionId: String, namespace: String): Optional<JavaSymbolSolver> {
+        val jar = config.sources.remappedJar(versionId, namespace) ?: return Optional.empty()
+        val combined = CombinedTypeSolver()
+        combined.add(ReflectionTypeSolver()) // JDK types
+        combined.add(JarTypeSolver(jar))      // Minecraft named classes
+        // Minecraft's own dependencies (Guava, Brigadier, DataFixerUpper, fastutil, …) so that
+        // library-typed identifiers resolve instead of being silently dropped by emit()'s catch.
+        // Keeps ~one JarFile handle open per lib per (version, ns). Construction costs 8 to 23ms
+        // with no library and 570 to 1096ms with all of them, so rebuilding one is cheap. Freeing
+        // one is not possible: a solver stays reachable from a JavaParser static after eviction, so
+        // `cache.symbol-solvers` bounds how many are built, not how much they hold. The measurements
+        // and the one lever JavaParser offers are in CacheConfig.symbolSolvers.
+        for (lib in config.sources.libraryJars(versionId)) {
+            try {
+                combined.add(JarTypeSolver(lib))
+            } catch (_: Exception) {
+                // Unreadable/native jar: skip; a missing lib only costs a few unresolved tokens.
             }
-            Optional.of(JavaSymbolSolver(combined))
-        }.orElse(null)
+        }
+        return Optional.of(JavaSymbolSolver(combined))
+    }
 
     companion object {
         /** Resolve all tokens in [source] using [symbolSolver]. Pure — testable with any TypeSolver. */

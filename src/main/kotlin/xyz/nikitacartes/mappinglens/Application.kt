@@ -72,7 +72,15 @@ private fun runIndex(args: Array<String>, log: Logger) {
         System.err.println("Unknown -refs=$references. Use releases, all or none.")
         exitProcess(2)
     }
-    IngestPipeline(startup.appConfig).run(force, only, references)
+    // -decl=all (default), releases or none: how much of the prebuilt declaration index to build.
+    // All 526 versions in both namespaces cost 4.3 GB and 7 minutes, against 4.2 MB for one pair.
+    val declarations = args.firstOrNull { it.startsWith("-decl=") || it.startsWith("--decl=") }
+        ?.substringAfter('=') ?: "all"
+    if (declarations !in setOf("releases", "all", "none")) {
+        System.err.println("Unknown -decl=$declarations. Use releases, all or none.")
+        exitProcess(2)
+    }
+    IngestPipeline(startup.appConfig).run(force, only, references, declarations)
     log.info("Index build complete.")
 }
 
