@@ -3,6 +3,7 @@ package xyz.nikitacartes.mappinglens.service
 import xyz.nikitacartes.mappinglens.config.AppConfig
 import xyz.nikitacartes.mappinglens.db.tables.*
 import xyz.nikitacartes.mappinglens.ingestion.GitSourceRepository
+import xyz.nikitacartes.mappinglens.ingestion.Names
 import xyz.nikitacartes.mappinglens.model.*
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
@@ -22,6 +23,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         packageFilter: String?,
         changeType: String,
         limit: Int,
+        includeSynthetic: Boolean = true,
     ): DiffResponse {
         val mappingType = namespace.takeIf { it == "yarn" || it == "mojmap" }
         val sourceCandidates = mappingType?.let {
@@ -47,9 +49,9 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         }
 
         val memberNameCol = sqlNameColumn(namespace)
-        val classDiff = diffClasses(fromId, toId, namespace, packageFilter, candidateStableKeys)
-        val methodDiff = diffMembers("methods", fromId, toId, memberNameCol, "method", packageFilter, candidateStableKeys)
-        val fieldDiff = diffMembers("fields", fromId, toId, memberNameCol, "field", packageFilter, candidateStableKeys)
+        val classDiff = diffClasses(fromId, toId, namespace, packageFilter, candidateStableKeys, includeSynthetic)
+        val methodDiff = diffMembers("methods", fromId, toId, memberNameCol, "method", packageFilter, candidateStableKeys, includeSynthetic)
+        val fieldDiff = diffMembers("fields", fromId, toId, memberNameCol, "field", packageFilter, candidateStableKeys, includeSynthetic)
 
         val includeClasses = type == "class" || type == "all"
         val includeMethods = type == "method" || type == "all"
@@ -112,21 +114,55 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         type: String,
         changeType: String,
         limit: Int,
+        includeSynthetic: Boolean = true,
     ): DiffResponse = transaction(db) {
         val fromId = versionRowId(from)
         val toId = versionRowId(to)
         if (fromId == null || toId == null) return@transaction emptyDiffResponse(from, to, namespace)
 
         val normClass = className.normalizeDiffPath().removeSuffix(".java")
-        val fromCid = classIdByName(fromId, namespace, normClass)
-        val toCid = classIdByName(toId, namespace, normClass)
-        if (fromCid == null && toCid == null) return@transaction emptyDiffResponse(from, to, namespace)
+        val fromCid0 = classIdByName(fromId, namespace, normClass)
+        val toCid0 = classIdByName(toId, namespace, normClass)
+        if (fromCid0 == null && toCid0 == null) return@transaction emptyDiffResponse(from, to, namespace)
 
-        val classAdded = if (fromCid == null && toCid != null) listOf(DiffEntryItem("class", name = normClass)) else emptyList()
-        val classRemoved = if (fromCid != null && toCid == null) listOf(DiffEntryItem("class", name = normClass)) else emptyList()
+        var fromCid = fromCid0
+        var toCid = toCid0
+        var memberOwner = normClass
+        var classAdded = if (fromCid == null && toCid != null) {
+            listOf(DiffEntryItem("class", name = normClass, intermediary = classIntermediary(toCid)))
+        } else {
+            emptyList()
+        }
+        var classRemoved = if (fromCid != null && toCid == null) {
+            listOf(DiffEntryItem("class", name = normClass, intermediary = classIntermediary(fromCid)))
+        } else {
+            emptyList()
+        }
+        var classRenamed: List<DiffEntryItem> = emptyList()
 
-        val methodDiff = memberDiff(MethodTable, fromCid, toCid, namespace, normClass)
-        val fieldDiff = memberDiff(FieldTable, fromCid, toCid, namespace, normClass)
+        // Class-rename detection: exactly one side matched by display name, so look up the
+        // counterpart in the other version by stable key (intermediary, else mojmap). When found,
+        // the class was renamed rather than added/removed: diff members across the pair and emit
+        // a class rename entry instead.
+        if ((fromCid == null) != (toCid == null)) {
+            val rename = findClassRename(fromId, toId, namespace, fromCid, toCid)
+            if (rename != null) {
+                fromCid = rename.fromCid
+                toCid = rename.toCid
+                memberOwner = rename.memberOwner
+                classAdded = emptyList()
+                classRemoved = emptyList()
+                classRenamed = listOf(rename.entry)
+            }
+        }
+
+        val methodDiff = memberDiff(MethodTable, fromCid, toCid, namespace, memberOwner, includeSynthetic)
+        val fieldDiff = memberDiff(FieldTable, fromCid, toCid, namespace, memberOwner, includeSynthetic)
+        if (!includeSynthetic) {
+            classAdded = classAdded.filterNot { Names.isLambda(it.name) }
+            classRemoved = classRemoved.filterNot { Names.isLambda(it.name) }
+            classRenamed = classRenamed.filterNot { Names.isLambda(it.oldName) || Names.isLambda(it.newName) }
+        }
 
         val includeClasses = type == "class" || type == "all"
         val includeMethods = type == "method" || type == "all"
@@ -144,6 +180,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
             if (includeFields && keep("removed")) addAll(fieldDiff.removed)
         }
         val renamedFull = buildList {
+            if (includeClasses && keep("renamed")) addAll(classRenamed)
             if (includeMethods && keep("renamed")) addAll(methodDiff.renamed)
             if (includeFields && keep("renamed")) addAll(fieldDiff.renamed)
         }
@@ -157,6 +194,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
             summary = DiffSummary(
                 classesAdded = classAdded.size,
                 classesRemoved = classRemoved.size,
+                classesRenamed = classRenamed.size,
                 methodsAdded = methodDiff.added.size,
                 methodsRemoved = methodDiff.removed.size,
                 methodsRenamed = methodDiff.renamed.size,
@@ -181,8 +219,9 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         type: String,
         changeType: String,
         limit: Int,
+        includeSynthetic: Boolean = true,
     ): DiffResponse {
-        val perClass = classNames.map { diffClass(from, to, namespace, it, type, changeType, limit) }
+        val perClass = classNames.map { diffClass(from, to, namespace, it, type, changeType, limit, includeSynthetic) }
         val addedAll = perClass.flatMap { it.changes.added }
         val removedAll = perClass.flatMap { it.changes.removed }
         val renamedAll = perClass.flatMap { it.changes.renamed }
@@ -209,7 +248,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         )
     }
 
-    private data class MemberRec(val key: String, val name: String?, val descriptor: String?)
+    private data class MemberRec(val key: String, val name: String?, val descriptor: String?, val intermediary: String?)
 
     /** Members of [classId] keyed exactly as [methodKeys]/[fieldKeys], carrying the namespace display name + descriptor. */
     private fun memberRecords(cols: MemberTable, classId: Int?, namespace: String): List<MemberRec> {
@@ -219,25 +258,83 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
             MemberRec(
                 key = memberKey(row[cols.intermediaryName] ?: row[cols.mojmapName], row[cols.stableDesc] ?: row[cols.obfDesc], row[cols.obfName], row[cols.obfDesc]),
                 name = row[nameCol],
-                descriptor = row[cols.intermediaryDesc] ?: row[cols.obfDesc],
+                descriptor = row[cols.intermediaryDesc],
+                intermediary = row[cols.intermediaryName],
             )
         }
     }
 
-    private fun memberDiff(cols: MemberTable, fromCid: Int?, toCid: Int?, namespace: String, owner: String): TypedDiff {
+    private fun memberDiff(
+        cols: MemberTable,
+        fromCid: Int?,
+        toCid: Int?,
+        namespace: String,
+        owner: String,
+        includeSynthetic: Boolean = true,
+    ): TypedDiff {
         val kind = cols.kind
         val from = memberRecords(cols, fromCid, namespace)
         val to = memberRecords(cols, toCid, namespace)
         val fromByKey = from.associateBy { it.key }
         val toByKey = to.associateBy { it.key }
-        fun item(r: MemberRec) = DiffEntryItem(type = kind, name = r.name, owner = owner, intermediaryDescriptor = r.descriptor)
+        fun item(r: MemberRec) = DiffEntryItem(type = kind, name = r.name, owner = owner, intermediary = r.intermediary, intermediaryDescriptor = r.descriptor)
         val added = (toByKey.keys - fromByKey.keys).map { item(toByKey.getValue(it)) }
         val removed = (fromByKey.keys - toByKey.keys).map { item(fromByKey.getValue(it)) }
         val renamed = (fromByKey.keys intersect toByKey.keys)
             .filter { fromByKey.getValue(it).name != toByKey.getValue(it).name }
-            .map { DiffEntryItem(type = kind, owner = owner, oldName = fromByKey.getValue(it).name, newName = toByKey.getValue(it).name, intermediaryDescriptor = toByKey.getValue(it).descriptor) }
-        return TypedDiff(added, removed, renamed)
+            .map {
+                val before = fromByKey.getValue(it)
+                val after = toByKey.getValue(it)
+                DiffEntryItem(type = kind, owner = owner, oldName = before.name, newName = after.name, intermediary = after.intermediary, intermediaryDescriptor = after.descriptor)
+            }
+        val result = TypedDiff(added, removed, renamed)
+        return if (includeSynthetic) result else result.withoutSynthetic()
     }
+
+    private data class ClassRename(val fromCid: Int, val toCid: Int, val entry: DiffEntryItem, val memberOwner: String)
+
+    private fun classIntermediary(classId: Int): String? =
+        ClassTable.selectAll().where { ClassTable.id eq classId }.singleOrNull()?.get(ClassTable.intermediaryName)
+
+    /**
+     * Counterpart of a class that matched by display name on exactly one side, looked up in the
+     * other version by stable key. Null when the pair shares no stable column, the existing row
+     * carries no key, or the other version has no such class (a true add/remove).
+     */
+    private fun findClassRename(fromId: Int, toId: Int, namespace: String, fromCid: Int?, toCid: Int?): ClassRename? {
+        if ((fromCid == null) == (toCid == null)) return null
+        val keyColName = stableIdentityColumn(fromId, toId) ?: return null
+        if (keyColName == sqlNameColumn(namespace)) return null
+        val keyCol = if (keyColName == "mojmap_name") ClassTable.mojmapName else ClassTable.intermediaryName
+        val existingCid = toCid ?: fromCid ?: return null
+        val existingRow = ClassTable.selectAll().where { ClassTable.id eq existingCid }.singleOrNull() ?: return null
+        val stableKey = existingRow[keyCol] ?: return null
+        val missingVersionId = if (fromCid == null) fromId else toId
+        val counterpartRow = ClassTable.selectAll()
+            .where { (ClassTable.versionId eq missingVersionId) and (keyCol eq stableKey) }
+            .singleOrNull() ?: return null
+        val counterpartCid = counterpartRow[ClassTable.id].value
+        val nameCol = classNameColumn(namespace)
+        val fromRow = if (fromCid == null) counterpartRow else existingRow
+        val toRow = if (fromCid == null) existingRow else counterpartRow
+        val effFromCid = if (fromCid == null) counterpartCid else existingCid
+        val effToCid = if (fromCid == null) existingCid else counterpartCid
+        val fromName = fromRow[nameCol]
+        val toName = toRow[nameCol]
+        val intermediary = toRow[ClassTable.intermediaryName] ?: fromRow[ClassTable.intermediaryName]
+        return ClassRename(
+            fromCid = effFromCid,
+            toCid = effToCid,
+            entry = DiffEntryItem(type = "class", intermediary = intermediary, oldName = fromName, newName = toName),
+            memberOwner = toName ?: fromName ?: existingRow[nameCol] ?: "",
+        )
+    }
+
+    private fun TypedDiff.withoutSynthetic(): TypedDiff = TypedDiff(
+        added = added.filterNot { Names.isLambda(it.name) },
+        removed = removed.filterNot { Names.isLambda(it.name) },
+        renamed = renamed.filterNot { Names.isLambda(it.oldName) || Names.isLambda(it.newName) },
+    )
 
     fun diffFiles(from: String, to: String, namespace: String, pathPrefix: String?): FileDiffResponse = transaction(db) {
         val fromId = versionRowId(from)
@@ -826,6 +923,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         namespace: String,
         packageFilter: String?,
         candidateStableKeys: Set<String>?,
+        includeSynthetic: Boolean = true,
     ): TypedDiff {
         val nameCol = sqlNameColumn(namespace)
         val addedPackageSql = packageCondition("c2", nameCol, packageFilter)
@@ -905,7 +1003,8 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
                 )
             }
         }
-        return TypedDiff(added, removed, renamed)
+        val classResult = TypedDiff(added, removed, renamed)
+        return if (includeSynthetic) classResult else classResult.withoutSynthetic()
     }
 
     /**
@@ -999,6 +1098,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         kind: String,
         packageFilter: String?,
         candidateStableKeys: Set<String>?,
+        includeSynthetic: Boolean = true,
     ): TypedDiff {
         val added = mutableListOf<DiffEntryItem>()
         val removed = mutableListOf<DiffEntryItem>()
@@ -1042,7 +1142,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
             st.executeQuery(
                 """
                 SELECT m2.intermediary_name, m2.$nameCol AS name,
-                       c2.$nameCol AS owner
+                       c2.$nameCol AS owner, m2.intermediary_desc AS intermediary_desc
                 FROM $table m2
                 JOIN classes c2 ON c2.id = m2.class_id
                 WHERE m2.version_id = $toId
@@ -1058,12 +1158,13 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
                     name = rs.getString("name"),
                     intermediary = rs.getString("intermediary_name"),
                     owner = rs.getString("owner"),
+                    intermediaryDescriptor = rs.getString("intermediary_desc"),
                 )
             }
             st.executeQuery(
                 """
                 SELECT m1.intermediary_name, m1.$nameCol AS name,
-                       c1.$nameCol AS owner
+                       c1.$nameCol AS owner, m1.intermediary_desc AS intermediary_desc
                 FROM $table m1
                 JOIN classes c1 ON c1.id = m1.class_id
                 WHERE m1.version_id = $fromId
@@ -1079,6 +1180,7 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
                     name = rs.getString("name"),
                     intermediary = rs.getString("intermediary_name"),
                     owner = rs.getString("owner"),
+                    intermediaryDescriptor = rs.getString("intermediary_desc"),
                 )
             }
             // A rename is "same stable key, different display name". When the stable key IS the
@@ -1098,7 +1200,8 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
                 SELECT m1.intermediary_name,
                        m1.$nameCol AS old_name,
                        m2.$nameCol AS new_name,
-                       c2.$nameCol AS owner
+                       c2.$nameCol AS owner,
+                       m2.intermediary_desc AS intermediary_desc
                 FROM classes c1
                 CROSS JOIN classes c2 ON c2.$keyCol = c1.$keyCol AND c2.version_id = $toId
                 CROSS JOIN $table m1 ON m1.class_id = c1.id
@@ -1117,10 +1220,12 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
                     oldName = rs.getString("old_name"),
                     newName = rs.getString("new_name"),
                     owner = rs.getString("owner"),
+                    intermediaryDescriptor = rs.getString("intermediary_desc"),
                 )
             }
         }
-        return TypedDiff(added, removed, renamed)
+        val memberResult = TypedDiff(added, removed, renamed)
+        return if (includeSynthetic) memberResult else memberResult.withoutSynthetic()
     }
 
     /**

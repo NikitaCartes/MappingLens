@@ -184,7 +184,7 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
     // Fail at startup rather than on the first search when the search index is missing.
     SearchIndex.openReadOnly(appConfig.databasePath).close()
     val versionService = VersionService(database)
-    val searchService = SearchService(database, versionService, appConfig.databasePath)
+    val searchService = SearchService(database, versionService, appConfig.databasePath, appConfig)
     val diffService = DiffService(database, appConfig)
     val translationService = TranslationService(database, versionService)
     val bytecodeService = BytecodeService(appConfig, database)
@@ -209,7 +209,7 @@ fun Application.module(appConfig: AppConfig, includeDocs: Boolean = true) {
             compareRoutes(compareService)
             hierarchyRoutes(hierarchyService)
             referenceRoutes(referenceService, versionService)
-            existsRoutes(existsService)
+            existsRoutes(existsService, versionService)
             tokenRoutes(tokenService)
             historyRoutes(historyService)
             bodyHashRoutes(bodyHashService, versionService)

@@ -3,6 +3,62 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [13.4]
+
+### Added
+- `POST /api/v1/validate` takes `collapse` (`verdict` by default, `status`). `status` merges
+  spans on the status alone and clears `atCount`, so differing counts no longer split a span.
+- `ValidateSpan` carries `reason`: why `movedTo` is null on `call_moved` (`no-baseline`,
+  `at-without-descriptor`, `no-named-jar`, `unpaired`), or why a `missing` target resolves
+  nowhere (`unknown-owner`, `unknown-target`).
+- `HistoryMember` carries `mojmapDescriptor`, the obf descriptor rewritten through that
+  version's classes, so a signature change reads in named terms without a second lookup.
+- `GET /api/v1/diff` takes `includeSynthetic` (default `true`). `false` drops display-name
+  `lambda$` rows from added/removed/renamed, mirroring `/search` with the opposite default.
+- `POST /api/v1/exists/{version}` takes `to` (plus `releasesOnly`, `includeVariants`) and then
+  answers one `ExistsResponse` per version, oldest first, instead of one object.
+- `POST /api/v1/bodyhash` (with `QUERY` accepted on the same path) takes a `BodyHashRequest`
+  body for up to 2000 queries. `targets` is accepted as an alias for `queries`, and `from`/`to`
+  fall back to the query parameters when absent.
+- `/api/v1/search` matches `simple_name` alongside the namespace column, so `Block` finds
+  `net/minecraft/block/Block` under `namespace=yarn`.
+- `/api/v1/search` falls back to `LIKE` when FTS5 answers nothing, so a mid-token substring
+  still matches.
+- `/api/v1/search` expands an `owner#member` query with the owner's supertypes, so an inherited
+  member stays visible under the subclass a caller holds.
+
+### Changed
+- `/api/v1/references` normalizes a member key to its declaring supertype before reading the
+  reverse index, so callers of an inherited member are still found. Such a group answers
+  `resolved: false` with the normalized key in `candidates`.
+- `GET /api/v1/diff?class=` detects a class rename through the stable key and answers a class
+  `renamed` entry with members diffed across the pair, instead of an add plus a remove.
+- `/history` answers an unknown class with `type: "unknown"` and one absent span over the
+  walked range, instead of an empty span list.
+- `/history` breaks a span on the stable descriptor, so a signature change splits spans even
+  where the intermediary descriptor is null.
+- Bad-request messages carry indices: `targets[i]`, `keys[i]`, `members[i]`, `queries[i]`,
+  `q[i]`, and `targets[i].at.*` name the failing entry.
+
+### Fixed
+- `/api/v1/diff` no longer falls back to the obf descriptor for `intermediaryDescriptor`.
+  Versions whose tiny files omit it now report null instead of an obfuscated string.
+- `/history` no longer splits a span when a yarn placeholder name (`method_123`, `field_456`)
+  is re-indexed. Placeholders read as null.
+- `/history` resolves a slash-separated inner class (`Outer/Inner`) through `$`
+  (`Outer$Inner`), so dotted FQNs of nested classes match.
+- `/api/v1/search` cuts the page after the owner filter, so later pages of `owner#member`
+  queries are no longer starved by the offset.
+
+### Documentation
+- The skill documents the vanilla scope: MappingLens answers vanilla Mojang declarations only.
+  Loader-patched members, loader APIs, `@Slice`/LDC anchors and `fabric.mod.json` constraints
+  are out of scope. A descriptor key with `exists: false` and empty `candidates[]` means absent
+  from the vanilla jar.
+- The skill documents search recall (prefix-on-token FTS, simple-name and `namespace=all`
+  retries, declaring-class lookup for inherited members) and that span `versions`
+  (`/history`, `/bodyhash`, `/validate`) counts the versions in the span.
+
 ## [13.3]
 
 ### Added

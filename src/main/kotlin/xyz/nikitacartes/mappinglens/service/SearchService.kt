@@ -1,5 +1,9 @@
 package xyz.nikitacartes.mappinglens.service
 
+import xyz.nikitacartes.mappinglens.config.AppConfig
+import xyz.nikitacartes.mappinglens.config.lruCache
+import xyz.nikitacartes.mappinglens.db.ClassDecl
+import xyz.nikitacartes.mappinglens.db.DeclarationLookup
 import xyz.nikitacartes.mappinglens.db.SearchIndex
 import xyz.nikitacartes.mappinglens.db.tables.*
 import xyz.nikitacartes.mappinglens.ingestion.Names
@@ -11,7 +15,10 @@ import org.jetbrains.exposed.sql.Column
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.like
+import org.jetbrains.exposed.sql.Op
 import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.or
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 import java.sql.Connection
@@ -25,9 +32,14 @@ class SearchService(
     private val db: Database,
     private val versionService: VersionService,
     private val databasePath: String,
+    private val appConfig: AppConfig? = null,
 ) {
 
     private val log = org.slf4j.LoggerFactory.getLogger(SearchService::class.java)
+
+    /** Whole-jar declaration scans for the supertype expansion, for versions the decl index misses. */
+    private val declFallback: MutableMap<Pair<String, String>, Map<String, ClassDecl>> =
+        appConfig?.let { lruCache(it.cache.declarations) } ?: HashMap()
 
     fun search(
         query: String,
@@ -53,7 +65,7 @@ class SearchService(
         val versionRowId = versionRow[VersionTable.id].value
         val results = SearchIndex.openReadOnly(databasePath).use { search ->
             if (ownerPart != null && memberPart != null) {
-                searchOwnerMember(search, table, versionRowId, ownerPart, memberPart, type, namespace, limit, offset, exact, includeSynthetic)
+                searchOwnerMember(search, table, versionRowId, effectiveVersion, ownerPart, memberPart, type, namespace, limit, offset, exact, includeSynthetic)
             } else {
                 searchSingle(search, table, versionRowId, query.trim(), type, namespace, limit, offset, exact, includeSynthetic)
             }
@@ -100,14 +112,23 @@ class SearchService(
             if (kind != null) add(kind)
             add(if (includeSynthetic) limit else limit * 4); add(offset)
         }
-        return resolve(versionRowId, hits(search, sql, params))
+        val ftsEntries = resolve(versionRowId, hits(search, sql, params))
             .map { it.entry }
             .filter { includeSynthetic || !it.synthetic }
+            .take(limit)
+        if (ftsEntries.isNotEmpty() || exact) return ftsEntries
+        // FTS5 tokenizes on word boundaries, so `BlockStat` matches nothing while `%BlockStat%`
+        // still names the class. The LIKE pass below answers those substring queries.
+        val likeFetch = (offset + limit) * 4
+        return resolve(versionRowId, likeHitsSingle(versionRowId, q, type, namespace, likeFetch))
+            .map { it.entry }
+            .filter { includeSynthetic || !it.synthetic }
+            .drop(offset)
             .take(limit)
     }
 
     private fun searchOwnerMember(
-        search: Connection, table: String, versionRowId: Int, ownerPart: String, memberPart: String,
+        search: Connection, table: String, versionRowId: Int, version: String, ownerPart: String, memberPart: String,
         type: String, namespace: String, limit: Int, offset: Int, exact: Boolean, includeSynthetic: Boolean,
     ): List<SearchResultEntry> {
         // First, find candidate class ids matching ownerPart.
@@ -118,49 +139,177 @@ class SearchService(
             WHERE $table MATCH ?
               AND (rowid & 3) = ?
             ORDER BY rank ASC
-            LIMIT 50
+            LIMIT 200
         """.trimIndent()
-        val classIds = hits(search, ownerSql, listOf(ownerMatch, SearchIndex.kindCode("class")!!))
+        var classIds = hits(search, ownerSql, listOf(ownerMatch, SearchIndex.kindCode("class")!!))
             .map { SearchIndex.elementId(it.rowid) }
+        if (classIds.isEmpty() && !exact) {
+            classIds = likeOwnerIds(versionRowId, ownerPart, namespace, 200)
+        }
         if (classIds.isEmpty()) return emptyList()
+        // A member asked under a subclass is stored under the supertype that declares it, so the
+        // owner filter covers the supertypes as well and inherited members stay visible.
+        val classIdSet = expandWithSupertypes(version, namespace, versionRowId, classIds)
         val typeForMember = if (type == "class") "method" else type
         val kind = SearchIndex.kindCode(typeForMember)
         val memberMatch = buildFtsMatch(memberPart, namespace, exact)
 
         // The FTS index does not store the owner, so members are matched on their own name and then
-        // kept only where the class they belong to is one of the candidates above.
-        val classIdSet = classIds.toSet()
+        // kept only where the class they belong to is one of the candidates above. The page is cut
+        // after that filter: cutting before it starved later pages, because the offset skipped
+        // matches before the ones of other owners were dropped.
+        val fetch = (offset + limit) * 4
         val sql = """
             SELECT rowid, bm25($table) AS rank
             FROM $table
             WHERE $table MATCH ?
               ${if (kind != null) "AND (rowid & 3) = ?" else ""}
             ORDER BY CASE rowid & 3 WHEN 1 THEN 0 WHEN 2 THEN 1 ELSE 2 END ASC, rank ASC
-            LIMIT ? OFFSET ?
+            LIMIT ?
         """.trimIndent()
         val memberParams = buildList<Any> {
             add(memberMatch)
             if (kind != null) add(kind)
-            add(limit * 4); add(offset)
+            add(fetch)
         }
-        return resolve(versionRowId, hits(search, sql, memberParams))
+        var resolved = resolve(versionRowId, hits(search, sql, memberParams))
             .filter { it.ownerClassId in classIdSet }
+        if (resolved.isEmpty() && !exact) {
+            resolved = resolve(versionRowId, likeMemberHits(versionRowId, memberPart, typeForMember, namespace, fetch))
+                .filter { it.ownerClassId in classIdSet }
+        }
+        return resolved
             .map { it.entry }
             .filter { includeSynthetic || !it.synthetic }
+            .drop(offset)
             .take(limit)
     }
 
     private fun buildFtsMatch(q: String, namespace: String, exact: Boolean): String {
         val cleaned = q.replace("\"", "").replace("'", "").trim()
         val token = if (exact) "\"$cleaned\"" else "${cleaned.replace("/", " ")}*"
-        // Restrict to a column when namespace is specific
+        // Restrict to a column when namespace is specific; the simple name is searched alongside
+        // it, so `Block` still finds `net/minecraft/block/Block` under `namespace=yarn`.
         val column = when (namespace) {
             "yarn" -> "yarn_name"
             "mojmap" -> "mojmap_name"
             "intermediary" -> "intermediary_name"
             else -> null
         }
-        return if (column != null) "$column:$token" else token
+        return if (column != null) "{$column simple_name}:$token" else token
+    }
+
+    /**
+     * The classes of this version whose names hold [q], for when FTS5 answers nothing: a mid-token
+     * substring (`lockStat` for `BlockState`) is no prefix of any indexed term. Capped at [fetch].
+     */
+    private fun likeOwnerIds(versionRowId: Int, q: String, namespace: String, fetch: Int): List<Int> {
+        val pattern = "%${q.trim()}%"
+        return ClassTable.selectAll()
+            .where { (ClassTable.versionId eq versionRowId) and classLikeCondition(pattern, namespace) }
+            .limit(fetch)
+            .map { it[ClassTable.id].value }
+    }
+
+    /** One FTS-shaped hit per version row whose names hold [q], classes before members, capped at [fetch]. */
+    private fun likeHitsSingle(versionRowId: Int, q: String, type: String, namespace: String, fetch: Int): List<Hit> {
+        val pattern = "%${q.trim()}%"
+        val out = ArrayList<Hit>()
+        if (type == "class" || type == "all") {
+            ClassTable.selectAll()
+                .where { (ClassTable.versionId eq versionRowId) and classLikeCondition(pattern, namespace) }
+                .limit(fetch)
+                .forEach { out += Hit(SearchIndex.rowid("class", it[ClassTable.id].value), 0.0) }
+        }
+        if (type == "method" || type == "all") {
+            MethodTable.selectAll()
+                .where { (MethodTable.versionId eq versionRowId) and memberLikeCondition(MethodTable, pattern, namespace) }
+                .limit(fetch)
+                .forEach { out += Hit(SearchIndex.rowid("method", it[MethodTable.id].value), 0.0) }
+        }
+        if (type == "field" || type == "all") {
+            FieldTable.selectAll()
+                .where { (FieldTable.versionId eq versionRowId) and memberLikeCondition(FieldTable, pattern, namespace) }
+                .limit(fetch)
+                .forEach { out += Hit(SearchIndex.rowid("field", it[FieldTable.id].value), 0.0) }
+        }
+        return out.take(fetch)
+    }
+
+    /** One FTS-shaped hit per member row whose own name holds [memberPart], capped at [fetch]. */
+    private fun likeMemberHits(
+        versionRowId: Int, memberPart: String, typeForMember: String, namespace: String, fetch: Int,
+    ): List<Hit> {
+        val pattern = "%${memberPart.trim()}%"
+        val out = ArrayList<Hit>()
+        if (typeForMember == "method" || typeForMember == "all") {
+            MethodTable.selectAll()
+                .where { (MethodTable.versionId eq versionRowId) and memberLikeCondition(MethodTable, pattern, namespace) }
+                .limit(fetch)
+                .forEach { out += Hit(SearchIndex.rowid("method", it[MethodTable.id].value), 0.0) }
+        }
+        if (typeForMember == "field" || typeForMember == "all") {
+            FieldTable.selectAll()
+                .where { (FieldTable.versionId eq versionRowId) and memberLikeCondition(FieldTable, pattern, namespace) }
+                .limit(fetch)
+                .forEach { out += Hit(SearchIndex.rowid("field", it[FieldTable.id].value), 0.0) }
+        }
+        return out.take(fetch)
+    }
+
+    private fun classLikeCondition(pattern: String, namespace: String): Op<Boolean> = when (namespace) {
+        "yarn" -> (ClassTable.yarnName like pattern) or (ClassTable.simpleName like pattern)
+        "mojmap" -> (ClassTable.mojmapName like pattern) or (ClassTable.simpleName like pattern)
+        "intermediary" -> (ClassTable.intermediaryName like pattern) or (ClassTable.simpleName like pattern)
+        else -> (ClassTable.yarnName like pattern) or (ClassTable.mojmapName like pattern) or
+            (ClassTable.intermediaryName like pattern) or (ClassTable.simpleName like pattern) or
+            (ClassTable.obfName like pattern)
+    }
+
+    private fun memberLikeCondition(cols: MemberTable, pattern: String, namespace: String): Op<Boolean> = when (namespace) {
+        "yarn" -> (cols.yarnName like pattern) or (cols.simpleName like pattern)
+        "mojmap" -> (cols.mojmapName like pattern) or (cols.simpleName like pattern)
+        "intermediary" -> (cols.intermediaryName like pattern) or (cols.simpleName like pattern)
+        else -> (cols.yarnName like pattern) or (cols.mojmapName like pattern) or
+            (cols.intermediaryName like pattern) or (cols.simpleName like pattern) or
+            (cols.obfName like pattern)
+    }
+
+    /**
+     * The [classIds] plus the ids of every supertype that declares above them, so an `owner#member`
+     * query also matches members the owner inherits. A version without declarations to read keeps
+     * the ids it was given.
+     */
+    private fun expandWithSupertypes(
+        version: String, namespace: String, versionRowId: Int, classIds: List<Int>,
+    ): Set<Int> {
+        val cfg = appConfig ?: return classIds.toSet()
+        val namespaces = when (namespace) {
+            "yarn", "mojmap" -> listOf(namespace)
+            else -> listOf("yarn", "mojmap")
+        }
+        var expanded = classIds.toSet()
+        for (ns in namespaces) {
+            try {
+                DeclarationLookup(cfg, version, ns, declFallback).use { decls ->
+                    if (!decls.available) return@use
+                    val nameCol = if (ns == "yarn") ClassTable.yarnName else ClassTable.mojmapName
+                    val rows = rowsById(ClassTable, expanded.toList())
+                    val ancestors = LinkedHashSet<String>()
+                    for (id in expanded) {
+                        rows[id]?.get(nameCol)?.let { ancestors.addAll(decls.ancestorsOf(it)) }
+                    }
+                    if (ancestors.isEmpty()) return@use
+                    val ancestorIds = ClassTable.selectAll()
+                        .where { (ClassTable.versionId eq versionRowId) and (nameCol inList ancestors.toList()) }
+                        .map { it[ClassTable.id].value }
+                    expanded = expanded + ancestorIds.toSet()
+                }
+            } catch (e: Exception) {
+                log.warn("Supertype expansion failed: {}", e.message)
+            }
+        }
+        return expanded
     }
 
     /**
@@ -291,7 +440,7 @@ class SearchService(
                         obfuscated = it[ClassTable.obfName],
                     )
                 },
-                intermediaryDescriptor = r[cols.intermediaryDesc] ?: r[cols.obfDesc],
+                intermediaryDescriptor = r[cols.intermediaryDesc],
                 score = score,
                 synthetic = Names.isLambda(r[cols.yarnName]) || Names.isLambda(r[cols.mojmapName]),
             ),

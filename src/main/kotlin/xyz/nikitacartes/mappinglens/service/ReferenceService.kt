@@ -2,6 +2,8 @@ package xyz.nikitacartes.mappinglens.service
 
 import xyz.nikitacartes.mappinglens.config.AppConfig
 import xyz.nikitacartes.mappinglens.config.lruCache
+import xyz.nikitacartes.mappinglens.db.ClassDecl
+import xyz.nikitacartes.mappinglens.db.DeclarationLookup
 import xyz.nikitacartes.mappinglens.db.ReferenceIndexStore
 import xyz.nikitacartes.mappinglens.model.ReferenceChanges
 import xyz.nikitacartes.mappinglens.model.ReferenceDiffResponse
@@ -73,6 +75,9 @@ class ReferenceService(private val config: AppConfig) {
      */
     private val cache = lruCache<Pair<String, String>, Index>(config.cache.referenceIndexes)
 
+    /** Whole-jar declaration scans for the declaring-class normalization, for versions the decl index misses. */
+    private val declFallback = lruCache<Pair<String, String>, Map<String, ClassDecl>>(config.cache.declarations)
+
     /**
      * One group per (version, target). Returns null when the namespace is unsupported or no
      * requested version has a named jar; a version that has one but knows nothing of a target gives
@@ -97,19 +102,31 @@ class ReferenceService(private val config: AppConfig) {
             val available = versions.filter { lookup.has(it) }
             if (available.isEmpty()) return null
             val groups = available.flatMap { version ->
-                targets.map { target ->
-                    // One read of the owner's row answers both the references and whether the key
-                    // could match at all; asking twice would inflate the same blob twice.
-                    val members = lookup.members(version, target.substringBefore(':'))
-                    val (resolved, candidates) = resolve(target, members)
-                    ReferenceGroup(
-                        version = version,
-                        query = target,
-                        references = items(members[target.substringAfter(':', "")].orEmpty()),
-                        resolved = resolved,
-                        candidates = candidates,
-                        paths = if (depth > 1) walk(lookup, version, target, depth, maxPaths) else emptyList(),
-                    )
+                DeclarationLookup(config, version, namespace, declFallback).use { decls ->
+                    targets.map { target ->
+                        // The refs index keys a member under the class that declares it, so a key
+                        // asked under a subclass is read under its declaring supertype.
+                        val normalized = normalizeTarget(decls, target)
+                        val owner = normalized.substringBefore(':')
+                        val memberKey = normalized.substringAfter(':', "")
+                        // One read of the owner's row answers both the references and whether the key
+                        // could match at all; asking twice would inflate the same blob twice.
+                        val members = lookup.members(version, owner)
+                        val inherited = normalized != target
+                        val (resolved, candidates) = if (inherited) {
+                            false to listOf(normalized)
+                        } else {
+                            resolve(target, members)
+                        }
+                        ReferenceGroup(
+                            version = version,
+                            query = target,
+                            references = items(members[memberKey].orEmpty()),
+                            resolved = resolved,
+                            candidates = candidates,
+                            paths = if (depth > 1) walk(lookup, version, normalized, depth, maxPaths) else emptyList(),
+                        )
+                    }
                 }
             }
             ReferenceResponse(namespace, groups)
@@ -128,21 +145,25 @@ class ReferenceService(private val config: AppConfig) {
         if (namespace != "yarn" && namespace != "mojmap") return null
         return Lookup(namespace).use { lookup ->
             if (!lookup.has(from) || !lookup.has(to)) return null
-            val before = sites(lookup, from, query)
-            val after = sites(lookup, to, query)
-            val removed = (before.keys - after.keys).sorted()
-            val added = (after.keys - before.keys).sorted()
-            ReferenceDiffResponse(
-                from = from,
-                to = to,
-                namespace = namespace,
-                query = query,
-                changes = ReferenceChanges(
-                    added = added.map { site(it, after.getValue(it)) },
-                    removed = removed.map { site(it, before.getValue(it)) },
-                    moved = moves(removed, added, before, after),
-                ),
-            )
+            DeclarationLookup(config, from, namespace, declFallback).use { declsFrom ->
+                DeclarationLookup(config, to, namespace, declFallback).use { declsTo ->
+                    val before = sites(lookup, from, normalizeTarget(declsFrom, query))
+                    val after = sites(lookup, to, normalizeTarget(declsTo, query))
+                    val removed = (before.keys - after.keys).sorted()
+                    val added = (after.keys - before.keys).sorted()
+                    ReferenceDiffResponse(
+                        from = from,
+                        to = to,
+                        namespace = namespace,
+                        query = query,
+                        changes = ReferenceChanges(
+                            added = added.map { site(it, after.getValue(it)) },
+                            removed = removed.map { site(it, before.getValue(it)) },
+                            moved = moves(removed, added, before, after),
+                        ),
+                    )
+                }
+            }
         }
     }
 
@@ -156,6 +177,24 @@ class ReferenceService(private val config: AppConfig) {
             val prebuilt = ReferenceIndexStore.built(open)
             versions.filter { (it to namespace) !in prebuilt }
         }
+    }
+
+    /**
+     * The key the refs index holds the member under: the owner itself when it declares
+     * `name:descriptor`, else the nearest supertype that does. A subclass that only inherits the
+     * member normalizes to that supertype, so its callers are still found; a member nothing above
+     * declares stays as it came and [resolve] reports it.
+     */
+    private fun normalizeTarget(decls: DeclarationLookup, target: String): String {
+        if (':' !in target) return target
+        val owner = target.substringBefore(':')
+        val memberKey = target.substringAfter(':')
+        if (memberKey.isEmpty() || !decls.available) return target
+        if (decls[owner]?.members?.contains(memberKey) == true) return target
+        for (ancestor in decls.ancestorsOf(owner)) {
+            if (decls[ancestor]?.members?.contains(memberKey) == true) return "$ancestor:$memberKey"
+        }
+        return target
     }
 
     /**

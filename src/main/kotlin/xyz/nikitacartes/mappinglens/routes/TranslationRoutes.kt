@@ -41,6 +41,11 @@ fun Route.translationRoutes(translationService: TranslationService) {
         if (body.keys.size > 2000) {
             call.respond(HttpStatusCode.BadRequest, ApiError("invalid_body", "At most 2000 keys per request", 400)); return@post
         }
+        body.keys.forEachIndexed { i, k ->
+            if (k.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, ApiError("invalid_body", "keys[$i] must not be blank", 400)); return@post
+            }
+        }
         if (!call.namespacesAvailable(translationService, version, body.from, body.to)) return@post
         val r = translationService.translateBatch(version, body.from, body.to, body.keys)
         if (r == null) call.respond(HttpStatusCode.NotFound, ApiError("version_not_found", "Version $version not found", 404))

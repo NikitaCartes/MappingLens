@@ -2,7 +2,8 @@
 
 One example per endpoint, trimmed to one entry per array. Read the field off the example rather than guessing at it: several responses nest the answer (`/translate` puts the result in `output.name`, not at the top level).
 
-For parameters and behavior, see `endpoints.md`.
+For parameters and behavior, see `endpoints.md`. Every example below names vanilla Mojang
+declarations; loader-patched members and loader APIs never appear here.
 
 ## `/versions` and `/versions/{version}`
 
@@ -46,6 +47,9 @@ For parameters and behavior, see `endpoints.md`.
 `{mojmap}:{mojmapDescriptor}` with the `#` replaced by `:` is an `/exists` key, ready as it is.
 
 `score` runs `0` to just under `1` and higher is better, which is the order `results` is already in.
+
+Recall is prefix-on-token: a mid-name substring misses. Retry with the simple name, `exact=true`,
+or `namespace=all`. An inherited member answers under its declaring class.
 
 ## `/translate`
 
@@ -152,6 +156,8 @@ change is sometimes invisible in `members[].intermediaryDescriptor`.
   ]}
 ]}
 ```
+
+`versions` counts the versions in the span.
 
 ## `/compare/{version}/{className}`
 
@@ -275,6 +281,8 @@ Only `resolved: true` with an empty `references` means nothing calls the target.
 The third result asked for `getBlockState` as a field and the version declares a method. `closest` opens with `(`, and `reason` says so rather than reading as a changed signature.
 
 The fourth carries no descriptor, so it is a resolve rather than an existence check: `candidates` holds every declaration under that name, and one entry means the key is canonical.
+
+A descriptor key with `exists: false` and empty `candidates[]` means absent from the vanilla jar.
 
 ## `POST /validate`
 

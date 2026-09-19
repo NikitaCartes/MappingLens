@@ -31,16 +31,18 @@ fun Route.validateRoutes(service: ValidateService, versionService: VersionServic
         if (body.targets.size > MAX_TARGETS) {
             call.respond(HttpStatusCode.BadRequest, ApiError("invalid_body", "At most $MAX_TARGETS targets per request", 400)); return@post
         }
-        if (body.targets.any { it.id.isBlank() || it.owner.isBlank() || it.method.isBlank() }) {
-            call.respond(HttpStatusCode.BadRequest, ApiError("invalid_body", "Each target needs 'id', 'owner' and 'method'", 400)); return@post
+        val badTarget = body.targets.indexOfFirst { it.id.isBlank() || it.owner.isBlank() || it.method.isBlank() }
+        if (badTarget >= 0) {
+            call.respond(HttpStatusCode.BadRequest, ApiError("invalid_body", "targets[$badTarget] needs 'id', 'owner' and 'method'", 400)); return@post
         }
-        body.targets.mapNotNull { it.at }.forEach { at ->
-            if (!call.ensureOneOf("at.value", at.value, AT_VALUES)) return@post
+        body.targets.forEachIndexed { i, target ->
+            val at = target.at ?: return@forEachIndexed
+            if (!call.ensureOneOf("targets[$i].at.value", at.value, AT_VALUES)) return@post
             val colons = at.target.count { it == ':' }
             if (colons != 1 && colons != 2) {
                 call.respond(
                     HttpStatusCode.BadRequest,
-                    ApiError("invalid_body", "'at.target' must be owner:name[:descriptor], got '${at.target}'", 400),
+                    ApiError("invalid_body", "targets[$i].at.target must be owner:name[:descriptor], got '${at.target}'", 400),
                 ); return@post
             }
         }
@@ -53,6 +55,8 @@ fun Route.validateRoutes(service: ValidateService, versionService: VersionServic
         }
         val releasesOnly = call.booleanQuery("releasesOnly", false) ?: return@post
         val includeVariants = call.booleanQuery("includeVariants", false) ?: return@post
+        val collapseMode = params["collapse"] ?: "verdict"
+        if (!call.ensureOneOf("collapse", collapseMode, setOf("verdict", "status"))) return@post
 
         val versions = versionService.versionRange(from, to, includeVariants, releasesOnly)
             ?: run { call.respond(HttpStatusCode.NotFound, ApiError("not_found", "Unknown version in 'from'/'to'", 404)); return@post }
@@ -63,6 +67,6 @@ fun Route.validateRoutes(service: ValidateService, versionService: VersionServic
                 ApiError("invalid_query", "Range covers ${versions.size} versions; at most $MAX_VERSIONS. Narrow it, or pass releasesOnly=true", 400),
             ); return@post
         }
-        call.respond(service.validate(body, versions))
+        call.respond(service.validate(body, versions, collapseMode))
     }
 }

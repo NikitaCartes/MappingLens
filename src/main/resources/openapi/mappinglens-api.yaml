@@ -205,6 +205,14 @@ paths:
             default: 100
           description: >
             Maximum entries kept in each of the added, removed and renamed lists.
+        - in: query
+          name: includeSynthetic
+          schema:
+            type: boolean
+            default: true
+          description: >
+            Keep javac lambda bodies (`lambda$...`) in added/removed/renamed. False drops
+            display-name `lambda$` rows. Mirrors `/search` with the opposite default.
       responses:
         "200":
           description: Added, removed and renamed mapping elements.
@@ -841,6 +849,55 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ApiError"
+    post:
+      tags: [BodyHash]
+      summary: Hash method bodies, with the queries in a body
+      description: >
+        The same call as `GET`, for batches a query string cannot hold. `GET` keeps its limit of
+        50 `q` values and this form takes up to 2000 queries (`queries`, with `targets` accepted
+        as an alias so batch clients reuse one shape). `from`/`to` may ride in the body or in the
+        query string, the body winning when both are given; `releasesOnly`/`includeVariants` work
+        the same way. The `QUERY` method (RFC 10008) is accepted on this path as well, with the
+        same body and the same answer; OpenAPI 3.1 has no field for it. Neither form is cached,
+        because a URL-keyed cache cannot see the body.
+      parameters:
+        - in: query
+          name: from
+          schema:
+            type: string
+          description: Range start when the body carries no `from`.
+        - in: query
+          name: to
+          schema:
+            type: string
+          description: Range end when the body carries no `to`.
+        - in: query
+          name: releasesOnly
+          schema:
+            type: boolean
+            default: false
+        - $ref: "#/components/parameters/IncludeVariants"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BodyHashRequest"
+      responses:
+        "200":
+          description: One entry per query, in the order given.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BodyHashResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: "`from` or `to` names a version that is not indexed."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /api/v1/hierarchy/{version}/{className}:
     get:
       tags: [Hierarchy]
@@ -1030,9 +1087,23 @@ paths:
         Validates a batch of class/member keys against a version's named jar (mojmap or yarn),
         returning one boolean per key. A key is a class internal name (`net/minecraft/.../ChunkMap`)
         or a member `owner:name:descriptor`. Descriptors are in the requested namespace. Intended
-        for validating mixin/shadow targets when updating a mod to a new version.
+        for validating mixin/shadow targets when updating a mod to a new version. Without `to` the
+        answer is one object for `{version}`; with `to` the path version is the near end of a range
+        and the answer is one object per version, oldest first.
       parameters:
         - $ref: "#/components/parameters/VersionPath"
+        - in: query
+          name: to
+          schema:
+            type: string
+          description: Far end of a version range whose near end is `{version}`. Omit for one version.
+        - in: query
+          name: releasesOnly
+          schema:
+            type: boolean
+            default: false
+          description: Walk releases alone when `to` is given.
+        - $ref: "#/components/parameters/IncludeVariants"
       requestBody:
         required: true
         content:
@@ -1041,11 +1112,15 @@ paths:
               $ref: "#/components/schemas/ExistsRequest"
       responses:
         "200":
-          description: One existence result per requested key.
+          description: One existence result per requested key, or one such object per version when `to` is given.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ExistsResponse"
+                oneOf:
+                  - $ref: "#/components/schemas/ExistsResponse"
+                  - type: array
+                    items:
+                      $ref: "#/components/schemas/ExistsResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -1085,6 +1160,15 @@ paths:
             Walk releases alone. The 60-version cap is counted after the filters, so this is how a
             wide range is covered.
         - $ref: "#/components/parameters/IncludeVariants"
+        - in: query
+          name: collapse
+          schema:
+            type: string
+            enum: [verdict, status]
+            default: verdict
+          description: >
+            `verdict` merges runs of versions with an equal answer; `status` merges on the status
+            alone and clears `atCount`, so differing counts no longer split a span.
       requestBody:
         required: true
         content:
@@ -1279,7 +1363,7 @@ paths:
         "200":
           description: OpenAPI 3.1 document.
           content:
-            application/yaml:
+            application/json:
               schema:
                 type: string
   /openapi.yaml:
@@ -2000,6 +2084,12 @@ components:
         intermediaryDescriptor:
           type: [string, "null"]
           description: Named descriptors are not indexed; this one answers whether the signature changed.
+        mojmapDescriptor:
+          type: [string, "null"]
+          description: >
+            The obf descriptor rewritten through this version's classes, or null when the row
+            carries no mojmap name or no descriptor to rewrite. Lets a signature change read in
+            named terms without a second lookup.
     HistorySpan:
       type: object
       description: A run of consecutive versions that answer the query identically.
@@ -2111,6 +2201,41 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/BodyHashEntry"
+    BodyHashRequest:
+      type: object
+      properties:
+        namespace:
+          type: string
+          enum: [yarn, mojmap]
+          default: mojmap
+        normalize:
+          type: string
+          enum: [named, intermediary]
+          default: named
+        queries:
+          type: array
+          maxItems: 2000
+          items:
+            type: string
+          description: "`owner:name` or `owner:name:descriptor` keys. `targets` is accepted as an alias."
+        targets:
+          type: array
+          maxItems: 2000
+          items:
+            type: string
+          description: Alias for `queries`, so batch clients reuse one shape.
+        from:
+          type: [string, "null"]
+          description: Range start; falls back to the `from` query parameter when absent.
+        to:
+          type: [string, "null"]
+          description: Range end; falls back to the `to` query parameter when absent.
+        releasesOnly:
+          type: boolean
+          default: false
+        includeVariants:
+          type: boolean
+          default: false
     ValidateAt:
       type: object
       description: Where the mixin injects, as `@At` spells it.
@@ -2189,6 +2314,12 @@ components:
             `owner#method` that holds the call now, when it could be found. On `call_moved`, and on
             `missing` where the class still holds the call in exactly one other method, which is
             what a renamed method looks like from here.
+        reason:
+          type: [string, "null"]
+          description: >
+            Why `movedTo` is null on `call_moved` (`no-baseline`, `at-without-descriptor`,
+            `no-named-jar`, `unpaired`), or why the target resolves nowhere on `missing`
+            (`unknown-owner`, `unknown-target`). Null when the span paired normally.
     ValidateEntry:
       type: object
       required: [id, spans]

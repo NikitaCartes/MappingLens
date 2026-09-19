@@ -3,7 +3,13 @@
 Parameters and behavior, one section per endpoint. For an example response, see `responses.md`.
 
 Every path below is relative to `127.0.0.1:8080`. Unless a section says otherwise, `namespace`
-accepts `yarn` or `mojmap` and defaults to `mojmap`.
+accepts `yarn` or `mojmap` and defaults to `mojmap`. Unknown query parameters are ignored.
+
+## Scope: vanilla declarations only
+
+MappingLens answers what the vanilla Mojang jar declares. NeoForge/Fabric-patched members (for
+example `getExpDrop`), loader APIs (`fabric-api`, NeoForge events, `MixinExtras`), `@Slice`/LDC
+anchors and `fabric.mod.json` constraints are out of scope.
 
 ## Versions
 
@@ -44,6 +50,11 @@ accepts `yarn` or `mojmap` and defaults to `mojmap`.
   work.
 - `type`: `class`, `method`, `field`, `all`. `namespace`: `yarn`, `mojmap`, `intermediary`, `all`.
 - `exact=true` is for an exact-name lookup only. Fuzzy or prefix search works better otherwise.
+- FTS matches prefix-on-token: a mid-name substring misses, while a leading token prefix hits. When
+  recall is thin, retry with the simple name (`BlockState`), `exact=true` for the full name, or
+  `namespace=all` when the namespace is uncertain.
+- An inherited member resolves under its declaring class, not the subclass a caller holds. Search the
+  supertype (via `/hierarchy`) when the subclass names nothing.
 - `score` runs `0` to just under `1`, and **higher is better**. `results` already comes back best
   first. The value is derived from the FTS5 bm25 rank of that one query, so it ranks one call's
   results and means nothing across calls.
@@ -74,7 +85,8 @@ accepts `yarn` or `mojmap` and defaults to `mojmap`.
   moves the hash. `intermediary` renames the class types first, so a class rename or a package move
   does not.
 - Returns `{namespace, normalize, results[]}`, each `{query, spans[]}`, each span
-  `{from, to, versions, hash}`. `hash` is null on a version with no such method.
+  `{from, to, versions, hash}`. `hash` is null on a version with no such method. `versions` counts
+  the versions in the span.
 - Equal hash means the body is the same. A changed hash names the versions to read with `/source` or
   `/bytecode`.
 - A lambda body is a method of its own and is not followed, so a change confined to a lambda does not
@@ -359,7 +371,8 @@ accepts `yarn` or `mojmap` and defaults to `mojmap`.
     field into an `@Inject` compiles into nothing useful. A method descriptor opens with `(` and a
     field descriptor does not.
   - Both null — the version declares nothing of that name under that owner, or the owner is gone.
-    Both are also null when `exists` is true.
+    Both are also null when `exists` is true. With a descriptor key, `exists: false` and empty
+    `candidates[]` therefore means absent from the vanilla jar.
 - **`owner:name` without a descriptor is a resolve, not an existence check.** Such a key can never
   match, so it comes back `exists: false` with `candidates[]`: every declaration under that name, in
   key form, read from the jar with no ranking and no fuzzy matching. One entry is the canonical key

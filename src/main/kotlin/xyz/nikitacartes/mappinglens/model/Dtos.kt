@@ -430,6 +430,10 @@ data class HistoryMember(
     val mojmap: String? = null,
     // Named descriptors are not indexed; the intermediary one answers "did the signature change?".
     val intermediaryDescriptor: String? = null,
+    // The obf descriptor rewritten through this version's classes, or null when the row carries no
+    // mojmap name or no descriptor to rewrite. Present so a signature change still reads in named
+    // terms without a second lookup; spans already break on it via the stable descriptor.
+    val mojmapDescriptor: String? = null,
 )
 
 /** A run of consecutive versions (oldest [from] to newest [to]) that answer the query identically. */
@@ -478,6 +482,7 @@ data class HistoryResponse(
 data class BodyHashSpan(
     val from: String,
     val to: String,
+    /** Count of versions in span. */
     val versions: Int,
     val hash: String? = null,
 )
@@ -494,6 +499,21 @@ data class BodyHashResponse(
     /** `named` or `intermediary`: which names the hash was taken over. */
     val normalize: String,
     val results: List<BodyHashEntry>,
+)
+
+/** The body form of a `/bodyhash` request, for batches too large for a query string. */
+@Serializable
+data class BodyHashRequest(
+    val namespace: String = "mojmap",
+    val normalize: String = "named",
+    val queries: List<String> = emptyList(),
+    /** Alias for [queries]; accepted so batch clients can reuse one shape. */
+    val targets: List<String> = emptyList(),
+    /** The range to hash over; falls back to the `from`/`to` query parameters when absent. */
+    val from: String? = null,
+    val to: String? = null,
+    val releasesOnly: Boolean = false,
+    val includeVariants: Boolean = false,
 )
 
 @Serializable
@@ -561,6 +581,8 @@ data class ValidateSpan(
     val closest: String? = null,
     /** `owner#method` the call went to, when it could be paired. On `call_moved`. */
     val movedTo: String? = null,
+    /** Why `movedTo` is null on `call_moved`, or why the target resolves nowhere on `missing`. */
+    val reason: String? = null,
 )
 
 @Serializable

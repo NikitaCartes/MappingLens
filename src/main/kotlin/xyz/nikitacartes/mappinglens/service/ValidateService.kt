@@ -40,6 +40,7 @@ class ValidateService(
         val atCount: Int? = null,
         val closest: String? = null,
         val movedTo: String? = null,
+        val reason: String? = null,
     )
 
     /** What one class declares, plus where the `at` target occurs in it. One parse serves both. */
@@ -51,12 +52,12 @@ class ValidateService(
         val atHits: Map<String, Int>,
     )
 
-    fun validate(request: ValidateRequest, versions: List<String>): ValidateResponse {
+    fun validate(request: ValidateRequest, versions: List<String>, collapseMode: String = "verdict"): ValidateResponse {
         // Version by version, because one jar open answers every target of that version.
         val perVersion = versions.map { version -> checkAll(version, request.namespace, request.targets) }
         val results = request.targets.mapIndexed { i, target ->
             val verdicts = locateMoves(versions, perVersion.map { it[i] }, target, request.namespace)
-            ValidateEntry(target.id, collapse(versions.zip(verdicts)))
+            ValidateEntry(target.id, collapse(versions.zip(verdicts), collapseMode))
         }
         return ValidateResponse(request.namespace, results)
     }
@@ -69,7 +70,7 @@ class ValidateService(
 
     private fun check(zip: ZipFile, target: ValidateTarget): Verdict {
         val at = target.at?.target
-        val owner = readClass(zip, target.owner, at) ?: return Verdict("missing")
+        val owner = readClass(zip, target.owner, at) ?: return Verdict("missing", reason = "unknown-owner")
         val descriptors = owner.overloads[target.method].orEmpty()
         val wanted = descriptors.filter { target.descriptor == null || it == target.descriptor }
         // The method of this class that holds the call now, when exactly one does. It costs nothing:
@@ -84,7 +85,7 @@ class ValidateService(
             // A renamed method is `missing` the way `/exists` reports it, but the call it carried is
             // still findable, and that is the edit the mixin needs.
             val above = upwards(zip, target, owner.parents)
-            return if (above.status == "missing") above.copy(movedTo = holder) else above
+            return if (above.status == "missing") above.copy(movedTo = holder, reason = "unknown-target") else above
         }
         if (at == null) return Verdict("ok")
 
@@ -137,26 +138,34 @@ class ValidateService(
         return verdicts.mapIndexed { i, verdict ->
             if (verdict.status == "ok") lastOk = versions[i]
             val from = lastOk
-            if (verdict.status != "call_moved" || verdict.movedTo != null || from == null) return@mapIndexed verdict
+            if (verdict.status != "call_moved" || verdict.movedTo != null) return@mapIndexed verdict
+            if (from == null) return@mapIndexed verdict.copy(reason = "no-baseline")
             // A descriptor-less `at` never resolves in the reverse index (`sites()` matches one
             // `name:descriptor` key), so there is nothing to pair: the in-class holder stands, and
             // a call that left the class stays unpaired (null) rather than mispaired.
-            if (target.at!!.target.count { it == ':' } == 1) return@mapIndexed verdict
+            if (target.at!!.target.count { it == ':' } == 1) return@mapIndexed verdict.copy(reason = "at-without-descriptor")
             val diff = references.diffReferences(from, versions[i], target.at!!.target, namespace)
-            verdict.copy(movedTo = diff?.changes?.moved?.firstOrNull { it.from == site }?.to)
+                ?: return@mapIndexed verdict.copy(reason = "no-named-jar")
+            val paired = diff.changes.moved.firstOrNull { it.from == site }?.to
+            if (paired == null) verdict.copy(reason = "unpaired") else verdict.copy(movedTo = paired)
         }
     }
 
     /** Merges each run of versions with an equal verdict into one span. */
-    private fun collapse(verdicts: List<Pair<String, Verdict>>): List<ValidateSpan> {
+    private fun collapse(verdicts: List<Pair<String, Verdict>>, collapseMode: String = "verdict"): List<ValidateSpan> {
         val spans = ArrayList<ValidateSpan>()
         var last: Verdict? = null
         for ((version, verdict) in verdicts) {
             val previous = spans.lastOrNull()
-            if (previous != null && verdict == last) {
-                spans[spans.lastIndex] = previous.copy(to = version, versions = previous.versions + 1)
+            val same = if (collapseMode == "status") verdict.status == last?.status else verdict == last
+            if (previous != null && same) {
+                spans[spans.lastIndex] = if (collapseMode == "status") {
+                    previous.copy(to = version, versions = previous.versions + 1, atCount = null)
+                } else {
+                    previous.copy(to = version, versions = previous.versions + 1)
+                }
             } else {
-                spans += ValidateSpan(version, version, 1, verdict.status, verdict.atCount, verdict.closest, verdict.movedTo)
+                spans += ValidateSpan(version, version, 1, verdict.status, verdict.atCount, verdict.closest, verdict.movedTo, verdict.reason)
             }
             last = verdict
         }

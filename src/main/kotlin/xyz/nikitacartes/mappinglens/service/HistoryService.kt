@@ -50,7 +50,17 @@ class HistoryService(private val db: Database, private val config: AppConfig? = 
         val members: List<HistoryMember> = emptyList(),
         val reason: String? = null,
         val declaredIn: String? = null,
+        // The stable (or obf) descriptor of each matched row, sorted. Named descriptors are not
+        // indexed and the intermediary one is null for rows the tiny files do not name, so without
+        // this a signature change there would not break the span.
+        val sigs: List<String?> = emptyList(),
     )
+
+    private val unmappedYarn = Regex("^(method_|field_)[0-9]+$")
+
+    /** Yarn placeholder names (`method_123`, `field_456`) carry an index that moves between versions. */
+    private fun cleanYarn(name: String?): String? =
+        if (name != null && unmappedYarn.matches(name)) null else name
 
     private fun MemberTable.named(namespace: String): Column<String?> = when (namespace) {
         "yarn" -> yarnName
@@ -105,15 +115,20 @@ class HistoryService(private val db: Database, private val config: AppConfig? = 
         val parts = query.split(':')
         val owner = normalizeClassName(parts[0])
         val member = parts.getOrNull(1).orEmpty()
-        val ownerRows = classRows(owner, namespace, all, order)
-        if (ownerRows.isEmpty()) return HistoryEntry(query, "unknown", emptyList())
+        val ownerRows = resolveOwnerRows(owner, namespace, all, order)
+        if (ownerRows.isEmpty()) {
+            // An unknown class still answers over the requested range, the way an unknown member
+            // does: one absent span keeps the type while saying the range was walked.
+            if (versions.isEmpty()) return HistoryEntry(query, "unknown", emptyList())
+            return HistoryEntry(query, "unknown", collapse(versions) { SpanKey(present = false) })
+        }
         if (member.isEmpty()) {
             return HistoryEntry(query, "class", collapse(versions) { v ->
                 val row = ownerRows[v.rowId] ?: return@collapse SpanKey(present = false)
                 SpanKey(
                     present = true,
                     intermediary = row[ClassTable.intermediaryName],
-                    yarn = row[ClassTable.yarnName],
+                    yarn = cleanYarn(row[ClassTable.yarnName]),
                     mojmap = row[ClassTable.mojmapName],
                 )
             })
@@ -124,15 +139,23 @@ class HistoryService(private val db: Database, private val config: AppConfig? = 
             if (rows.isEmpty()) continue
             return HistoryEntry(query, cols.kind, collapse(versions) { v ->
                 val ownerName = ownerRows[v.rowId]?.get(ownerNameCol)
-                val found = rows[v.rowId].orEmpty().map {
+                val versionRows = rows[v.rowId].orEmpty()
+                val mojmapDescs = mappedMojmapDescs(v.rowId, versionRows, cols)
+                val found = versionRows.map {
                     HistoryMember(
                         intermediary = it[cols.intermediaryName],
-                        yarn = it[cols.yarnName],
+                        yarn = cleanYarn(it[cols.yarnName]),
                         mojmap = it[cols.mojmapName],
                         intermediaryDescriptor = it[cols.intermediaryDesc],
+                        mojmapDescriptor = mojmapDescs[it],
                     )
-                }.sortedWith(compareBy({ it.intermediary ?: "" }, { it.intermediaryDescriptor ?: "" }))
-                SpanKey(present = found.isNotEmpty(), owner = ownerName, members = found)
+                }.sortedWith(compareBy({ it.intermediary ?: "" }, { it.intermediaryDescriptor ?: "" }, { it.mojmapDescriptor ?: "" }))
+                SpanKey(
+                    present = found.isNotEmpty(),
+                    owner = ownerName,
+                    members = found,
+                    sigs = versionRows.map { it[cols.stableDesc] ?: it[cols.obfDesc] }.sortedBy { it ?: "" },
+                )
             })
         }
         return inherited(query, namespace, member, ownerRows, versions, all, order)
@@ -168,25 +191,92 @@ class HistoryService(private val db: Database, private val config: AppConfig? = 
             val rows = memberRows(cols, superRows, member, namespace, order)
             if (rows.isEmpty()) continue
             return HistoryEntry(query, cols.kind, collapse(versions) { v ->
-                val found = rows[v.rowId].orEmpty().map {
+                val versionRows = rows[v.rowId].orEmpty()
+                val mojmapDescs = mappedMojmapDescs(v.rowId, versionRows, cols)
+                val found = versionRows.map {
                     HistoryMember(
                         intermediary = it[cols.intermediaryName],
-                        yarn = it[cols.yarnName],
+                        yarn = cleanYarn(it[cols.yarnName]),
                         mojmap = it[cols.mojmapName],
                         intermediaryDescriptor = it[cols.intermediaryDesc],
+                        mojmapDescriptor = mojmapDescs[it],
                     )
-                }.sortedWith(compareBy({ it.intermediary ?: "" }, { it.intermediaryDescriptor ?: "" }))
+                }.sortedWith(compareBy({ it.intermediary ?: "" }, { it.intermediaryDescriptor ?: "" }, { it.mojmapDescriptor ?: "" }))
                 SpanKey(
                     present = false,
                     owner = ownerRows[v.rowId]?.get(ownerNameCol),
                     members = found,
                     reason = if (found.isEmpty()) null else "inherited",
                     declaredIn = if (found.isEmpty()) null else superRows[v.rowId]?.get(ownerNameCol),
+                    sigs = versionRows.map { it[cols.stableDesc] ?: it[cols.obfDesc] }.sortedBy { it ?: "" },
                 )
             })
         }
         return null
     }
+
+    /**
+     * The rows for [name], falling back from slash-separated inner classes to dollar-separated
+     * ones. Dotted FQNs arrive here as slashes (`a.b.Outer.Inner` -> `a/b/Outer/Inner`), but the
+     * index spells nested classes with `$` (`a/b/Outer$Inner`), so an exact miss retries with the
+     * last `/` replaced by `$`, then the one before, and so on.
+     */
+    private fun resolveOwnerRows(
+        name: String,
+        namespace: String,
+        all: List<Ver>,
+        order: Map<Int, Int>,
+    ): Map<Int, ResultRow> {
+        val direct = classRows(name, namespace, all, order)
+        if (direct.isNotEmpty() || '/' !in name) return direct
+        var candidate = name
+        while ('/' in candidate) {
+            val idx = candidate.lastIndexOf('/')
+            candidate = candidate.substring(0, idx) + '$' + candidate.substring(idx + 1)
+            val rows = classRows(candidate, namespace, all, order)
+            if (rows.isNotEmpty()) return rows
+        }
+        return direct
+    }
+
+    /**
+     * The mojmap spelling of each row's obf descriptor, keyed by row. Null when the row carries no
+     * mojmap name or no obf descriptor; otherwise the obf descriptor rewritten through this
+     * version's classes, unknown types left as they came. One class-table query per version keeps
+     * this cheap, and descriptors without class types need no query at all.
+     */
+    private fun mappedMojmapDescs(
+        versionRowId: Int,
+        rows: List<ResultRow>,
+        cols: MemberTable,
+    ): Map<ResultRow, String?> {
+        if (rows.isEmpty()) return emptyMap()
+        val wanted = rows.filter { it[cols.mojmapName] != null && it[cols.obfDesc] != null }
+        if (wanted.isEmpty()) return rows.associateWith { null }
+        val obfDescs = wanted.mapNotNull { it[cols.obfDesc] }.distinct()
+        val plain = obfDescs.filter { 'L' !in it }.associateWith { it }.toMutableMap()
+        val withTypes = obfDescs.filter { 'L' in it }
+        if (withTypes.isNotEmpty()) {
+            val types = withTypes.flatMapTo(HashSet()) { classTypesOf(it) }
+            val named = types.chunked(500)
+                .flatMap { chunk ->
+                    ClassTable.selectAll()
+                        .where { (ClassTable.versionId eq versionRowId) and (ClassTable.obfName inList chunk) }
+                        .toList()
+                }.associateBy({ it[ClassTable.obfName].orEmpty() }, { it[ClassTable.mojmapName] })
+            for (desc in withTypes) {
+                plain[desc] = Descriptors.mapTypes(desc) { named[it] ?: it }
+            }
+        }
+        return rows.associateWith { row ->
+            val obf = row[cols.obfDesc]
+            if (obf == null || row[cols.mojmapName] == null) null else plain[obf]
+        }
+    }
+
+    /** Every class type of a descriptor, collected by walking it with a rename that renames nothing. */
+    private fun classTypesOf(descriptor: String): List<String> =
+        ArrayList<String>().also { out -> Descriptors.mapTypes(descriptor) { out.add(it); null } }
 
     /**
      * The nearest supertype of the owner that declares [member], read from a named jar one class

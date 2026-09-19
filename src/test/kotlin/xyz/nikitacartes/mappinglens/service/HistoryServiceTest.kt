@@ -294,6 +294,93 @@ class HistoryServiceTest {
     }
 
     @Test
+    fun `unknown class answers absent over the range`(@TempDir tmp: Path) {
+        val db = Fixtures.newDb(tmp)
+        Fixtures.seed_1_21(db)
+        Fixtures.seed_1_21_1(db)
+        val service = HistoryService(db)
+
+        val entry = service.history(listOf("net/minecraft/Nope"), "mojmap", null, null)!!.results.single()
+        assertEquals("unknown", entry.type)
+        val span = entry.spans.single()
+        assertEquals(listOf(false, "1.21", "1.21.1", 2), listOf(span.present, span.from, span.to, span.versions))
+
+        val ranged = service.history(listOf("net/minecraft/Nope"), "mojmap", "1.21.1", "1.21.1")!!.results.single()
+        assertEquals("unknown", ranged.type)
+        assertEquals(listOf("1.21.1", "1.21.1", 1), listOf(ranged.spans.single().from, ranged.spans.single().to, ranged.spans.single().versions))
+    }
+
+    @Test
+    fun `yarn placeholders do not split a span`(@TempDir tmp: Path) {
+        val db = Fixtures.newDb(tmp)
+        transaction(db) {
+            val v1 = addVersion("1.21", yarn = true)
+            val v2 = addVersion("1.21.1", yarn = true)
+            for ((v, yarn) in listOf(v1 to "method_1", v2 to "method_2")) {
+                val cls = addClass(v, "net/minecraft/Foo", "net/minecraft/class_1").value
+                MethodTable.insert {
+                    it[versionId] = EntityID(v, VersionTable)
+                    it[classId] = EntityID(cls, ClassTable)
+                    it[intermediaryName] = "method_100"
+                    it[intermediaryDesc] = "()V"
+                    it[obfDesc] = "()V"
+                    it[yarnName] = yarn
+                    it[mojmapName] = "doThing"
+                }
+            }
+        }
+        val entry = HistoryService(db)
+            .history(listOf("net/minecraft/Foo:doThing"), "mojmap", null, null)!!.results.single()
+        assertEquals("method", entry.type)
+        assertEquals(1, entry.spans.size)
+        assertEquals(null, entry.spans.single().members.single().yarn)
+        assertEquals("method_100", entry.spans.single().members.single().intermediary)
+    }
+
+    @Test
+    fun `slash-separated inner class falls back to dollar`(@TempDir tmp: Path) {
+        val db = Fixtures.newDb(tmp)
+        transaction(db) {
+            val v = addVersion("1.21", yarn = true)
+            addClass(v, "net/minecraft/Outer\$Inner", "net/minecraft/class_2")
+        }
+        val service = HistoryService(db)
+        for (q in listOf("net/minecraft/Outer/Inner", "net.minecraft.Outer.Inner")) {
+            val entry = service.history(listOf(q), "mojmap", null, null)!!.results.single()
+            assertEquals("class", entry.type)
+            assertEquals(true, entry.spans.single().present)
+            assertEquals("net/minecraft/Outer\$Inner", entry.spans.single().mojmap)
+        }
+    }
+
+    @Test
+    fun `signature change breaks span without intermediary descriptor and reports mojmap descriptor`(@TempDir tmp: Path) {
+        val db = Fixtures.newDb(tmp)
+        transaction(db) {
+            val v1 = addVersion("1.21", yarn = true)
+            val v2 = addVersion("1.21.1", yarn = true)
+            for ((v, desc) in listOf(v1 to "()V", v2 to "(I)V")) {
+                val cls = addClass(v, "net/minecraft/Bar", "net/minecraft/class_3").value
+                MethodTable.insert {
+                    it[versionId] = EntityID(v, VersionTable)
+                    it[classId] = EntityID(cls, ClassTable)
+                    it[intermediaryName] = "method_200"
+                    it[intermediaryDesc] = null
+                    it[obfDesc] = desc
+                    it[yarnName] = "doOther"
+                    it[mojmapName] = "doOther"
+                }
+            }
+        }
+        val entry = HistoryService(db)
+            .history(listOf("net/minecraft/Bar:doOther"), "mojmap", null, null)!!.results.single()
+        assertEquals("method", entry.type)
+        assertEquals(2, entry.spans.size)
+        assertEquals(listOf(null, null), entry.spans.map { it.members.single().intermediaryDescriptor })
+        assertEquals(listOf("()V", "(I)V"), entry.spans.map { it.members.single().mojmapDescriptor })
+    }
+
+    @Test
     fun `history route batches queries, honours a version range and rejects bad input`(@TempDir tmp: Path) = testApplication {
         val service = HistoryService(seedFourVersions(tmp))
         application {

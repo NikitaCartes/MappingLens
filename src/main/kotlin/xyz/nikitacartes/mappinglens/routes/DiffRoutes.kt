@@ -18,6 +18,10 @@ fun Route.diffRoutes(diffService: DiffService) {
         if (!call.ensureOneOf("type", type, setOf("class", "method", "field", "all"))) return@get
         if (!call.ensureOneOf("changeType", changeType, setOf("added", "removed", "renamed", "all"))) return@get
         val limit = call.intQuery("limit", 100, 1, 5000) ?: return@get
+        // `includeSynthetic` mirrors `search` with the opposite default: true keeps the current
+        // behavior (lambda$ bodies listed), false drops display-name `lambda$` rows from
+        // added/removed/renamed.
+        val includeSynthetic = call.booleanQuery("includeSynthetic", true) ?: return@get
         // `class=` targets single classes (member-precise, summary matches /diff/files); repeat it
         // to diff several classes at once. `package=` is a package-path prefix over the whole diff.
         // class= wins when both are given.
@@ -26,12 +30,12 @@ fun Route.diffRoutes(diffService: DiffService) {
             call.respond(HttpStatusCode.BadRequest, ApiError("invalid_query", "At most 25 'class' parameters per request", 400)); return@get
         }
         if (classes.size == 1) {
-            call.respond(diffService.diffClass(from, to, namespace, classes.single(), type, changeType, limit)); return@get
+            call.respond(diffService.diffClass(from, to, namespace, classes.single(), type, changeType, limit, includeSynthetic)); return@get
         }
         if (classes.size > 1) {
-            call.respond(diffService.diffClasses(from, to, namespace, classes, type, changeType, limit)); return@get
+            call.respond(diffService.diffClasses(from, to, namespace, classes, type, changeType, limit, includeSynthetic)); return@get
         }
-        call.respond(diffService.diff(from, to, namespace, type, pkg, changeType, limit))
+        call.respond(diffService.diff(from, to, namespace, type, pkg, changeType, limit, includeSynthetic))
     }
     get("/api/v1/diff/files") {
         val (from, to) = call.versionPair() ?: return@get

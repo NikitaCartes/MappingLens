@@ -92,6 +92,11 @@ private suspend fun ApplicationCall.respondReferences(
         respond(HttpStatusCode.BadRequest, ApiError("invalid_query", "At most $maxTargets targets per request$hint", 400)); return
     }
     if (!ensureOneOf("namespace", request.namespace, setOf("yarn", "mojmap"))) return
+    request.targets.forEachIndexed { i, t ->
+        if (t.isBlank()) {
+            respond(HttpStatusCode.BadRequest, ApiError("invalid_query", "targets[$i] must not be blank", 400)); return
+        }
+    }
     if (request.depth !in 1..MAX_DEPTH) {
         respond(HttpStatusCode.BadRequest, ApiError("invalid_query", "Parameter 'depth' must be between 1 and $MAX_DEPTH", 400)); return
     }

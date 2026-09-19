@@ -31,6 +31,10 @@ The machine-readable contract is served live at `GET /openapi.yaml`.
 Do not use MappingLens as an authority for general Minecraft gameplay facts. It covers names,
 mappings, source paths, diffs, bytecode and source lookup, and the game's resource files.
 
+MappingLens answers vanilla Mojang declarations only. NeoForge/Fabric-patched members (for
+example `getExpDrop`), loader APIs (`fabric-api`, NeoForge events, `MixinExtras`), `@Slice`/LDC
+anchors and `fabric.mod.json` constraints are out of scope.
+
 ## General Workflow
 
 1. When the user gives no version and the exact version matters, pick the latest indexed
@@ -112,6 +116,10 @@ already listed.
   empty. `/references` marks that with `resolved: false` and `/exists` with `candidates[]`. Check
   those before reporting a negative, then broaden with `namespace=all`, `type=all`, or by dropping
   `exact=true`.
+- Search recall: FTS matches prefix-on-token, so a mid-name substring misses. Use simple names,
+  `exact=true` for an exact-name lookup, and `namespace=all` when the namespace is uncertain. An
+  inherited member resolves under its declaring class. Unknown query parameters are ignored.
+- Span `versions` (`/history`, `/bodyhash`, `/validate`) counts the versions in the span.
 
 ## Answering Guidelines
 
