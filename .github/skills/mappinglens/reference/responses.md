@@ -79,10 +79,15 @@ The translated name is `output.name`.
                 "intermediaryDescriptor": "()Lnet/minecraft/class_8565;",
                 "oldName": null, "newName": null}],
    "renamed": []},
- "summary": {"classesAdded": 0, "classesRemoved": 0, "classesRenamed": 0,
-             "methodsAdded": 7, "methodsRemoved": 66, "methodsRenamed": 18,
-             "fieldsAdded": 0, "fieldsRemoved": 1, "fieldsRenamed": 0}}
+  "summary": {"classesAdded": 0, "classesRemoved": 0, "classesRenamed": 0,
+              "methodsAdded": 7, "methodsRemoved": 66, "methodsRenamed": 18,
+              "fieldsAdded": 0, "fieldsRemoved": 1, "fieldsRenamed": 0},
+  "truncated": false}
 ```
+
+`limit` cuts each of `added`/`removed`/`renamed` while `summary` counts the whole diff, so
+`truncated: true` means entries were dropped. The whole-diff shape and the `?class=` shape
+share this schema.
 
 ## `/diff/files`
 

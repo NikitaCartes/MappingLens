@@ -5,6 +5,7 @@ import xyz.nikitacartes.mappinglens.config.AppConfig
 import xyz.nikitacartes.mappinglens.config.SearchConfig
 import xyz.nikitacartes.mappinglens.config.SourcesConfig
 import xyz.nikitacartes.mappinglens.model.ClassListResponse
+import xyz.nikitacartes.mappinglens.model.DiffResponse
 import xyz.nikitacartes.mappinglens.model.SearchResponse
 import xyz.nikitacartes.mappinglens.model.TranslateResponse
 import xyz.nikitacartes.mappinglens.model.VersionListResponse
@@ -164,6 +165,44 @@ class RoutesTest {
         }
         val resp = client.get("/api/v1/search")
         assertEquals(HttpStatusCode.BadRequest, resp.status)
+    }
+
+    @Test
+    fun `GET diff merges repeatable class params and caps them`(@TempDir tmp: Path) = testApplication {
+        val db = Fixtures.newDb(tmp)
+        Fixtures.seed_1_21(db)
+        Fixtures.seed_1_21_1(db)
+        val diffService = DiffService(db)
+
+        application {
+            installJson()
+            routing { diffRoutes(diffService) }
+        }
+
+        val client = createClient {
+            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+        }
+
+        val merged: DiffResponse = client.get(
+            "/api/v1/diff?from=1.21&to=1.21.1&namespace=yarn" +
+                "&class=net/minecraft/block/NewBlock&class=net/minecraft/block/OldBlock",
+        ).body()
+        assertTrue(merged.changes.added.any { it.name == "net/minecraft/block/NewBlock" })
+        assertTrue(merged.changes.removed.any { it.name == "net/minecraft/block/OldBlock" })
+        assertEquals(false, merged.truncated)
+
+        val cut: DiffResponse = client.get(
+            "/api/v1/diff?from=1.21&to=1.21.1&namespace=yarn&limit=1" +
+                "&class=net/minecraft/block/NewBlock&class=net/minecraft/block/NewBlock",
+        ).body()
+        assertEquals(true, cut.truncated)
+        assertEquals(1, cut.changes.added.size)
+
+        val tooMany = client.get(
+            "/api/v1/diff?from=1.21&to=1.21.1&namespace=yarn&" +
+                (1..26).joinToString("&") { "class=C$it" },
+        )
+        assertEquals(HttpStatusCode.BadRequest, tooMany.status)
     }
 
     @Test

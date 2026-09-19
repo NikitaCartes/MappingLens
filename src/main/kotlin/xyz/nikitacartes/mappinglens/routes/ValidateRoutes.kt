@@ -36,10 +36,11 @@ fun Route.validateRoutes(service: ValidateService, versionService: VersionServic
         }
         body.targets.mapNotNull { it.at }.forEach { at ->
             if (!call.ensureOneOf("at.value", at.value, AT_VALUES)) return@post
-            if (at.target.count { it == ':' } != 2) {
+            val colons = at.target.count { it == ':' }
+            if (colons != 1 && colons != 2) {
                 call.respond(
                     HttpStatusCode.BadRequest,
-                    ApiError("invalid_body", "'at.target' must be owner:name:descriptor, got '${at.target}'", 400),
+                    ApiError("invalid_body", "'at.target' must be owner:name[:descriptor], got '${at.target}'", 400),
                 ); return@post
             }
         }

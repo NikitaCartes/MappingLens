@@ -11,7 +11,16 @@ fun Route.versionRoutes(versionService: VersionService) {
     route("/api/v1/versions") {
         get {
             val includeVariants = call.booleanQuery("includeVariants", false) ?: return@get
-            call.respond(versionService.listVersions(includeVariants))
+            val releasesOnly = call.booleanQuery("releasesOnly", false) ?: return@get
+            val releaseType = call.request.queryParameters["releaseType"]?.takeIf { it.isNotEmpty() }
+            val idPrefix = call.request.queryParameters["idPrefix"]?.takeIf { it.isNotEmpty() }
+            call.respond(versionService.listVersions(includeVariants, releasesOnly, releaseType, idPrefix))
+        }
+        // Registered before "{version}" so "latest" is not captured as a version id.
+        get("/latest") {
+            val info = versionService.latestReleaseInfo()
+            if (info == null) call.respond(HttpStatusCode.NotFound, ApiError("version_not_found", "No versions indexed", 404))
+            else call.respond(info)
         }
         get("{version}") {
             val v = call.parameters["version"]!!

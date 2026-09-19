@@ -7,8 +7,11 @@ accepts `yarn` or `mojmap` and defaults to `mojmap`.
 
 ## Versions
 
-- `GET /api/v1/versions?includeVariants={bool}` lists indexed versions with counts and namespace
-  availability.
+- `GET /api/v1/versions?includeVariants={bool}&releasesOnly={bool}&releaseType={type}&idPrefix={prefix}`
+  lists indexed versions with counts and namespace availability. Newest first. The three filters
+  combine with AND: `releasesOnly=true` keeps releases alone, `releaseType` keeps one release
+  type (`release`, `snapshot`, ...), `idPrefix` keeps ids starting with the prefix (`1.21`,
+  `25w`).
   - A **variant** is a second indexing of a build already listed under its own id: GitCraft derives
     `<id>_unobfuscated` from Mojang's pre-deobfuscated jar. Variants are hidden by default.
     `variantOf` names the build a variant re-indexes, and is null on every version in its own right.
@@ -22,7 +25,13 @@ accepts `yarn` or `mojmap` and defaults to `mojmap`.
   - `hasMojmap` is true on Mojang's unobfuscated releases, which publish no mappings of their own:
     the jar already carries the Mojang names, so `official` is the mojmap namespace. On those
     versions `obfuscated` and `mojmap` return the same name.
-- `GET /api/v1/versions/{version}` gets metadata for one indexed version.
+- `GET /api/v1/versions/{version}` gets metadata for one indexed version. Use it as the
+  single-version probe instead of dumping the whole list: one object with the counts and flags
+  for exactly that id. `404` when the version is not indexed.
+- `GET /api/v1/versions/latest` returns the newest indexed release as one such object, not a
+  list. Falls back to the newest indexed version of any type when no release is indexed, and
+  answers `404` when nothing is indexed. Variants never win: an `_unobfuscated` build answers
+  by name but is never "the latest".
 - `GET /api/v1/classes/{version}` lists every indexed class of a version with obf/intermediary/yarn/
   mojmap aliases and a `presence` flag (`both`, `yarn_only`, `mojmap_only`), for building package or
   class trees client-side. `404` when the version is not indexed.
@@ -103,12 +112,19 @@ accepts `yarn` or `mojmap` and defaults to `mojmap`.
 
 - `namespace`: `yarn`, `mojmap` or `intermediary`. `changeType`: `added`, `removed`, `renamed`,
   `all`.
+- `limit` (default 100, 1-5000) cuts **each** bucket: `added`, `removed` and `renamed` each hold
+  at most `limit` entries. `summary` always counts the whole diff, and `truncated` reads true
+  when any cut dropped an entry. The whole-diff shape and the `class=` shape below share this
+  schema.
 - `package` and `class` are mutually exclusive, and `class` wins if both are given:
   - `package` is a **package-path prefix** over the whole diff, given in `namespace`:
     `net/minecraft/world/level/block` for mojmap, `net/minecraft/block` for yarn.
-  - `class` targets **exactly one class** by internal name and lists its added, removed and renamed
-    members, each with `owner`, `name` and `intermediaryDescriptor`. Its `summary` counts match
-    `/diff/files` for the same class exactly. Use it to answer which members a class gained or lost.
+  - `class` targets classes by internal name and lists their added, removed and renamed
+    members, each with `owner`, `name` and `intermediaryDescriptor`. Repeat it up to 25 times
+    to diff several classes at once: each class is limited first, then the merged buckets are
+    cut to `limit` again, `truncated` reads true when either cut dropped an entry, and the
+    summaries add up across the classes. Its `summary` counts match `/diff/files` for the
+    same class exactly. Use it to answer which members a class gained or lost.
   - A string like `net/minecraft/world/entity/Entity` names a class, not a package. Pass it as
     `class=`. As `package=` it matches nothing, because no class lives under a package named
     `Entity`.
@@ -354,7 +370,7 @@ accepts `yarn` or `mojmap` and defaults to `mojmap`.
   descriptors match exactly with no remapping. `404` when the version has no such jar.
 - **Use it to validate mixin/shadow targets when updating a mod**: every injected method and shadowed
   field in one request instead of many `search`/`source` calls. It checks one version; use
-  `/validate` for a range. Like every `POST` endpoint it is not cached.
+  `/validate` for a range.
 
 ## Validate (mixin targets across a version range)
 
@@ -375,8 +391,12 @@ accepts `yarn` or `mojmap` and defaults to `mojmap`.
   `releasesOnly=true` is how a wide range is covered.
 - `id` is the caller's own label and comes back unchanged. `descriptor` may be omitted, which follows
   every overload of the name. `at` may be omitted, which checks the signature alone.
-- `at.value` is `INVOKE` or `FIELD`, because both name one instruction. `at.target` is always
-  `owner:name:descriptor` in the requested namespace.
+- `at.value` is `INVOKE` or `FIELD`, because both name one instruction. `at.target` is
+  `owner:name[:descriptor]` in the requested namespace. Without a descriptor it matches every
+  overload of the name: `Target:foo` matches `Target:foo:()V` as well as `Target:foo:(I)V`,
+  and the hits fold into one count. A descriptor-less `at` never resolves in the reverse
+  index, so when the call left the class entirely there is nothing to pair and `movedTo`
+  stays null rather than a guess.
 - Five statuses:
   - `ok` — the method is there, and when `at` was given so is the instruction it names. `atCount`
     says how many times, which is what `@At(ordinal = N)` numbers `0 .. atCount-1`.
@@ -398,6 +418,10 @@ accepts `yarn` or `mojmap` and defaults to `mojmap`.
   the mod declares, then subtract the targets already sent. Match the two lists by
   `@At(target = ...)`, not by method or by `id`, because one method holds several injection points
   under one `id`.
+- In PowerShell quote the URL and read the body from a file, because a bare `&` splits the command:
+  `curl 'http://127.0.0.1:8080/api/v1/validate?from=1.20.3&to=1.20.4&releasesOnly=true' --data-binary '@targets.json'`.
+- Validate with `minecraft_version`, not the Stonecutter/TOML section key: `1.20.3` to `1.20.4`,
+  not `1.20.3-fabric` to `1.20.4-fabric`.
 
 ## Resources (assets, datapack, registries, translations)
 
@@ -437,5 +461,7 @@ Optional. A deployment without an mcmeta clone answers every one of these `404 r
 
 ## Meta / health
 
-`GET /health` returns `ok` and is not rate-limited. `GET /openapi.yaml`, `GET /openapi.json`, and
-`GET /docs` (Swagger UI).
+`GET /health` is a liveness probe only: plain `ok`, no DB read, not rate-limited. To probe a
+deployment, read single-version counts from `GET /api/v1/versions/{version}` and features from
+`GET /api/v1/resources/versions` (`404 resources_disabled` when disabled).
+`GET /openapi.yaml`, `GET /openapi.json`, and `GET /docs` (Swagger UI).

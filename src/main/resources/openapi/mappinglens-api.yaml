@@ -28,9 +28,27 @@ paths:
       description: >
         Variants (`<id>_unobfuscated`, a second indexing of a build already listed under its own id)
         are left out unless `includeVariants` is set. `variantOf` names the build a variant
-        re-indexes, and is null on a version in its own right.
+        re-indexes, and is null on a version in its own right. The filters combine with AND:
+        `releasesOnly` keeps releases alone, `releaseType` keeps one exact release type, and
+        `idPrefix` keeps ids starting with the given prefix.
       parameters:
         - $ref: "#/components/parameters/IncludeVariants"
+        - in: query
+          name: releasesOnly
+          schema:
+            type: boolean
+            default: false
+          description: Keep releases alone, leaving out snapshots and other pre-releases.
+        - in: query
+          name: releaseType
+          schema:
+            type: string
+          description: Keep versions whose release type matches exactly.
+        - in: query
+          name: idPrefix
+          schema:
+            type: string
+          description: Keep versions whose id starts with the given prefix.
       responses:
         "200":
           description: Indexed versions with aggregate counts.
@@ -38,6 +56,23 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/VersionListResponse"
+  /api/v1/versions/latest:
+    get:
+      tags: [Versions]
+      summary: Get info about the latest indexed release
+      responses:
+        "200":
+          description: The latest indexed release.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionInfo"
+        "404":
+          description: No versions are indexed (`version_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /api/v1/versions/{version}:
     get:
       tags: [Versions]
@@ -149,10 +184,12 @@ paths:
           schema:
             type: string
           description: >
-            Diff exactly one class (internal name in `namespace`, e.g.
+            Diff one class (internal name in `namespace`, e.g.
             `net/minecraft/world/entity/Entity`), listing added/removed/renamed members by name.
-            Unlike `package=` (a package-path prefix), this targets a single class; its summary
-            counts match `/diff/files` for the same class. Takes precedence over `package`.
+            Repeat the parameter up to 25 times to diff several classes at once: the
+            added/removed/renamed lists merge across the named classes and the summary counts
+            add up. Unlike `package=` (a package-path prefix), this targets named classes; its
+            summary counts match `/diff/files` for the same class. Takes precedence over `package`.
         - in: query
           name: changeType
           schema:
@@ -166,6 +203,8 @@ paths:
             minimum: 1
             maximum: 5000
             default: 100
+          description: >
+            Maximum entries kept in each of the added, removed and renamed lists.
       responses:
         "200":
           description: Added, removed and renamed mapping elements.
@@ -1570,7 +1609,7 @@ components:
         fieldsRenamed: { type: integer }
     DiffResponse:
       type: object
-      required: [from, to, namespace, changes, summary]
+      required: [from, to, namespace, changes, summary, truncated]
       properties:
         from:
           type: string
@@ -1582,6 +1621,8 @@ components:
           $ref: "#/components/schemas/DiffChanges"
         summary:
           $ref: "#/components/schemas/DiffSummary"
+        truncated:
+          type: boolean
     FileChange:
       type: object
       required: [path, methodsAdded, methodsRemoved, fieldsAdded, fieldsRemoved]
@@ -2082,7 +2123,7 @@ components:
           description: Both name one instruction, which is what makes them checkable here.
         target:
           type: string
-          description: "The instruction's own target: `owner:name:descriptor`, in the requested namespace."
+          description: "The instruction's own target: `owner:name[:descriptor]`, in the requested namespace. Without a descriptor every overload matches."
     ValidateTarget:
       type: object
       required: [id, owner, method]

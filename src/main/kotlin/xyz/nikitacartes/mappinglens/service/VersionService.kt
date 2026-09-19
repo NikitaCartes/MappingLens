@@ -60,7 +60,12 @@ class VersionService(private val db: Database) {
      * `1.21.11_unobfuscated` is the same build as `1.21.11` and listing both makes the version line
      * read as if the game shipped twice. A variant still answers `/versions/{id}` by name.
      */
-    fun listVersions(includeVariants: Boolean = false): VersionListResponse = transaction(db) {
+    fun listVersions(
+        includeVariants: Boolean = false,
+        releasesOnly: Boolean = false,
+        releaseType: String? = null,
+        idPrefix: String? = null,
+    ): VersionListResponse = transaction(db) {
         val rows = VersionTable.selectAll()
             .apply { if (!includeVariants) andWhere { VersionTable.variantOf.isNull() } }
             .orderBy(VersionTable.sortIndex to SortOrder.DESC_NULLS_LAST, VersionTable.versionId to SortOrder.DESC)
@@ -70,6 +75,10 @@ class VersionService(private val db: Database) {
         val versions = rows.map { row ->
             val (classes, methods, fields) = row.storedCounts() ?: scanned.of(row[VersionTable.id].value)
             versionInfo(row, classes, methods, fields)
+        }.filter { v ->
+            (!releasesOnly || v.releaseType == "release") &&
+                (releaseType == null || v.releaseType == releaseType) &&
+                (idPrefix == null || v.id.startsWith(idPrefix))
         }
         VersionListResponse(versions)
     }
@@ -163,6 +172,12 @@ class VersionService(private val db: Database) {
             .orderBy(*byRank).limit(1).singleOrNull()?.get(VersionTable.versionId)
             ?: VersionTable.selectAll().where { VersionTable.variantOf.isNull() }
                 .orderBy(*byRank).limit(1).singleOrNull()?.get(VersionTable.versionId)
+    }
+
+    /** The latest release as a full [VersionInfo], or null when the catalog is empty. */
+    fun latestReleaseInfo(): VersionInfo? {
+        val id = latestRelease() ?: return null
+        return getVersion(id)
     }
 
     private fun countsFor(versionRowId: Int): Triple<Long, Long, Long> {

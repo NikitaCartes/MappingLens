@@ -362,6 +362,62 @@ class DiffServiceTest {
     }
 
     @Test
+    fun `diff sets truncated only when limit cuts a bucket`(@TempDir tmp: Path) {
+        val s = setup(tmp)
+        assertFalse(s.diff("1.21", "1.21.1", "yarn", "all", null, "all", 100).truncated)
+        val cut = s.diff("1.21", "1.21.1", "yarn", "all", null, "all", 0)
+        assertTrue(cut.truncated)
+        assertTrue(cut.changes.added.isEmpty() && cut.changes.removed.isEmpty() && cut.changes.renamed.isEmpty())
+    }
+
+    @Test
+    fun `diffClass sets truncated when limit cuts a bucket`(@TempDir tmp: Path) {
+        val s = setup(tmp)
+        val full = s.diffClass("1.21", "1.21.1", "yarn", "net/minecraft/block/Block", "all", "all", 100)
+        assertFalse(full.truncated)
+        assertEquals(1, full.changes.renamed.size)
+        assertTrue(s.diffClass("1.21", "1.21.1", "yarn", "net/minecraft/block/Block", "all", "all", 0).truncated)
+    }
+
+    @Test
+    fun `diffClasses merges per-class diffs and sums summaries`(@TempDir tmp: Path) {
+        val s = setup(tmp)
+        val merged = s.diffClasses(
+            "1.21", "1.21.1", "yarn",
+            listOf("net/minecraft/block/Block", "net/minecraft/block/NewBlock", "net/minecraft/block/OldBlock"),
+            "all", "all", 100,
+        )
+        assertFalse(merged.truncated)
+        assertTrue(merged.changes.added.any { it.name == "net/minecraft/block/NewBlock" })
+        assertTrue(merged.changes.removed.any { it.name == "net/minecraft/block/OldBlock" })
+        assertTrue(merged.changes.renamed.any { it.oldName == "getDefaultStateOld" })
+        assertEquals(1, merged.summary.classesAdded)
+        assertEquals(1, merged.summary.classesRemoved)
+        assertEquals(1, merged.summary.methodsRenamed)
+        // An unknown class contributes nothing but does not fail the merge.
+        val withUnknown = s.diffClasses(
+            "1.21", "1.21.1", "yarn",
+            listOf("net/minecraft/Nope", "net/minecraft/block/NewBlock"),
+            "all", "all", 100,
+        )
+        assertFalse(withUnknown.truncated)
+        assertEquals(merged.changes.added.filter { it.name == "net/minecraft/block/NewBlock" }, withUnknown.changes.added)
+    }
+
+    @Test
+    fun `diffClasses sets truncated when merged buckets exceed limit`(@TempDir tmp: Path) {
+        val s = setup(tmp)
+        val merged = s.diffClasses(
+            "1.21", "1.21.1", "yarn",
+            listOf("net/minecraft/block/NewBlock", "net/minecraft/block/NewBlock"),
+            "all", "all", 1,
+        )
+        assertTrue(merged.truncated)
+        assertEquals(1, merged.changes.added.size)
+        assertEquals(2, merged.summary.classesAdded)
+    }
+
+    @Test
     fun `file diff applies path prefix with exact added removed and modified files`(@TempDir tmp: Path) {
         val db = Fixtures.newDb(tmp)
         Fixtures.seed_1_21(db)

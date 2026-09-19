@@ -39,6 +39,25 @@ class ValidateServiceTest {
         return cw.toByteArray()
     }
 
+    /** `<name>.run()V` calls `Target.foo()V` once and `Target.foo(I)V` twice. */
+    private fun callerMixed(name: String): ByteArray {
+        val cw = ClassWriter(ClassWriter.COMPUTE_MAXS or ClassWriter.COMPUTE_FRAMES)
+        cw.visit(V1_8, ACC_PUBLIC, name, null, "java/lang/Object", null)
+        cw.visitMethod(ACC_PUBLIC or ACC_STATIC, "run", "()V", null, null).apply {
+            visitCode()
+            visitMethodInsn(INVOKESTATIC, "Target", "foo", "()V", false)
+            repeat(2) {
+                visitInsn(ICONST_0)
+                visitMethodInsn(INVOKESTATIC, "Target", "foo", "(I)V", false)
+            }
+            visitInsn(RETURN)
+            visitMaxs(0, 0)
+            visitEnd()
+        }
+        cw.visitEnd()
+        return cw.toByteArray()
+    }
+
     private fun plain(name: String, superName: String, vararg methods: Pair<String, String>): ByteArray {
         val cw = ClassWriter(ClassWriter.COMPUTE_MAXS or ClassWriter.COMPUTE_FRAMES)
         cw.visit(V1_8, ACC_PUBLIC, name, null, superName, null)
@@ -140,5 +159,58 @@ class ValidateServiceTest {
         assertEquals("Caller:run:(I)V", results[0].spans.single().closest)
         assertEquals("Parent:inheritedRun:()V", results[1].spans.single().closest)
         assertNull(results[2].spans.single().closest)
+    }
+
+    @Test
+    fun `an at target without a descriptor matches every overload`(@TempDir tmp: Path) {
+        val store = tmp.resolve("artifact-store")
+        val target = plain("Target", "java/lang/Object", "foo" to "()V", "foo" to "(I)V")
+        jarFor(store, "1.21", callerMixed("Caller"), target)
+
+        val summed = service(tmp).validate(
+            ValidateRequest("mojmap", listOf(target("dismount", "run", "()V", ValidateAt("INVOKE", "Target:foo")))),
+            listOf("1.21"),
+        ).results.single().spans.single()
+
+        assertEquals("ok", summed.status)
+        assertEquals(3, summed.atCount)
+
+        val exact = service(tmp).validate(
+            ValidateRequest("mojmap", listOf(target("dismount", "run", "()V", at))),
+            listOf("1.21"),
+        ).results.single().spans.single()
+
+        assertEquals("ok", exact.status)
+        assertEquals(1, exact.atCount)
+    }
+
+    @Test
+    fun `an at target without a descriptor follows every overload of a descriptor-less hook`(@TempDir tmp: Path) {
+        val store = tmp.resolve("artifact-store")
+        val target = plain("Target", "java/lang/Object", "foo" to "()V", "foo" to "(I)V")
+        jarFor(store, "1.21", callerMixed("Caller"), target)
+
+        val span = service(tmp).validate(
+            ValidateRequest("mojmap", listOf(target("dismount", "run", null, ValidateAt("INVOKE", "Target:foo")))),
+            listOf("1.21"),
+        ).results.single().spans.single()
+
+        assertEquals("ok", span.status)
+        assertEquals(3, span.atCount)
+    }
+
+    @Test
+    fun `an at target without a descriptor still reports a moved call`(@TempDir tmp: Path) {
+        val store = tmp.resolve("artifact-store")
+        val target = plain("Target", "java/lang/Object", "foo" to "()V")
+        jarFor(store, "1.21", caller("Caller", 0), target)
+
+        val span = service(tmp).validate(
+            ValidateRequest("mojmap", listOf(target("dismount", "run", "()V", ValidateAt("INVOKE", "Target:foo")))),
+            listOf("1.21"),
+        ).results.single().spans.single()
+
+        assertEquals("call_moved", span.status)
+        assertNull(span.movedTo)
     }
 }

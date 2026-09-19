@@ -60,21 +60,24 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         }
         fun keep(kind: String) = changeFilter == "all" || changeFilter == kind
 
-        val added = buildList {
+        val addedFull = buildList {
             if (includeClasses && keep("added")) addAll(classDiff.added)
             if (includeMethods && keep("added")) addAll(methodDiff.added)
             if (includeFields && keep("added")) addAll(fieldDiff.added)
-        }.take(limit)
-        val removed = buildList {
+        }
+        val removedFull = buildList {
             if (includeClasses && keep("removed")) addAll(classDiff.removed)
             if (includeMethods && keep("removed")) addAll(methodDiff.removed)
             if (includeFields && keep("removed")) addAll(fieldDiff.removed)
-        }.take(limit)
-        val renamed = buildList {
+        }
+        val renamedFull = buildList {
             if (includeClasses && keep("renamed")) addAll(classDiff.renamed)
             if (includeMethods && keep("renamed")) addAll(methodDiff.renamed)
             if (includeFields && keep("renamed")) addAll(fieldDiff.renamed)
-        }.take(limit)
+        }
+        val added = addedFull.take(limit)
+        val removed = removedFull.take(limit)
+        val renamed = renamedFull.take(limit)
 
         DiffResponse(
             from = from, to = to, namespace = namespace,
@@ -89,7 +92,8 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
                 fieldsAdded = fieldDiff.added.size,
                 fieldsRemoved = fieldDiff.removed.size,
                 fieldsRenamed = fieldDiff.renamed.size,
-            )
+            ),
+            truncated = addedFull.size > added.size || removedFull.size > removed.size || renamedFull.size > renamed.size,
         )
     }
     }
@@ -129,20 +133,23 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
         val includeFields = type == "field" || type == "all"
         fun keep(kind: String) = changeType == "all" || changeType == kind
 
-        val added = buildList {
+        val addedFull = buildList {
             if (includeClasses && keep("added")) addAll(classAdded)
             if (includeMethods && keep("added")) addAll(methodDiff.added)
             if (includeFields && keep("added")) addAll(fieldDiff.added)
-        }.take(limit)
-        val removed = buildList {
+        }
+        val removedFull = buildList {
             if (includeClasses && keep("removed")) addAll(classRemoved)
             if (includeMethods && keep("removed")) addAll(methodDiff.removed)
             if (includeFields && keep("removed")) addAll(fieldDiff.removed)
-        }.take(limit)
-        val renamed = buildList {
+        }
+        val renamedFull = buildList {
             if (includeMethods && keep("renamed")) addAll(methodDiff.renamed)
             if (includeFields && keep("renamed")) addAll(fieldDiff.renamed)
-        }.take(limit)
+        }
+        val added = addedFull.take(limit)
+        val removed = removedFull.take(limit)
+        val renamed = renamedFull.take(limit)
 
         DiffResponse(
             from = from, to = to, namespace = namespace,
@@ -157,6 +164,48 @@ class DiffService(private val db: Database, private val config: AppConfig? = nul
                 fieldsRemoved = fieldDiff.removed.size,
                 fieldsRenamed = fieldDiff.renamed.size,
             ),
+            truncated = addedFull.size > added.size || removedFull.size > removed.size || renamedFull.size > renamed.size,
+        )
+    }
+
+    /**
+     * Diff several classes at once, merging one [diffClass] answer per name. Each class is limited
+     * first, then the merged buckets are cut to [limit] again, so the flag reads true when either
+     * cut dropped an entry. Summaries add up across the classes.
+     */
+    fun diffClasses(
+        from: String,
+        to: String,
+        namespace: String,
+        classNames: List<String>,
+        type: String,
+        changeType: String,
+        limit: Int,
+    ): DiffResponse {
+        val perClass = classNames.map { diffClass(from, to, namespace, it, type, changeType, limit) }
+        val addedAll = perClass.flatMap { it.changes.added }
+        val removedAll = perClass.flatMap { it.changes.removed }
+        val renamedAll = perClass.flatMap { it.changes.renamed }
+        val added = addedAll.take(limit)
+        val removed = removedAll.take(limit)
+        val renamed = renamedAll.take(limit)
+        fun sumOf(sel: (DiffSummary) -> Int) = perClass.sumOf { sel(it.summary) }
+        return DiffResponse(
+            from = from, to = to, namespace = namespace,
+            changes = DiffChanges(added, removed, renamed),
+            summary = DiffSummary(
+                classesAdded = sumOf { it.classesAdded },
+                classesRemoved = sumOf { it.classesRemoved },
+                classesRenamed = sumOf { it.classesRenamed },
+                methodsAdded = sumOf { it.methodsAdded },
+                methodsRemoved = sumOf { it.methodsRemoved },
+                methodsRenamed = sumOf { it.methodsRenamed },
+                fieldsAdded = sumOf { it.fieldsAdded },
+                fieldsRemoved = sumOf { it.fieldsRemoved },
+                fieldsRenamed = sumOf { it.fieldsRenamed },
+            ),
+            truncated = perClass.any { it.truncated } ||
+                addedAll.size > added.size || removedAll.size > removed.size || renamedAll.size > renamed.size,
         )
     }
 

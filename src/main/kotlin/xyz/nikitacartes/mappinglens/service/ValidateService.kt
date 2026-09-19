@@ -138,6 +138,10 @@ class ValidateService(
             if (verdict.status == "ok") lastOk = versions[i]
             val from = lastOk
             if (verdict.status != "call_moved" || verdict.movedTo != null || from == null) return@mapIndexed verdict
+            // A descriptor-less `at` never resolves in the reverse index (`sites()` matches one
+            // `name:descriptor` key), so there is nothing to pair: the in-class holder stands, and
+            // a call that left the class stays unpaired (null) rather than mispaired.
+            if (target.at!!.target.count { it == ':' } == 1) return@mapIndexed verdict
             val diff = references.diffReferences(from, versions[i], target.at!!.target, namespace)
             verdict.copy(movedTo = diff?.changes?.moved?.firstOrNull { it.from == site }?.to)
         }
@@ -177,6 +181,11 @@ class ValidateService(
                 ): MethodVisitor? {
                     overloads.getOrPut(name) { ArrayList(1) } += descriptor
                     if (at == null) return null
+                    // An `at` without a descriptor names every overload: `Target:foo` matches
+                    // `Target:foo:()V` as well as `Target:foo:(I)V`. The hits of one calling
+                    // method still fold into one bucket, so `check()` sums them unchanged.
+                    val exact = at.count { it == ':' } == 2
+                    val prefix = "$at:"
                     val self = "$name:$descriptor"
                     return object : MethodVisitor(Opcodes.ASM9) {
                         override fun visitMethodInsn(op: Int, owner: String, n: String, desc: String, itf: Boolean) =
@@ -189,7 +198,7 @@ class ValidateService(
                         // reference compiles to an invokedynamic whose handle is not one. Mixin does
                         // not hook it there either, so it is not counted.
                         private fun count(found: String) {
-                            if (found == at) hits.merge(self, 1, Int::plus)
+                            if ((exact && found == at) || (!exact && found.startsWith(prefix))) hits.merge(self, 1, Int::plus)
                         }
                     }
                 }

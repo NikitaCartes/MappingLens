@@ -3,6 +3,17 @@
 Notable, externally-visible changes to the MappingLens API. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [13.3]
+
+### Added
+- `GET /api/v1/versions` takes `releasesOnly`, `releaseType` and `idPrefix`, combined with
+  AND, and `GET /api/v1/versions/latest` returns the newest indexed release as one object.
+- `GET /api/v1/diff` answers `truncated` when `limit` cut a bucket, and `class=` repeats up
+  to 25 times to diff several classes at once, merged with summed summaries.
+- `POST /api/v1/validate` accepts a descriptor-less `at.target` (`owner:name`), which
+  matches every overload of the name. A call that left the class then stays unpaired
+  (`movedTo: null`).
+
 ## [13.2]
 
 ### Added

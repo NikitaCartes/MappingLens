@@ -1,5 +1,6 @@
 package xyz.nikitacartes.mappinglens.routes
 
+import xyz.nikitacartes.mappinglens.model.ApiError
 import xyz.nikitacartes.mappinglens.service.DiffService
 import io.ktor.http.*
 import io.ktor.server.application.*
@@ -12,16 +13,23 @@ fun Route.diffRoutes(diffService: DiffService) {
         val namespace = call.request.queryParameters["namespace"] ?: "mojmap"
         val type = call.request.queryParameters["type"] ?: "all"
         val pkg = call.request.queryParameters["package"]
-        val klass = call.request.queryParameters["class"]
         val changeType = call.request.queryParameters["changeType"] ?: "all"
         if (!call.ensureOneOf("namespace", namespace, setOf("yarn", "mojmap", "intermediary"))) return@get
         if (!call.ensureOneOf("type", type, setOf("class", "method", "field", "all"))) return@get
         if (!call.ensureOneOf("changeType", changeType, setOf("added", "removed", "renamed", "all"))) return@get
         val limit = call.intQuery("limit", 100, 1, 5000) ?: return@get
-        // `class=` targets a single class (member-precise, summary matches /diff/files); `package=`
-        // is a package-path prefix over the whole diff. class= wins when both are given.
-        if (!klass.isNullOrBlank()) {
-            call.respond(diffService.diffClass(from, to, namespace, klass, type, changeType, limit)); return@get
+        // `class=` targets single classes (member-precise, summary matches /diff/files); repeat it
+        // to diff several classes at once. `package=` is a package-path prefix over the whole diff.
+        // class= wins when both are given.
+        val classes = call.request.queryParameters.getAll("class").orEmpty().filter { it.isNotBlank() }
+        if (classes.size > 25) {
+            call.respond(HttpStatusCode.BadRequest, ApiError("invalid_query", "At most 25 'class' parameters per request", 400)); return@get
+        }
+        if (classes.size == 1) {
+            call.respond(diffService.diffClass(from, to, namespace, classes.single(), type, changeType, limit)); return@get
+        }
+        if (classes.size > 1) {
+            call.respond(diffService.diffClasses(from, to, namespace, classes, type, changeType, limit)); return@get
         }
         call.respond(diffService.diff(from, to, namespace, type, pkg, changeType, limit))
     }

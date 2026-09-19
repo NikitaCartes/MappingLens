@@ -33,8 +33,10 @@ mappings, source paths, diffs, bytecode and source lookup, and the game's resour
 
 ## General Workflow
 
-1. When the user gives no version and the exact version matters, call `GET /api/v1/versions` and
-   choose the latest indexed release. Ask instead when the ambiguity would change the answer.
+1. When the user gives no version and the exact version matters, pick the latest indexed
+   release without dumping the whole list: `GET /api/v1/versions/latest`, or
+   `GET /api/v1/versions?releasesOnly=true&idPrefix={prefix}` to narrow first. Ask instead
+   when the ambiguity would change the answer.
 2. Prefer `/api/v1/search` when the namespace, type, owner class or exact name is uncertain. Prefer
    `/api/v1/translate` when both namespaces are known.
 3. For version-to-version changes, pick by need: `/api/v1/diff` for mapping elements,
@@ -57,12 +59,14 @@ mappings, source paths, diffs, bytecode and source lookup, and the game's resour
 3. For a class that changed a lot, `GET /api/v1/diff?from={old}&to={new}&class={internalName}` lists
    its added, removed and renamed members by name.
 
-Two traps, both detailed in `reference/endpoints.md`:
+Three traps, all detailed in `reference/endpoints.md`:
 
 - **`/validate` proves only the targets that were sent.** An all-`ok` report is not a coverage
   report. Build the list from the mod's own `@At` annotations and match by `@At(target = ...)`.
 - **A key without a descriptor does not resolve.** `/references` says so with `resolved: false` and
   `/exists` with `candidates[]`. Resolve out of `candidates` first, then re-send.
+- **Validate with `minecraft_version`, not the Stonecutter/TOML section key.** `1.20.3` to
+  `1.20.4`, not `1.20.3-fabric` to `1.20.4-fabric`.
 
 ## Endpoint index
 
@@ -78,8 +82,10 @@ All paths take the `/api/v1` prefix unless noted.
 - **Mixins**: `POST /validate` over a range, `POST /exists/{version}` for one version, `/references`
   and `/diff/references` for the `@At(target = ...)` half.
 - **Resources**: `/resources/versions`, `/tree`, `/file`, `/diff`, `/history`, `/search`.
-- **Meta**: `/versions`, `/versions/{version}`, and `GET /health`, `/openapi.yaml`, `/openapi.json`,
-  `/docs`.
+- **Meta**: `/versions`, `/versions/{version}` (single-version counts for a deployment probe), and
+  `GET /health` (liveness probe only: plain `ok`, no DB, not rate-limited), `/openapi.yaml`,
+  `/openapi.json`, `/docs`. Probe features via `/resources/versions`
+  (`404 resources_disabled` when disabled).
 
 The resource endpoints are optional and answer `404 resources_disabled` on a deployment that carries
 no mcmeta clone. Their version ids are mcmeta's own (`26.3-snapshot-9`), and a MappingLens version id
@@ -92,7 +98,7 @@ is accepted as well, so `/api/v1/resources/versions` is the list to check first.
 Successful `/api/v1` responses are served with `Cache-Control: public, max-age=2592000, immutable`,
 so reuse results across a session rather than refetching. `/api/v1/versions` is the exception at
 `max-age=3600`, because an indexer run adds versions and changes the counts and flags of the ones
-already listed. Error responses and `POST` responses are not cached.
+already listed.
 
 ## Response Handling
 
@@ -113,7 +119,7 @@ already listed. Error responses and `POST` responses are not cached.
 - If several candidates match, show the top few and say why the chosen one is likely correct.
 - For translations, also report the intermediary and obfuscated names when present. They are stable
   anchors.
-- For diffs, separate `added`, `removed` and `renamed`, and mention the requested limit if results
-  may be truncated.
+- For diffs, separate `added`, `removed` and `renamed`, and check the `truncated` flag: `limit`
+  cuts each bucket while `summary` counts the whole diff.
 - Do not fabricate mappings when MappingLens returns no result. Say that no indexed result was found
   and suggest a broader query.

@@ -171,6 +171,7 @@ data class DiffResponse(
     val namespace: String,
     val changes: DiffChanges,
     val summary: DiffSummary,
+    val truncated: Boolean = false,
 )
 
 @Serializable
@@ -524,7 +525,7 @@ data class CompareResponse(
 data class ValidateAt(
     /** `INVOKE` or `FIELD`; both match one instruction by its target key. */
     val value: String = "INVOKE",
-    /** The instruction's own target, `owner:name:descriptor`. */
+    /** The instruction's own target, `owner:name[:descriptor]` (without a descriptor every overload matches). */
     val target: String,
 )
 
